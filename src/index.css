@@ -1,0 +1,132 @@
+:root {
+  /* 参考 DeepSeek Harness：浅灰侧栏、纯白主区、柔和蓝点缀 */
+  --canvas: #F7F8FB;
+  --surface: #FFFFFF;
+  --surface-2: #F4F6FA;
+  --surface-3: #EBEEF4;
+
+  --ink: #1A1C21;
+  --ink-2: #3A3E47;
+  --muted: #8A8F99;
+  --faint: #A8ADB6;
+
+  --border: #E4E7EE;
+  --border-2: #EEF0F5;
+
+  --brand: #7B93D6;
+  --brand-strong: #5E74B8;
+  --brand-soft: #E8EEF9;
+  --brand-faint: #F3F6FC;
+  --on-brand: #FFFFFF;
+
+  --info: #5B7FBE;
+  --info-soft: #EEF3FB;
+  --info-border: #D4DFF0;
+
+  --success: #3D9A6A;
+  --success-soft: #E8F6EE;
+  --success-border: #C5E4D2;
+
+  --warning: #C4922A;
+  --warning-soft: #FBF3E2;
+  --warning-border: #EBD7A8;
+
+  --danger: #D15A5A;
+  --danger-soft: #FBECEC;
+  --danger-border: #EFC8C8;
+
+  --neutral: #8A8F99;
+  --neutral-soft: #F3F4F7;
+  --neutral-border: #E4E7EE;
+
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+
+  --shadow-xs: 0 1px 2px rgba(20, 28, 45, 0.04);
+  --shadow-sm: 0 2px 10px rgba(20, 28, 45, 0.05);
+  --shadow-md: 0 8px 28px rgba(20, 28, 45, 0.08);
+  --shadow-lg: 0 20px 50px rgba(20, 28, 45, 0.12);
+
+  --ring: 0 0 0 3px rgba(123, 147, 214, 0.28);
+
+  --fs-xxs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-serif: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: 1.55;
+  color: var(--ink);
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button { font-family: inherit; }
+
+/* 统一下拉选择框：保持原生键盘和系统菜单能力，重做可见控件样式。 */
+select {
+  min-height: 36px;
+  padding: 0 34px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background-color: var(--surface);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 50%,
+    calc(100% - 11px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  transition: border-color .14s ease, background-color .14s ease, box-shadow .14s ease;
+}
+select:hover:not(:disabled) { border-color: #C6CBD6; background-color: var(--surface-2); }
+select:focus { outline: none; border-color: var(--brand); background-color: var(--surface); box-shadow: var(--ring); }
+select:disabled { color: var(--faint); background-color: var(--surface-3); cursor: not-allowed; opacity: .72; }
+select option { color: var(--ink); background: var(--surface); }
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #D5D8E0;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #B8BCC6; border: 2px solid transparent; background-clip: padding-box; }

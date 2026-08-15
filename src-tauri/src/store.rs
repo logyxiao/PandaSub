@@ -1,0 +1,645 @@
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json;
+
+use crate::models::{Account, Delivery, Editor, Manuscript, Reply, Settings, Task, TaskLog};
+
+const ACCOUNT_COLS: &str = "id, email, password, smtp_host, smtp_port, sender_name, provider, enabled,
+                    hourly_limit, daily_limit, sent_hour, hour_key, sent_day, day_key, last_sent_at, limited, limited_until,
+                    imap_host, imap_port, check_replies, imap_uid, created_at";
+
+fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
+    Ok(Account {
+        id: r.get(0)?,
+        email: r.get(1)?,
+        password: r.get(2)?,
+        smtp_host: r.get(3)?,
+        smtp_port: r.get::<_, i64>(4)? as u16,
+        sender_name: r.get(5)?,
+        provider: r.get(6)?,
+        enabled: r.get::<_, i64>(7)? != 0,
+        hourly_limit: r.get(8)?,
+        daily_limit: r.get(9)?,
+        sent_hour: r.get(10)?,
+        hour_key: r.get(11)?,
+        sent_day: r.get(12)?,
+        day_key: r.get(13)?,
+        last_sent_at: r.get(14)?,
+        limited: r.get::<_, i64>(15)? != 0,
+        limited_until: r.get(16)?,
+        imap_host: r.get(17)?,
+        imap_port: r.get::<_, i64>(18)? as u16,
+        check_replies: r.get::<_, i64>(19)? != 0,
+        imap_uid: r.get(20)?,
+        created_at: r.get(21)?,
+    })
+}
+
+fn parse_list<T: serde::de::DeserializeOwned>(raw: &str) -> Vec<T> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+const MANUSCRIPT_COLS: &str = "id, title, body, content_type, recipients, sender_name,
+    word_count, category, reader_category, reader_emotion, style, genres, subject, file_name,
+    created_at, updated_at";
+
+fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
+    let raw_recipients: String = r.get(4)?;
+    let raw_genres: String = r.get(11)?;
+    Ok(Manuscript {
+        id: r.get(0)?,
+        title: r.get(1)?,
+        body: r.get(2)?,
+        content_type: r.get(3)?,
+        recipients: parse_list(&raw_recipients),
+        sender_name: r.get(5)?,
+        word_count: r.get(6)?,
+        category: r.get(7)?,
+        reader_category: r.get(8)?,
+        reader_emotion: r.get(9)?,
+        style: r.get(10)?,
+        genres: parse_list(&raw_genres),
+        subject: r.get(12)?,
+        file_name: r.get(13)?,
+        created_at: r.get(14)?,
+        updated_at: r.get(15)?,
+    })
+}
+
+pub fn now_str(connection: &Connection) -> Result<String, String> {
+    connection
+        .query_row("SELECT datetime('now','localtime')", [], |r| r.get(0))
+        .map_err(|e| e.to_string())
+}
+
+pub fn load_accounts(conn: &Connection) -> Result<Vec<Account>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {ACCOUNT_COLS} FROM accounts ORDER BY id ASC"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], map_account)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn load_account(conn: &Connection, id: i64) -> Result<Option<Account>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {ACCOUNT_COLS} FROM accounts WHERE id = ?1"))
+        .map_err(|e| e.to_string())?;
+    let row = stmt
+        .query_row([id], map_account)
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+pub fn load_manuscripts(conn: &Connection, ids: &[i64]) -> Result<Vec<Manuscript>, String> {
+    let mut result = Vec::new();
+    for id in ids {
+        if let Some(m) = load_manuscript(conn, *id)? {
+            result.push(m);
+        }
+    }
+    Ok(result)
+}
+
+pub fn load_manuscript(conn: &Connection, id: i64) -> Result<Option<Manuscript>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {MANUSCRIPT_COLS} FROM manuscripts WHERE id = ?1"))
+        .map_err(|e| e.to_string())?;
+    let row = stmt
+        .query_row([id], map_manuscript)
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+pub fn load_all_manuscripts(conn: &Connection) -> Result<Vec<Manuscript>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {MANUSCRIPT_COLS} FROM manuscripts ORDER BY id DESC"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], map_manuscript)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+const EDITOR_COLS: &str = "id, platform, name, email, directions, created_at, updated_at";
+
+fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
+    let raw_directions: String = r.get(4)?;
+    Ok(Editor {
+        id: r.get(0)?,
+        platform: r.get(1)?,
+        name: r.get(2)?,
+        email: r.get(3)?,
+        directions: parse_list(&raw_directions),
+        created_at: r.get(5)?,
+        updated_at: r.get(6)?,
+    })
+}
+
+pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {EDITOR_COLS} FROM editors ORDER BY platform ASC, name ASC"))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], map_editor)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, manuscript_ids, status, schedule_type, scheduled_at,
+                    interval_min, interval_max, batch_size_min, batch_size_max,
+                    batch_pause_min, batch_pause_max, retry_max, sent, total,
+                    created_at, started_at, finished_at
+             FROM tasks WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let row = stmt
+        .query_row([id], |r| {
+            let raw_ids: String = r.get(2)?;
+            Ok(Task {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                manuscript_ids: parse_list::<i64>(&raw_ids),
+                status: r.get(3)?,
+                schedule_type: r.get(4)?,
+                scheduled_at: r.get(5)?,
+                interval_min: r.get(6)?,
+                interval_max: r.get(7)?,
+                batch_size_min: r.get(8)?,
+                batch_size_max: r.get(9)?,
+                batch_pause_min: r.get(10)?,
+                batch_pause_max: r.get(11)?,
+                retry_max: r.get(12)?,
+                sent: r.get(13)?,
+                total: r.get(14)?,
+                created_at: r.get(15)?,
+                started_at: r.get(16)?,
+                finished_at: r.get(17)?,
+            })
+        })
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
+pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, manuscript_ids, status, schedule_type, scheduled_at,
+                    interval_min, interval_max, batch_size_min, batch_size_max,
+                    batch_pause_min, batch_pause_max, retry_max, sent, total,
+                    created_at, started_at, finished_at
+             FROM tasks ORDER BY id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            let raw_ids: String = r.get(2)?;
+            Ok(Task {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                manuscript_ids: parse_list::<i64>(&raw_ids),
+                status: r.get(3)?,
+                schedule_type: r.get(4)?,
+                scheduled_at: r.get(5)?,
+                interval_min: r.get(6)?,
+                interval_max: r.get(7)?,
+                batch_size_min: r.get(8)?,
+                batch_size_max: r.get(9)?,
+                batch_pause_min: r.get(10)?,
+                batch_pause_max: r.get(11)?,
+                retry_max: r.get(12)?,
+                sent: r.get(13)?,
+                total: r.get(14)?,
+                created_at: r.get(15)?,
+                started_at: r.get(16)?,
+                finished_at: r.get(17)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn load_logs(
+    conn: &Connection,
+    task_id: Option<i64>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<TaskLog>, String> {
+    let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<TaskLog> {
+        Ok(TaskLog {
+            id: r.get(0)?,
+            task_id: r.get(1)?,
+            account_id: r.get(2)?,
+            level: r.get(3)?,
+            category: r.get(4)?,
+            message: r.get(5)?,
+            created_at: r.get(6)?,
+        })
+    };
+
+    let result = match task_id {
+        Some(tid) => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, task_id, account_id, level, category, message, created_at
+                     FROM task_logs WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+                )
+                .map_err(|e| e.to_string())?;
+            let collected: Vec<TaskLog> = stmt
+                .query_map(params![tid, limit, offset], map_row)
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            collected
+        }
+        None => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, task_id, account_id, level, category, message, created_at
+                     FROM task_logs ORDER BY id DESC LIMIT ?1 OFFSET ?2",
+                )
+                .map_err(|e| e.to_string())?;
+            let collected: Vec<TaskLog> = stmt
+                .query_map(params![limit, offset], map_row)
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            collected
+        }
+    };
+    Ok(result)
+}
+
+pub fn insert_log(
+    conn: &Connection,
+    task_id: Option<i64>,
+    account_id: Option<i64>,
+    level: &str,
+    category: &str,
+    message: &str,
+) -> Result<TaskLog, String> {
+    conn.execute(
+        "INSERT INTO task_logs (task_id, account_id, level, category, message) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![task_id, account_id, level, category, message],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    let created_at = now_str(conn)?;
+    Ok(TaskLog {
+        id,
+        task_id,
+        account_id,
+        level: level.to_string(),
+        category: category.to_string(),
+        message: message.to_string(),
+        created_at,
+    })
+}
+
+pub fn set_task_status(conn: &Connection, id: i64, status: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE tasks SET status = ?1 WHERE id = ?2",
+        params![status, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn mark_task_running(conn: &Connection, id: i64) -> Result<(), String> {
+    let now = now_str(conn)?;
+    conn.execute(
+        "UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?1), finished_at = NULL WHERE id = ?2",
+        params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn mark_task_finished(conn: &Connection, id: i64, status: &str) -> Result<(), String> {
+    let now = now_str(conn)?;
+    conn.execute(
+        "UPDATE tasks SET status = ?1, finished_at = ?2 WHERE id = ?3",
+        params![status, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn increment_task_sent(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute("UPDATE tasks SET sent = sent + 1 WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Clear progress so a stopped/completed task can be run again from the start.
+pub fn reset_task_progress(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE tasks SET sent = 0, total = 0, started_at = NULL, finished_at = NULL WHERE id = ?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Reset per-hour / per-day counters when the date window has rolled over.
+fn refresh_counters(conn: &Connection, account: &Account) -> Result<Account, String> {
+    let day_key: String = conn
+        .query_row("SELECT strftime('%Y-%m-%d','now','localtime')", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let hour_key: String = conn
+        .query_row("SELECT strftime('%Y-%m-%d %H','now','localtime')", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+
+    let mut updated = account.clone();
+    if account.day_key != day_key {
+        conn.execute(
+            "UPDATE accounts SET sent_day = 0, day_key = ?1 WHERE id = ?2",
+            params![day_key, account.id],
+        )
+        .map_err(|e| e.to_string())?;
+        updated.sent_day = 0;
+    }
+    if account.hour_key != hour_key {
+        conn.execute(
+            "UPDATE accounts SET sent_hour = 0, hour_key = ?1 WHERE id = ?2",
+            params![hour_key, account.id],
+        )
+        .map_err(|e| e.to_string())?;
+        updated.sent_hour = 0;
+    }
+    Ok(updated)
+}
+
+/// Clears an expired cooldown and returns whether the account is usable now.
+pub fn account_available(conn: &Connection, account: &Account) -> Result<bool, String> {
+    if !account.enabled {
+        return Ok(false);
+    }
+    let now = now_str(conn)?;
+    if account.limited {
+        if let Some(until) = &account.limited_until {
+            if until.as_str() > now.as_str() {
+                return Ok(false);
+            }
+        }
+        conn.execute(
+            "UPDATE accounts SET limited = 0, limited_until = NULL WHERE id = ?1",
+            [account.id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let fresh = refresh_counters(conn, account)?;
+    if fresh.hourly_limit > 0 && fresh.sent_hour >= fresh.hourly_limit {
+        return Ok(false);
+    }
+    if fresh.daily_limit > 0 && fresh.sent_day >= fresh.daily_limit {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+pub fn record_account_send(conn: &Connection, account_id: i64) -> Result<(), String> {
+    let now = now_str(conn)?;
+    let day_key: String = conn
+        .query_row("SELECT strftime('%Y-%m-%d','now','localtime')", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let hour_key: String = conn
+        .query_row("SELECT strftime('%Y-%m-%d %H','now','localtime')", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE accounts SET sent_hour = sent_hour + 1, hour_key = ?1,
+                sent_day = sent_day + 1, day_key = ?2, last_sent_at = ?3
+         WHERE id = ?4",
+        params![hour_key, day_key, now, account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn freeze_account(conn: &Connection, account_id: i64, minutes: i64) -> Result<(), String> {
+    let until: String = conn
+        .query_row(
+            "SELECT datetime('now','localtime', '+' || ?1 || ' minutes')",
+            [minutes],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE accounts SET limited = 1, limited_until = ?1 WHERE id = ?2",
+        params![until, account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn mark_account_faulty(conn: &Connection, account_id: i64) -> Result<(), String> {
+    conn.execute("UPDATE accounts SET enabled = 0 WHERE id = ?1", [account_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn load_settings(conn: &Connection) -> Result<Settings, String> {
+    let raw: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match raw {
+        Some(v) => serde_json::from_str(&v).map_err(|e| e.to_string()),
+        None => Ok(Settings::default()),
+    }
+}
+
+pub fn save_settings(conn: &Connection, settings: &Settings) -> Result<(), String> {
+    let raw = serde_json::to_string(settings).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('app', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [raw],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn insert_delivery(
+    conn: &Connection,
+    task_id: i64,
+    account_id: i64,
+    manuscript_id: i64,
+    recipient: &str,
+    subject: &str,
+    message_id: &str,
+) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO deliveries (task_id, account_id, manuscript_id, recipient, subject, message_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![task_id, account_id, manuscript_id, recipient, subject, message_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn load_recent_deliveries(conn: &Connection, days: i64) -> Result<Vec<Delivery>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, task_id, account_id, manuscript_id, recipient, subject, message_id, sent_at
+             FROM deliveries
+             WHERE sent_at >= datetime('now','localtime', '-' || ?1 || ' days')
+             ORDER BY id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([days], |r| {
+            Ok(Delivery {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                account_id: r.get(2)?,
+                manuscript_id: r.get(3)?,
+                recipient: r.get(4)?,
+                subject: r.get(5)?,
+                message_id: r.get(6)?,
+                sent_at: r.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn set_account_imap_uid(conn: &Connection, account_id: i64, uid: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE accounts SET imap_uid = ?1 WHERE id = ?2",
+        params![uid, account_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn reply_exists(conn: &Connection, account_id: i64, imap_uid: i64) -> Result<bool, String> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM replies WHERE account_id = ?1 AND imap_uid = ?2",
+            params![account_id, imap_uid],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
+}
+
+pub fn insert_reply(
+    conn: &Connection,
+    delivery_id: Option<i64>,
+    account_id: i64,
+    task_id: Option<i64>,
+    from_email: &str,
+    subject: &str,
+    snippet: &str,
+    body: &str,
+    kind: &str,
+    reason: &str,
+    message_id: &str,
+    in_reply_to: &str,
+    imap_uid: i64,
+) -> Result<Reply, String> {
+    conn.execute(
+        "INSERT INTO replies (delivery_id, account_id, task_id, from_email, subject, snippet, body, kind, reason, message_id, in_reply_to, imap_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            delivery_id,
+            account_id,
+            task_id,
+            from_email,
+            subject,
+            snippet,
+            body,
+            kind,
+            reason,
+            message_id,
+            in_reply_to,
+            imap_uid
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    let created_at = now_str(conn)?;
+    Ok(Reply {
+        id,
+        delivery_id,
+        account_id: Some(account_id),
+        task_id,
+        from_email: from_email.into(),
+        subject: subject.into(),
+        snippet: snippet.into(),
+        body: body.into(),
+        kind: kind.into(),
+        reason: reason.into(),
+        message_id: message_id.into(),
+        in_reply_to: in_reply_to.into(),
+        imap_uid,
+        received_at: created_at.clone(),
+        created_at,
+        recipient: String::new(),
+        task_name: String::new(),
+    })
+}
+
+fn map_reply(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reply> {
+    Ok(Reply {
+        id: r.get(0)?,
+        delivery_id: r.get(1)?,
+        account_id: r.get(2)?,
+        task_id: r.get(3)?,
+        from_email: r.get(4)?,
+        subject: r.get(5)?,
+        snippet: r.get(6)?,
+        body: r.get(7)?,
+        kind: r.get(8)?,
+        reason: r.get(9)?,
+        message_id: r.get(10)?,
+        in_reply_to: r.get(11)?,
+        imap_uid: r.get(12)?,
+        received_at: r.get(13)?,
+        created_at: r.get(14)?,
+        recipient: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
+        task_name: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+    })
+}
+
+pub fn load_replies(conn: &Connection, kind: Option<&str>, limit: i64) -> Result<Vec<Reply>, String> {
+    let sql = "SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject, r.snippet, r.body,
+                      r.kind, r.reason, r.message_id, r.in_reply_to, r.imap_uid, r.received_at, r.created_at,
+                      d.recipient, t.name
+               FROM replies r
+               LEFT JOIN deliveries d ON d.id = r.delivery_id
+               LEFT JOIN tasks t ON t.id = r.task_id";
+    if let Some(k) = kind {
+        let mut stmt = conn
+            .prepare(&format!("{sql} WHERE r.kind = ?1 ORDER BY r.id DESC LIMIT ?2"))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![k, limit], map_reply)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    } else {
+        let mut stmt = conn
+            .prepare(&format!("{sql} ORDER BY r.id DESC LIMIT ?1"))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], map_reply)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+}
+
+pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM replies WHERE kind = ?1",
+        [kind],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
