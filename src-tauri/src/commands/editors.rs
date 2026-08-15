@@ -120,17 +120,6 @@ pub fn delete_editor(state: State<'_, AppState>, id: i64) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn toggle_editor(state: State<'_, AppState>, id: i64, enabled: bool) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE editors SET enabled = ?1, updated_at = datetime('now','localtime') WHERE id = ?2",
-        rusqlite::params![enabled as i64, id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
 pub fn export_editors(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let editors = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -146,7 +135,7 @@ pub fn export_editors(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
-    let headers = ["平台", "名称", "邮箱", "风格", "作品类型", "状态"];
+    let headers = ["平台", "名称", "邮箱", "风格", "作品类型"];
     for (col, h) in headers.iter().enumerate() {
         sheet
             .write_string(0, col as u16, *h)
@@ -168,9 +157,6 @@ pub fn export_editors(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
             .map_err(|e| e.to_string())?;
         sheet
             .write_string(row, 4, &editor.work_type.join("、"))
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 5, if editor.enabled { "使用中" } else { "已暂停" })
             .map_err(|e| e.to_string())?;
     }
     workbook.save(&path).map_err(|e| e.to_string())?;

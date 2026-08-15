@@ -1359,7 +1359,6 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 .recipients-table .col-check { width: 34px; padding-right: 4px; }
 .recipients-table .col-check input[type='checkbox'] { width: 15px; height: 15px; accent-color: var(--brand); cursor: pointer; vertical-align: middle; }
 .recipients-table .col-platform { width: 96px; }
-.recipients-table .col-state { width: 175px; }
 .recipients-table .col-switch { width: 112px; }
 .recipients-table td { height: auto; padding-top: 9px; padding-bottom: 9px; font-size: 12.5px; }
 .recipients-table .recipients-editor { min-width: 190px; }
@@ -1368,15 +1367,9 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 .recipients-table .recipients-platform { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); font-size: 11px; white-space: nowrap; }
 .recipients-table tr.is-pinned td { background: var(--brand-soft); }
 .recipients-table tr.is-pinned .recipients-platform { background: var(--brand); color: #fff; }
-.recipients-table tr.is-sent:not(.is-off) { opacity: .82; }
 .recipients-table tr.is-off { background: var(--surface-2); opacity: .55; }
 .recipients-table .recipients-tags { display: flex; flex-wrap: wrap; gap: 5px; }
 .recipients-table .recipients-tags .chip { min-height: 21px; height: auto; padding: 2px 7px; font-size: 10.5px; line-height: 1.35; cursor: default; }
-.recipients-table .send-state { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-.recipients-table .send-state small { display: inline; margin-top: 0; font-size: 11px; white-space: nowrap; }
-.recipients-table .send-state .badge { flex: none; height: 20px; padding: 0 7px; font-size: 10.5px; }
-.recipients-table .send-state .icon-button { flex: none; width: 22px; height: 22px; }
-.recipients-table .send-state .icon-button svg { width: 13px; height: 13px; }
 .recipients-table .plan-alt-select { width: 96px; }
 .recipients-table .plan-alt-select .select-trigger { height: 26px; padding: 0 6px 0 8px; font-size: 11px; border-radius: 6px; }
 .plan-person-sent-state { display: inline-flex; align-items: center; gap: 6px; flex: none; }
@@ -1639,37 +1632,6 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
    编辑库 · 平台分组列表
    ========================================================================== */
 
-.editors-summary {
-  display: flex;
-  align-items: center;
-  gap: 26px;
-  padding: 12px 18px;
-  margin-bottom: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  background: var(--surface);
-  box-shadow: var(--shadow-xs);
-  color: var(--muted);
-  font-size: 12.5px;
-}
-.editors-summary b { margin-right: 4px; color: var(--ink); font-family: var(--font-mono); font-size: 15px; }
-.editors-summary-toggle {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--ink-2);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: border-color .12s, color .12s;
-}
-.editors-summary-toggle:hover { border-color: #B9C9CB; color: var(--ink); }
-
 .field-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .field-chip {
   display: inline-flex;
@@ -1693,45 +1655,48 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 .field-filter-empty { padding-top: 5px; color: var(--faint); font-size: 11.5px; }
 
 .editor-groups { display: grid; }
-.editor-group + .editor-group { border-top: 1px solid var(--border-2); }
-.editor-group-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 8px 18px;
-  cursor: pointer;
-  background: var(--surface-2);
-  user-select: none;
-}
-.editor-group-head:hover { background: #EDF1F3; }
-.editor-group-head svg { flex: none; color: var(--muted); }
-.editor-group-head b { font-size: 13.5px; }
-.editor-group-count { margin-left: auto; color: var(--muted); font-size: 11.5px; font-family: var(--font-mono); white-space: nowrap; }
-.editor-group-body { display: grid; }
 .editor-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.1fr) minmax(0, 1.6fr) auto auto;
+  grid-template-columns: minmax(160px, 1.1fr) 110px minmax(0, 1.6fr) auto;
   align-items: center;
   gap: 16px;
   min-height: 54px;
   padding: 8px 18px;
   border-top: 1px solid var(--border-2);
 }
+.editor-row:first-child { border-top: 0; }
 .editor-row:hover { background: var(--surface-2); }
 .editor-row-main { min-width: 0; }
 .editor-row-main b { display: block; overflow: hidden; color: var(--ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .editor-row-main small { display: block; overflow: hidden; margin-top: 2px; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.editor-row-platform { min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .editor-row-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
-.editor-row-tags .chip { pointer-events: none; }
+.editor-row-tags .chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
 .editor-row-tags .chip.tone { border-color: var(--info-border); background: var(--info-soft); color: #2B5BB2; }
-.editor-tag-divider { width: 1px; height: 14px; margin: 0 3px; background: var(--border); flex: none; }
+.editor-tag-divider { width: 1px; height: 12px; margin: 0 3px; background: var(--border); flex: none; }
+.worktype-filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; }
+.worktype-filter-bar > span { flex: none; color: var(--muted); font-size: 11.5px; font-weight: 600; }
+
 .editor-groups-empty { padding: 44px 18px; color: var(--muted); font-size: 12.5px; text-align: center; }
 
 @media (max-width: 760px) {
   .editor-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-  .editor-row .editor-row-tags { grid-column: 1 / -1; grid-row: 2; }
-  .editors-summary { gap: 16px; flex-wrap: wrap; }
+  .editor-row-main { grid-column: 1; grid-row: 1; }
+  .editor-row .row-actions { grid-column: 2; grid-row: 1; }
+  .editor-row-platform { grid-column: 1; grid-row: 2; }
+  .editor-row-tags { grid-column: 2 / -1; grid-row: 2; }
 }
 
 /* ==========================================================================

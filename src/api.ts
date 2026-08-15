@@ -47,12 +47,13 @@ export const api = {
   extractDocx: (data: number[]) => invoke<string>('extract_docx_text', { data }),
   listDeliveries: () => invoke<Delivery[]>('list_deliveries'),
   resendDelivery: (deliveryId: number) => invoke('resend_delivery', { deliveryId }),
+  sendManualDelivery: (manuscriptId: number, recipient: string, accountIds: number[]) =>
+    invoke('send_manual_delivery', { manuscriptId, recipient, accountIds }),
 
   listEditors: () => invoke<Editor[]>('list_editors'),
   addEditor: (input: EditorInput) => invoke<number>('add_editor', { input }),
   updateEditor: (id: number, input: EditorInput) => invoke('update_editor', { id, input }),
   deleteEditor: (id: number) => invoke('delete_editor', { id }),
-  toggleEditor: (id: number, enabled: boolean) => invoke('toggle_editor', { id, enabled }),
   exportEditors: () => invoke<string>('export_editors'),
   importEditors: (data: number[], fileName: string) => invoke<EditorImportResult>('import_editors', { data, fileName }),
 }

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, ChevronUp, Download, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react'
+import { Download, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
-import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
+import { Button, EmptyState, IconButton, PagedList, Select } from '../components/ui'
 import { isValidEmail } from '../format'
 import { useNav } from '../nav'
 import type { Editor, EditorInput } from '../types'
@@ -20,8 +20,6 @@ export function EditorsView() {
   const [platform, setPlatform] = useState('')
   const [style, setStyle] = useState('')
   const [workType, setWorkType] = useState('')
-  const [status, setStatus] = useState<'all' | 'on' | 'off'>('all')
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [editing, setEditing] = useState<Editor | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState<EditorInput>(emptyForm)
@@ -45,13 +43,11 @@ export function EditorsView() {
   )
 
   const basePool = useMemo(() => items.filter((e) => {
-    if (status === 'on' && e.enabled === false) return false
-    if (status === 'off' && e.enabled !== false) return false
     if (platform && e.platform !== platform) return false
     const q = query.trim().toLowerCase()
     if (!q) return true
     return [e.name, e.email, e.platform, ...(e.style ?? []), ...(e.work_type ?? [])].join(' ').toLowerCase().includes(q)
-  }), [items, status, platform, query])
+  }), [items, platform, query])
 
   const styleCounts = useMemo(
     () => STYLES.map((tag) => [tag, basePool.filter((e) => (e.style ?? []).includes(tag)).length] as const),
@@ -64,39 +60,11 @@ export function EditorsView() {
     return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
   }, [basePool])
 
-  const visible = basePool.filter((e) => {
+  const visible = useMemo(() => basePool.filter((e) => {
     if (style && !(e.style ?? []).includes(style)) return false
     if (workType && !(e.work_type ?? []).includes(workType)) return false
     return true
-  })
-
-  const grouped = useMemo(() => {
-    const map = new Map<string, Editor[]>()
-    for (const e of visible) {
-      const key = e.platform.trim() || UNASSIGNED
-      const list = map.get(key) ?? []
-      list.push(e)
-      map.set(key, list)
-    }
-    return [...map.entries()].sort((a, b) => {
-      if (a[0] === UNASSIGNED) return 1
-      if (b[0] === UNASSIGNED) return -1
-      return b[1].length - a[1].length || a[0].localeCompare(b[0], 'zh')
-    })
-  }, [visible])
-
-  const allExpanded = collapsed.size === 0
-  const toggleGroup = (key: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
-  const toggleAll = () => {
-    setCollapsed(allExpanded ? new Set(grouped.map(([key]) => key)) : new Set())
-  }
+  }), [basePool, style, workType])
 
   const openAdd = () => { setEditing(null); setForm(emptyForm); setCustomWorkType(''); setShowForm(true) }
   const openEdit = (e: Editor) => {
@@ -164,14 +132,6 @@ export function EditorsView() {
     } catch (e) { toast(String(e), 'error') }
   }
 
-  const toggle = async (e: Editor) => {
-    try {
-      await api.toggleEditor(e.id, e.enabled === false)
-      await load()
-      toast(e.enabled === false ? '已启动' : '已暂停', 'success')
-    } catch (err) { toast(String(err), 'error') }
-  }
-
   const remove = async (id: number) => {
     const ok = await confirm({ title: '删除编辑', message: '从编辑库里去掉，已经写进计划的收件人不会自动删除。', confirmLabel: '删除', tone: 'danger' })
     if (!ok) return
@@ -190,14 +150,6 @@ export function EditorsView() {
             options={[{ value: '', label: '全部平台' }, ...platforms.map((p) => ({ value: p, label: p }))]} />
           <Select value={style} onChange={setStyle} ariaLabel="按风格筛选" className="editor-filter-select"
             options={[{ value: '', label: '全部风格' }, ...styleCounts.map(([tag, count]) => ({ value: tag, label: `${tag}（${count}）` }))]} />
-          <Select value={workType} onChange={setWorkType} ariaLabel="按作品类型筛选" className="editor-filter-select"
-            options={[{ value: '', label: '全部作品类型' }, ...workTypeCounts.map(([tag, count]) => ({ value: tag, label: `${tag}（${count}）` }))]} />
-          <Select value={status} onChange={setStatus} ariaLabel="按状态筛选" className="editor-filter-select"
-            options={[
-              { value: 'all', label: '全部状态' },
-              { value: 'on', label: '使用中' },
-              { value: 'off', label: '已暂停' },
-            ]} />
         </div>
         <div className="toolbar-actions">
           <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.txt" hidden
@@ -207,6 +159,21 @@ export function EditorsView() {
           <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
           <Button variant="primary" onClick={openAdd}><Plus size={16} />添加编辑</Button>
         </div>
+      </div>
+      <div className="worktype-filter-bar">
+        <span>作品类型</span>
+        {workTypeCounts.length ? (
+          <div className="field-filter-chips">
+            {workTypeCounts.map(([tag, count]) => (
+              <button type="button" key={tag} className={`field-chip ${workType === tag ? 'on' : ''}`}
+                onClick={() => setWorkType(workType === tag ? '' : tag)}>
+                {tag}{count > 0 && <small>{count}</small>}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="hint">还没有作品类型，添加编辑时补上即可筛选</span>
+        )}
       </div>
       {notice && <div className="notice notice-error">{notice}</div>}
 
@@ -223,76 +190,44 @@ export function EditorsView() {
         </div>
       ) : (
         <>
-          <div className="editors-summary" aria-label="编辑库概览">
-            <span><b>{grouped.length}</b> 个平台</span>
-            <span><b>{visible.length}</b> 位编辑</span>
-            <span><b>{visible.filter((e) => e.enabled !== false).length}</b> 使用中</span>
-            <span><b>{visible.filter((e) => e.enabled === false).length}</b> 已暂停</span>
-            <button type="button" className="editors-summary-toggle" onClick={toggleAll}>
-              {allExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              {allExpanded ? '全部收起' : '全部展开'}
-            </button>
-          </div>
           <div className="panel">
-            <div className="editor-groups">
-              {grouped.map(([key, editors]) => {
-                const isCollapsed = collapsed.has(key)
-                const active = editors.filter((e) => e.enabled !== false).length
-                return (
-                  <section className="editor-group" key={key}>
-                    <header className="editor-group-head" role="button" tabIndex={0}
-                      aria-expanded={!isCollapsed}
-                      onClick={() => toggleGroup(key)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(key) } }}>
-                      {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-                      <b>{key}</b>
-                      <span className="editor-group-count">{editors.length} 位 · {active} 使用中</span>
-                    </header>
-                    {!isCollapsed && (
-                      <div className="editor-group-body">
-                        {editors.map((e) => (
-                          <div className={`editor-row ${e.enabled === false ? 'dim' : ''}`} key={e.id}>
-                            <div className="editor-row-main">
-                              <b>{e.name.trim() || e.email}</b>
-                              {e.name.trim() ? <small>{e.email}</small> : null}
-                            </div>
-                            <div className="editor-row-tags">
-                              {(e.style ?? []).length
-                                ? e.style.map((d) => <span className="chip on" key={d}>{d}</span>)
-                                : <span className="hint">未设风格</span>}
-                              {(e.work_type ?? []).length > 0 && <i className="editor-tag-divider" />}
-                              {(e.work_type ?? []).length
-                                ? e.work_type.map((d) => <span className="chip on tone" key={d}>{d}</span>)
-                                : null}
-                            </div>
-                            <Badge tone={e.enabled === false ? 'warning' : 'success'} dot>
-                              {e.enabled === false ? '已暂停' : '使用中'}
-                            </Badge>
-                            <div className="row-actions">
-                              {e.enabled === false
-                                ? <Button size="sm" variant="primary" onClick={() => void toggle(e)}>启动</Button>
-                                : <Button size="sm" onClick={() => void toggle(e)}>暂停</Button>}
-                              <Button size="sm" onClick={() => openEdit(e)}>编辑</Button>
-                              <IconButton title="删除" className="danger" onClick={() => void remove(e.id)}><Trash2 size={15} /></IconButton>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                )
-              })}
-              {!visible.length && (
+            <PagedList
+              items={visible}
+              keyOf={(e) => e.id}
+              listClassName="editor-groups"
+              renderItem={(e) => (
+                <div className="editor-row">
+                  <div className="editor-row-main">
+                    <b>{e.name.trim() || e.email}</b>
+                    {e.name.trim() ? <small>{e.email}</small> : null}
+                  </div>
+                  <div className="editor-row-platform">{e.platform.trim() || UNASSIGNED}</div>
+                  <div className="editor-row-tags">
+                    {(e.style ?? []).length
+                      ? e.style.map((d) => <span className="chip on" key={d}>{d}</span>)
+                      : <span className="hint">未设风格</span>}
+                    {(e.work_type ?? []).length > 0 && <i className="editor-tag-divider" />}
+                    {(e.work_type ?? []).length
+                      ? e.work_type.map((d) => <span className="chip on tone" key={d}>{d}</span>)
+                      : null}
+                  </div>
+                  <div className="row-actions">
+                    <Button size="sm" onClick={() => openEdit(e)}>编辑</Button>
+                    <IconButton title="删除" className="danger" onClick={() => void remove(e.id)}><Trash2 size={15} /></IconButton>
+                  </div>
+                </div>
+              )}
+              empty={!visible.length && (
                 <p className="editor-groups-empty">{loading ? '读取中…' : '没有符合筛选的编辑'}</p>
               )}
-            </div>
+            />
           </div>
         </>
       )}
 
       {items.length > 0 && (
         <p className="after-table-hint">
-          暂停后的编辑不会出现在新建计划的筛选里。导入同邮箱会更新资料。准备好后去 <button type="button" className="text-link" onClick={() => go('plans')}>投稿计划</button> 按风格、作品类型筛编辑。
+          导入同邮箱会更新资料。准备好后去 <button type="button" className="text-link" onClick={() => go('plans')}>投稿计划</button> 按风格、作品类型筛编辑。
         </p>
       )}
 

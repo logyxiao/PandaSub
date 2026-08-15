@@ -149,7 +149,6 @@ export function editorRecipient(editor: Editor) {
 export function editorWorkTypeOptions(editors: Editor[]) {
   const map = new Map<string, number>()
   for (const editor of editors) {
-    if (editor.enabled === false) continue
     for (const tag of normalizeEditorTags(editor).work_type) {
       map.set(tag, (map.get(tag) ?? 0) + 1)
     }
@@ -178,7 +177,6 @@ export function pickOneEditorPerPlatform(
 ) {
   const excluded = new Set([...excludedWorkTypes].map((t) => t.trim()).filter(Boolean))
   const matched = editors
-    .filter((e) => e.enabled !== false)
     .map(normalizeEditorTags)
     .filter((e) => editorMatchesPlan(e, style, genres))
     .filter((e) => !e.work_type.some((tag) => excluded.has(tag)))

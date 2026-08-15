@@ -229,7 +229,6 @@ export function PlansView() {
         editing={editing}
         editors={editors}
         onReloadEditors={async () => { setEditors(await api.listEditors()) }}
-        onReloadDeliveries={async () => { setDeliveries(await api.listDeliveries()) }}
         deliveries={deliveries}
         enabledAccounts={enabledAccounts}
         form={form}

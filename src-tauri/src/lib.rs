@@ -137,6 +137,7 @@ pub fn run() {
             commands::test_account,
             commands::send_test_email,
             commands::resend_delivery,
+            commands::send_manual_delivery,
             commands::list_manuscripts,
             commands::get_manuscript,
             commands::add_manuscript,
@@ -168,7 +169,6 @@ pub fn run() {
             commands::add_editor,
             commands::update_editor,
             commands::delete_editor,
-            commands::toggle_editor,
             commands::export_editors,
             commands::import_editors,
         ])

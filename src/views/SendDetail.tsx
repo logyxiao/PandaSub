@@ -150,28 +150,22 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     setPickQuery('')
   }
 
-  const manualSend = async () => {
+  const manualSend = async (row: DetailRow) => {
     if (locked) { toast('这个计划正在发送，请先停止', 'warning'); return }
-    if (!recipients.length) { toast('列表里没有收件人，请先添加编辑', 'warning'); return }
+    if (!enabledAccounts.length) { toast('没有可用的发件邮箱，请先启用', 'warning'); return }
     const ok = await confirm({
       title: '手动发送？',
-      message: `将手动发送 ${recipients.length} 封邮件给当前列表的全部收件人，使用已启用的发件邮箱。`
-        + (sentCount > 0 ? `其中 ${sentCount} 位已发送过，会再次发送；不需要的可以先行移除。` : ''),
+      message: `将把「${row.name}」的稿件邮件手动发送到 ${row.email}，使用已启用的发件邮箱。`,
       confirmLabel: '手动发送',
     })
     if (!ok) return
+    setResending(row.email.toLowerCase())
     try {
-      await api.createTask({
-        name: manuscript.title.trim(),
-        manuscript_ids: [manuscript.id],
-        account_ids: enabledAccounts.map((a) => a.id),
-        schedule_type: 'immediate',
-        scheduled_at: null,
-        retry_max: 3,
-      })
-      toast('已开始手动发送', 'success')
+      await api.sendManualDelivery(manuscript.id, row.raw, enabledAccounts.map((a) => a.id))
+      toast('已手动发送', 'success')
       onChanged()
     } catch (e) { toast(String(e), 'error') }
+    finally { setResending(null) }
   }
 
   return (
@@ -187,7 +181,6 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索姓名、平台或邮箱" />
           </label>
           <Button size="sm" disabled={locked} onClick={() => setShowPicker((v) => !v)}><Plus size={14} />添加编辑</Button>
-          <Button size="sm" variant="primary" disabled={locked || !recipients.length} onClick={() => void manualSend()}>手动发送</Button>
         </div>
       </div>
 
@@ -258,6 +251,11 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
                     <td>{formatTime(r.lastSentAt)}</td>
                     <td>
                       <div className="row-actions">
+                        {!r.sent && (
+                          <Button size="sm" disabled={locked || resending !== null} onClick={() => void manualSend(r)}>
+                            {resending === r.email.toLowerCase() ? '发送中…' : '手动发送'}
+                          </Button>
+                        )}
                         {r.sent && (
                           <IconButton title={resending === r.email.toLowerCase() ? '发送中…' : '重新发送该编辑'}
                             disabled={resending !== null} onClick={() => void resend(r)}>

@@ -105,6 +105,115 @@ pub async fn resend_delivery(
     Ok(())
 }
 
+// ---------- 手动发送单个收件人 ----------
+
+/// 不触发整份名单发送，只给指定的编辑手动发送一封当前稿件邮件。
+#[tauri::command]
+pub async fn send_manual_delivery(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    manuscript_id: i64,
+    recipient: String,
+    account_ids: Vec<i64>,
+) -> Result<(), String> {
+    let (manuscript, account) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let manuscript = store::load_manuscript(&conn, manuscript_id)?
+            .ok_or("稿件不存在，无法手动发送")?;
+        let accounts = store::load_accounts(&conn)?;
+        let account = if account_ids.is_empty() {
+            accounts.into_iter().find(|a| a.enabled)
+        } else {
+            accounts
+                .into_iter()
+                .find(|a| account_ids.contains(&a.id) && a.enabled)
+        }
+        .ok_or("没有可用的发件邮箱，请先启用")?;
+        (manuscript, account)
+    };
+
+    if !manuscript.recipients.iter().any(|r| {
+        smtp::parse_recipient(r)
+            .1
+            .eq_ignore_ascii_case(&smtp::parse_recipient(&recipient).1)
+    }) {
+        return Err("该收件人不在当前稿件的收件名单中".into());
+    }
+
+    let settings = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::load_settings(&conn).unwrap_or_default()
+    };
+    let attachment = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::load_manuscript_attachment(&conn, manuscript.id).unwrap_or(None)
+    };
+
+    let (editor_name, recipient_email) = smtp::parse_recipient(&recipient);
+    let subject_src = if manuscript.subject.trim().is_empty() {
+        manuscript.title.as_str()
+    } else {
+        manuscript.subject.as_str()
+    };
+    let subject = smtp::apply_placeholders(subject_src, &editor_name, &recipient_email, &manuscript.title);
+    let body = smtp::apply_placeholders(
+        &smtp::mutate_body(&manuscript.body, settings.anti_spam_mutation),
+        &editor_name,
+        &recipient_email,
+        &manuscript.title,
+    );
+    let sender_name = if manuscript.sender_name.trim().is_empty() {
+        account.sender_name.clone()
+    } else {
+        manuscript.sender_name.clone()
+    };
+
+    let message_id = smtp::send_email(
+        &account,
+        &recipient_email,
+        &sender_name,
+        &subject,
+        &body,
+        &manuscript.content_type,
+        attachment.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
+    )
+    .await
+    .map_err(|err| {
+        let (_, msg) = smtp::classify_error(&err);
+        msg
+    })?;
+
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let _ = store::record_account_send(&conn, account.id);
+        let _ = store::insert_delivery(
+            &conn,
+            0,
+            account.id,
+            manuscript.id,
+            &recipient_email,
+            &subject,
+            &message_id,
+        );
+    }
+    let log = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::insert_send_log(
+            &conn,
+            None,
+            Some(account.id),
+            "success",
+            "send",
+            "手动发送成功",
+            &recipient,
+        )
+    };
+    if let Ok(log) = log {
+        let _ = app.emit("log", &log);
+    }
+    Ok(())
+}
+
 // ---------- Manuscripts ----------
 #[tauri::command]
 pub fn list_manuscripts(state: State<'_, AppState>) -> Result<Vec<Manuscript>, String> {

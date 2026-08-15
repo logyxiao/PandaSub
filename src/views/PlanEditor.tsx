@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Clock3, FileUp, Plus, RotateCcw, Search, Send, Users } from 'lucide-react'
+import { ArrowLeft, Clock3, FileUp, Plus, Search, Send, Users } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
-import { useConfirm, useToast } from '../components/feedback'
-import { Badge, Button, IconButton, Select } from '../components/ui'
-import { formatTime, isValidEmail, parseRecipient } from '../format'
+import { useToast } from '../components/feedback'
+import { Button, Select } from '../components/ui'
+import { isValidEmail, parseRecipient } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, EditorInput, Manuscript, ManuscriptInput, TaskInput } from '../types'
 import {
@@ -14,17 +14,14 @@ import {
 
 const emptyEditor: EditorInput = { platform: '', name: '', email: '', style: [], work_type: [] }
 
-type ListFilter = 'all' | 'pending' | 'sent'
-
 export function PlanEditor({
-  editing, editors, onReloadEditors, onReloadDeliveries, deliveries, enabledAccounts,
+  editing, editors, onReloadEditors, deliveries, enabledAccounts,
   form, setForm, taskForm, setTaskForm, scheduledInput, setScheduledInput,
   saving, onClose, onSaveDraft, onSaveAndSend, onImportFile,
 }: {
   editing: Manuscript | null
   editors: Editor[]
   onReloadEditors: () => Promise<void>
-  onReloadDeliveries: () => Promise<void>
   deliveries: Delivery[]
   enabledAccounts: Account[]
   form: ManuscriptInput
@@ -43,7 +40,6 @@ export function PlanEditor({
   const { go } = useNav()
   const fileRef = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState<ListFilter>('all')
   const [showRecipients, setShowRecipients] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set())
@@ -56,35 +52,12 @@ export function PlanEditor({
   const [customWorkType, setCustomWorkType] = useState('')
   const [savingEditor, setSavingEditor] = useState(false)
   const [testing, setTesting] = useState(false)
-  const [resending, setResending] = useState<string | null>(null)
   // 名单里已保存、但不在当前匹配池的收件人（改过类型、编辑库调整后不再匹配等），保留显示不丢。
   const [pinned, setPinned] = useState<string[]>([])
   const initRef = useRef(false)
-  const confirm = useConfirm()
 
   const sentMap = useMemo(() => sentCountByEmail(deliveries), [deliveries])
-  const lastSentMap = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const d of deliveries) {
-      const email = parseRecipient(d.recipient).email.toLowerCase()
-      const cur = map.get(email)
-      if (!cur || d.sent_at > cur) map.set(email, d.sent_at)
-    }
-    return map
-  }, [deliveries])
   const liveCount = form.word_count
-  // 本计划自己的投递记录（按邮箱取最新一条），供「重新发送」使用；新计划还没有记录。
-  const deliveryByEmail = useMemo(() => {
-    const map = new Map<string, Delivery>()
-    if (!editing) return map
-    for (const d of deliveries) {
-      if (d.manuscript_id !== editing.id) continue
-      const email = parseRecipient(d.recipient).email.toLowerCase()
-      const cur = map.get(email)
-      if (!cur || d.sent_at > cur.sent_at) map.set(email, d)
-    }
-    return map
-  }, [deliveries, editing])
   const platforms = useMemo(
     () => [...new Set(editors.map((e) => e.platform.trim()).filter(Boolean))].sort(),
     [editors],
@@ -116,7 +89,6 @@ export function PlanEditor({
       const key = editorPlatformKey(editor)
       return {
         editor, raw, ...parsed, sent,
-        lastSentAt: lastSentMap.get(editor.email.toLowerCase()) ?? null,
         checked: !excluded.has(editor.email.toLowerCase()),
         alts: groups.get(key) ?? [editor],
         pinned: false,
@@ -131,14 +103,13 @@ export function PlanEditor({
         return {
           editor: null, raw, ...parsed,
           sent: sentMap.get(email) ?? 0,
-          lastSentAt: lastSentMap.get(email) ?? null,
           checked: true,
           alts: [],
           pinned: true,
         }
       })
     return [...poolRows, ...pinnedRows]
-  }, [picked, sentMap, lastSentMap, excluded, groups, pinned])
+  }, [picked, sentMap, excluded, groups, pinned])
 
   const selected = rows.filter((r) => r.checked)
   const recipientKey = selected.map((r) => r.raw).join('\n')
@@ -155,8 +126,6 @@ export function PlanEditor({
   const visible = rows.filter((r) => {
     const q = query.trim().toLowerCase()
     if (q && ![r.editor?.name ?? r.name, r.email, r.editor?.platform ?? '', ...(r.editor?.style ?? []), ...(r.editor?.work_type ?? [])].join(' ').toLowerCase().includes(q)) return false
-    if (filter === 'pending' && r.sent > 0) return false
-    if (filter === 'sent' && r.sent === 0) return false
     return true
   })
 
@@ -328,24 +297,6 @@ export function PlanEditor({
     })
   }
 
-  const resend = async (email: string) => {
-    const delivery = deliveryByEmail.get(email.toLowerCase())
-    if (!delivery) { toast('没有找到可重发的投递记录', 'warning'); return }
-    const ok = await confirm({
-      title: '重新发送？',
-      message: `将把这位编辑的稿件邮件重新发送一份到 ${email}，使用原发件账号。`,
-      confirmLabel: '重新发送',
-    })
-    if (!ok) return
-    setResending(email.toLowerCase())
-    try {
-      await api.resendDelivery(delivery.id)
-      toast('已重新发送', 'success')
-      await onReloadDeliveries()
-    } catch (e) { toast(String(e), 'error') }
-    finally { setResending(null) }
-  }
-
   const testSend = async () => {
     if (!form.title.trim() || !form.body.trim()) { toast('请先填作品名称和邮件正文', 'warning'); return }
     const account = selectedAccounts[0]
@@ -386,9 +337,7 @@ export function PlanEditor({
 
   const emptyHint = !editors.length
     ? <>还没有编辑。去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 里先存邮箱、风格和作品类型。</>
-    : editors.every((e) => e.enabled === false)
-      ? <>编辑都已暂停。去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 里启动后再筛选。</>
-      : !form.style && !matchGenres.size
+    : !form.style && !matchGenres.size
         ? '先选好作品风格或作品类型，名单会按这两项匹配，每个平台只出一位。'
         : excludedTypes.size
           ? '当前条件下没有编辑。可减少排除的作品类型，或改风格 / 作品类型。'
@@ -396,11 +345,7 @@ export function PlanEditor({
 
   const visibleEmptyHint = query.trim()
     ? '没有符合当前搜索的编辑。换个姓名、邮箱、平台或标签试试。'
-    : filter === 'pending'
-      ? '当前名单里没有未投过的编辑。'
-      : filter === 'sent'
-        ? '当前名单里还没有投过的编辑。'
-        : emptyHint
+    : emptyHint
 
   return (
     <div className="plan-desk">
@@ -472,7 +417,7 @@ export function PlanEditor({
                 </div>
               ) : (
                 <p className="field-filter-empty">
-                  {editors.some((e) => e.enabled !== false)
+                  {editors.length
                     ? '编辑库里还没有作品类型。去编辑页补上后再筛。'
                     : '还没有编辑，先去编辑页存收稿人。'}
                 </p>
@@ -494,7 +439,7 @@ export function PlanEditor({
           <div className="plan-recipient-card">
             <div className="plan-recipient-info">
               <h3>收件名单</h3>
-              <p>已选 <strong>{selected.length}</strong> / {rows.length} 位 · 未投 {pending} · 已投 {selected.length - pending}</p>
+              <p>已选 <strong>{selected.length}</strong> / {rows.length} 位</p>
             </div>
             <Button size="sm" variant="ghost" onClick={() => setShowRecipients(true)}><Users size={14} />编辑名单</Button>
           </div>
@@ -554,11 +499,11 @@ export function PlanEditor({
       </div>
 
       {showRecipients && (
-        <Modal title="收件名单 · 发送详情" width={880} onClose={() => setShowRecipients(false)}>
+        <Modal title="收件名单" width={880} onClose={() => setShowRecipients(false)}>
           <div className="send-detail-head">
             <div className="send-detail-title">
               <h3>收件名单</h3>
-              <p>已选 {selected.length} / {rows.length} 位 · 已投 {selected.filter((r) => r.sent > 0).length} · 未投 {pending}</p>
+              <p>已选 {selected.length} / {rows.length} 位</p>
             </div>
             <div className="send-detail-actions">
               <label className="plan-search send-detail-search">
@@ -571,15 +516,6 @@ export function PlanEditor({
           </div>
 
           <div className="plan-board-toolbar recipients-toolbar">
-            <div className="plan-tabs">
-              {([
-                ['all', `全部 ${rows.length}`],
-                ['pending', `未投 ${rows.filter((r) => r.sent === 0).length}`],
-                ['sent', `已投 ${rows.filter((r) => r.sent > 0).length}`],
-              ] as const).map(([id, label]) => (
-                <button type="button" key={id} className={filter === id ? 'on' : ''} onClick={() => setFilter(id)}>{label}</button>
-              ))}
-            </div>
             <div className="plan-list-actions">
               <div className="plan-board-meta">
                 <span>显示 {visible.length} 位</span>
@@ -644,7 +580,6 @@ export function PlanEditor({
                   <th>编辑</th>
                   <th className="col-platform">平台</th>
                   <th>风格 / 作品类型</th>
-                  <th className="col-state">发送状态</th>
                   <th className="col-switch" aria-label="换人" />
                 </tr>
               </thead>
@@ -656,7 +591,7 @@ export function PlanEditor({
                   const displayName = r.editor?.name.trim() || r.name
                   const platformLabel = r.pinned ? '名单内' : (r.editor?.platform.trim() || '未填平台')
                   return (
-                    <tr key={r.raw} className={`${r.sent ? 'is-sent' : ''} ${r.checked ? '' : 'is-off'} ${r.pinned ? 'is-pinned' : ''}`}>
+                    <tr key={r.raw} className={`${r.checked ? '' : 'is-off'} ${r.pinned ? 'is-pinned' : ''}`}>
                       <td className="col-check">
                         <input type="checkbox" checked={r.checked} onChange={() => toggleOne(r.email)} aria-label={`${r.checked ? '取消选择' : '选择'} ${displayName}`} />
                       </td>
@@ -677,20 +612,6 @@ export function PlanEditor({
                             {workTypes.map((d) => <span className="chip on tone" key={d}>{d}</span>)}
                           </div>
                         ) : <span className="hint">无标签</span>}
-                      </td>
-                      <td className="col-state">
-                        {r.sent > 0 ? (
-                          <span className="send-state">
-                            <Badge tone="success" dot>已投 {r.sent}</Badge>
-                            {r.lastSentAt && <small>最近 {formatTime(r.lastSentAt)}</small>}
-                            {deliveryByEmail.has(r.email.toLowerCase()) && (
-                              <IconButton title={resending === r.email.toLowerCase() ? '发送中…' : '重新发送该编辑'}
-                                disabled={resending !== null} onClick={() => void resend(r.email)}>
-                                <RotateCcw size={13} />
-                              </IconButton>
-                            )}
-                          </span>
-                        ) : <Badge tone="neutral">未投</Badge>}
                       </td>
                       <td className="col-switch">
                         {!r.pinned && r.alts.length > 1 && (

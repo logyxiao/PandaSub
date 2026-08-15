@@ -143,7 +143,7 @@ export default function App() {
             </aside>
 
             <main className="main">
-              {!hideChrome && (
+              {!hideChrome && active !== 'editors' && (
                 <header className="page-head">
                   <div>
                     <h1 className="page-title">{current.title}</h1>
