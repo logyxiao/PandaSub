@@ -67,6 +67,7 @@ export interface Manuscript {
   style: string
   genres: string[]
   excluded_types?: string[]
+  account_ids: number[]
   subject: string
   file_name: string
   has_file?: boolean
@@ -86,6 +87,7 @@ export interface ManuscriptInput {
   style: string
   genres: string[]
   excluded_types?: string[]
+  account_ids: number[]
   subject: string
   file_name: string
   file_data?: number[] | null

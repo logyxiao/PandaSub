@@ -14,6 +14,17 @@ pub fn list_tasks(state: State<'_, AppState>) -> Result<Vec<crate::models::Task>
 }
 
 #[tauri::command]
+pub fn update_task_accounts(state: State<'_, AppState>, id: i64, account_ids: Vec<i64>) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE tasks SET account_ids = ?1 WHERE id = ?2",
+        rusqlite::params![json!(account_ids).to_string(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_task(state: State<'_, AppState>, id: i64) -> Result<Option<crate::models::Task>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     store::load_task(&conn, id)

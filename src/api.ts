@@ -26,6 +26,7 @@ export const api = {
 
   listTasks: () => invoke<Task[]>('list_tasks'),
   createTask: (input: TaskInput) => invoke<number>('create_task', { input }),
+  updateTaskAccounts: (id: number, accountIds: number[]) => invoke('update_task_accounts', { id, accountIds }),
   deleteTask: (id: number) => invoke('delete_task', { id }),
   startTask: (id: number) => invoke('start_task', { id }),
   pauseTask: (id: number) => invoke('pause_task', { id }),

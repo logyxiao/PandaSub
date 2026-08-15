@@ -58,6 +58,9 @@ pub struct Manuscript {
     /// 排除的作品类型（不参与匹配筛选），随计划持久化。
     #[serde(default)]
     pub excluded_types: Vec<String>,
+    /// 计划指定的投稿邮箱（留空表示使用全部启用邮箱）。
+    #[serde(default)]
+    pub account_ids: Vec<i64>,
     #[serde(default)]
     pub subject: String,
     #[serde(default)]
@@ -98,6 +101,9 @@ pub struct ManuscriptInput {
     /// 排除的作品类型（不参与匹配筛选），随计划持久化。
     #[serde(default)]
     pub excluded_types: Vec<String>,
+    /// 计划指定的投稿邮箱（留空表示使用全部启用邮箱）。
+    #[serde(default)]
+    pub account_ids: Vec<i64>,
     #[serde(default)]
     pub subject: String,
     #[serde(default)]

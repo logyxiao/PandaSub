@@ -1,22 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Clock3, FileUp, Plus, Search, Send, Users } from 'lucide-react'
+import { ArrowLeft, Check, Clock3, FileUp, Plus, Send } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/feedback'
 import { Button, Select } from '../components/ui'
-import { isValidEmail, parseRecipient } from '../format'
-import { useNav } from '../nav'
+import { isValidEmail, parseRecipient, providerName } from '../format'
 import type { Account, Delivery, Editor, EditorInput, Manuscript, ManuscriptInput, TaskInput } from '../types'
 import {
-  CATEGORIES, GENRES, SCHEDULE_OPTIONS, STYLES, editorWorkTypeOptions, isPlanStyle, normalizeEditorTags,
-  categoryFromWords, defaultBody, defaultSubject, editorPlatformKey, editorRecipient, estimateAutoMinutes, fillPlaceholders, pickOneEditorPerPlatform, sentCountByEmail,
+  CATEGORIES, GENRES, STYLES, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
+  fillPlaceholders, isPlanStyle, normalizeEditorTags, categoryFromWords, defaultBody, defaultSubject, pickOneEditorPerPlatform, sentCountByEmail,
 } from './planShared'
+import { EditorsList } from './Editors'
 
 const emptyEditor: EditorInput = { platform: '', name: '', email: '', style: [], work_type: [] }
 
 export function PlanEditor({
   editing, editors, onReloadEditors, deliveries, enabledAccounts,
-  form, setForm, taskForm, setTaskForm, scheduledInput, setScheduledInput,
+  form, setForm, taskForm, setTaskForm,
   saving, onClose, onSaveDraft, onSaveAndSend, onImportFile,
 }: {
   editing: Manuscript | null
@@ -28,8 +28,6 @@ export function PlanEditor({
   setForm: (next: ManuscriptInput | ((f: ManuscriptInput) => ManuscriptInput)) => void
   taskForm: TaskInput
   setTaskForm: (next: TaskInput | ((f: TaskInput) => TaskInput)) => void
-  scheduledInput: string
-  setScheduledInput: (v: string) => void
   saving: boolean
   onClose: () => void
   onSaveDraft: () => void
@@ -37,23 +35,17 @@ export function PlanEditor({
   onImportFile: (file: File | null) => void
 }) {
   const toast = useToast()
-  const { go } = useNav()
   const fileRef = useRef<HTMLInputElement>(null)
-  const [query, setQuery] = useState('')
-  const [showRecipients, setShowRecipients] = useState(false)
+  const [step, setStep] = useState(1)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
+  const [orphans, setOrphans] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
-  const [excluded, setExcluded] = useState<Set<string>>(() => new Set())
-  const [matchGenres, setMatchGenres] = useState<Set<string>>(() => new Set())
-  const [excludedTypes, setExcludedTypes] = useState<Set<string>>(() => new Set())
-  const [pickedByPlatform, setPickedByPlatform] = useState<Record<string, string>>({})
   const [mailDirty, setMailDirty] = useState(() => Boolean(editing && (form.subject.trim() || form.body.trim())))
   const [showEditorForm, setShowEditorForm] = useState(false)
   const [editorForm, setEditorForm] = useState<EditorInput>(emptyEditor)
   const [customWorkType, setCustomWorkType] = useState('')
   const [savingEditor, setSavingEditor] = useState(false)
   const [testing, setTesting] = useState(false)
-  // 名单里已保存、但不在当前匹配池的收件人（改过类型、编辑库调整后不再匹配等），保留显示不丢。
-  const [pinned, setPinned] = useState<string[]>([])
   const initRef = useRef(false)
 
   const sentMap = useMemo(() => sentCountByEmail(deliveries), [deliveries])
@@ -75,47 +67,39 @@ export function PlanEditor({
     ]
   }, [workTypeOptions, form.genres])
 
-  const { picked, groups } = useMemo(
-    () => pickOneEditorPerPlatform(editors, form.style, [...matchGenres], sentMap, pickedByPlatform, excludedTypes),
-    [editors, form.style, matchGenres, sentMap, pickedByPlatform, excludedTypes],
+  // 初始选中：编辑已有计划 → 恢复保存的收件人；新建 → 进入第二步时自动匹配（见 goToStep2）。
+  useEffect(() => {
+    if (initRef.current) return
+    initRef.current = true
+    if (!editing) return
+    const ids = new Set<number>()
+    const orphanList: string[] = []
+    for (const r of form.recipients) {
+      const email = parseRecipient(r).email.toLowerCase()
+      const lib = editors.find((e) => e.email.toLowerCase() === email)
+      if (lib) ids.add(lib.id)
+      else orphanList.push(r)
+    }
+    setSelectedIds(ids)
+    setOrphans(orphanList)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在进入时初始化一次
+  }, [])
+
+  const selectedEditors = useMemo(
+    () => editors.filter((e) => selectedIds.has(e.id)),
+    [editors, selectedIds],
   )
 
-  const rows = useMemo(() => {
-    const poolEmails = new Set(picked.map((e) => e.email.toLowerCase()))
-    const poolRows = picked.map((editor) => {
-      const raw = editorRecipient(editor)
-      const parsed = parseRecipient(raw)
-      const sent = sentMap.get(editor.email.toLowerCase()) ?? 0
-      const key = editorPlatformKey(editor)
-      return {
-        editor, raw, ...parsed, sent,
-        checked: !excluded.has(editor.email.toLowerCase()),
-        alts: groups.get(key) ?? [editor],
-        pinned: false,
-      }
-    })
-    // 固定收件人：不在匹配池里的已保存收件人，去重后追加显示。
-    const pinnedRows = pinned
-      .filter((raw) => !poolEmails.has(parseRecipient(raw).email.toLowerCase()))
-      .map((raw) => {
-        const parsed = parseRecipient(raw)
-        const email = parsed.email.toLowerCase()
-        return {
-          editor: null, raw, ...parsed,
-          sent: sentMap.get(email) ?? 0,
-          checked: true,
-          alts: [],
-          pinned: true,
-        }
-      })
-    return [...poolRows, ...pinnedRows]
-  }, [picked, sentMap, excluded, groups, pinned])
+  // 收件名单 = 勾选的编辑 + 已保存但不在编辑库里的收件人（保留不丢）。
+  const recipients = useMemo(
+    () => [...selectedEditors.map(editorRecipient), ...orphans],
+    [selectedEditors, orphans],
+  )
 
-  const selected = rows.filter((r) => r.checked)
-  const recipientKey = selected.map((r) => r.raw).join('\n')
-  const pending = selected.filter((r) => r.sent === 0).length
   // 发送时默认跳过已投过的编辑，只统计未投数量。
+  const pending = recipients.filter((r) => (sentMap.get(parseRecipient(r).email.toLowerCase()) ?? 0) === 0).length
   const sendCount = pending
+
   const selectedAccounts = useMemo(() => {
     if (!taskForm.account_ids.length) return enabledAccounts
     return enabledAccounts.filter((account) => taskForm.account_ids.includes(account.id))
@@ -123,50 +107,23 @@ export function PlanEditor({
   const minutes = estimateAutoMinutes(sendCount)
   const ready = Boolean(form.title.trim() && form.body.trim() && sendCount > 0 && selectedAccounts.length)
 
-  const visible = rows.filter((r) => {
-    const q = query.trim().toLowerCase()
-    if (q && ![r.editor?.name ?? r.name, r.email, r.editor?.platform ?? '', ...(r.editor?.style ?? []), ...(r.editor?.work_type ?? [])].join(' ').toLowerCase().includes(q)) return false
-    return true
-  })
-
-  // 中途改风格 / 作品类型：重新按新类型匹配，清掉之前的排除与固定收件人（挂载那一次交给下面的初始化）。
+  // 勾选变化写回 form.recipients
   useEffect(() => {
-    if (!initRef.current) return
-    setExcluded(new Set())
-    setPinned([])
-  }, [form.style, form.genres])
-
-  // 匹配的作品类型默认取作品已勾选的类型；编辑已有计划时额外恢复保存的收件名单状态与排除类型。
-  useEffect(() => {
-    if (initRef.current) return
-    initRef.current = true
-    setMatchGenres(new Set(form.genres))
-    if (form.excluded_types?.length) setExcludedTypes(new Set(form.excluded_types))
-    if (!editing) return
-    const savedEmails = new Set(form.recipients.map((r) => parseRecipient(r).email.toLowerCase()))
-    const poolEmails = new Set(picked.map((e) => e.email.toLowerCase()))
-    setExcluded(new Set(picked.filter((e) => !savedEmails.has(e.email.toLowerCase())).map((e) => e.email.toLowerCase())))
-    setPinned(form.recipients.filter((r) => !poolEmails.has(parseRecipient(r).email.toLowerCase())))
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在进入时按保存的数据初始化一次
-  }, [])
-
-  // 排除的作品类型随计划持久化：改动即写回 form，保存草稿/发送时一并入库。
-  useEffect(() => {
-    setForm((f) => {
-      const next = [...excludedTypes].sort()
-      const cur = f.excluded_types ?? []
-      if (cur.length === next.length && cur.every((t, i) => t === next[i])) return f
-      return { ...f, excluded_types: next }
-    })
-  }, [excludedTypes, setForm])
-
-  useEffect(() => {
-    const next = recipientKey ? recipientKey.split('\n') : []
+    const next = recipients
     setForm((f) => {
       if (f.recipients.length === next.length && f.recipients.every((item, i) => item === next[i])) return f
       return { ...f, recipients: next }
     })
-  }, [recipientKey, setForm])
+  }, [recipients, setForm])
+
+  // 邮箱勾选随计划持久化：写回 form.account_ids，保存草稿/发送时一并入库。
+  useEffect(() => {
+    setForm((f) => {
+      const next = taskForm.account_ids
+      if (f.account_ids.length === next.length && f.account_ids.every((x, i) => x === next[i])) return f
+      return { ...f, account_ids: next }
+    })
+  }, [taskForm.account_ids, setForm])
 
   useEffect(() => {
     const category = categoryFromWords(form.word_count)
@@ -195,37 +152,22 @@ export function PlanEditor({
     return () => window.removeEventListener('keydown', onKey)
   }, [onSaveDraft])
 
-  const toggleOne = (email: string) => {
-    const key = email.toLowerCase()
-    // 不在匹配池里的固定收件人，勾掉即从名单移除。
-    if (!picked.some((e) => e.email.toLowerCase() === key)) {
-      setPinned((prev) => prev.filter((r) => parseRecipient(r).email.toLowerCase() !== key))
-      return
+  const toggleSelect = (editor: Editor, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(editor.id)
+      else next.delete(editor.id)
+      return next
+    })
+  }
+
+  // 新建且尚未手动勾选时，进入第二步自动按风格/作品类型匹配出候选编辑（每个平台一位），用户可自行增删。
+  const goToStep2 = () => {
+    if (!editing && selectedIds.size === 0) {
+      const { picked: auto } = pickOneEditorPerPlatform(editors, form.style, form.genres, sentMap)
+      if (auto.length) setSelectedIds(new Set(auto.map((e) => e.id)))
     }
-    setExcluded((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
-
-  const toggleMatchGenre = (tag: string) => {
-    setMatchGenres((prev) => {
-      const next = new Set(prev)
-      if (next.has(tag)) next.delete(tag)
-      else next.add(tag)
-      return next
-    })
-  }
-
-  const toggleExcludedType = (tag: string) => {
-    setExcludedTypes((prev) => {
-      const next = new Set(prev)
-      if (next.has(tag)) next.delete(tag)
-      else next.add(tag)
-      return next
-    })
+    setStep(2)
   }
 
   const openAddEditor = () => {
@@ -268,33 +210,13 @@ export function PlanEditor({
     }
     setSavingEditor(true)
     try {
-      await api.addEditor(payload)
+      const id = await api.addEditor(payload)
       await onReloadEditors()
-      setExcluded((prev) => {
-        const next = new Set(prev)
-        next.delete(email)
-        return next
-      })
-      setPickedByPlatform((prev) => ({
-        ...prev,
-        [editorPlatformKey({ platform: editorForm.platform, email })]: email,
-      }))
+      setSelectedIds((prev) => new Set(prev).add(id))
       setShowEditorForm(false)
-      toast('编辑已加入资料库。同一平台只会保留一位。', 'success')
+      toast('编辑已加入资料库', 'success')
     } catch (e) { toast(String(e), 'error') }
     finally { setSavingEditor(false) }
-  }
-
-  const setPoolChecked = (on: boolean) => {
-    setExcluded((prev) => {
-      const next = new Set(prev)
-      for (const row of visible) {
-        if (row.pinned) continue
-        if (on) next.delete(row.email.toLowerCase())
-        else next.add(row.email.toLowerCase())
-      }
-      return next
-    })
   }
 
   const testSend = async () => {
@@ -302,11 +224,11 @@ export function PlanEditor({
     const account = selectedAccounts[0]
     if (!account) { toast('还没有勾选参与发送的邮箱，请先勾选一个', 'warning'); return }
     // 测试邮件只发到发件邮箱自己，绝不发给编辑。有勾选编辑时按第一位编辑填充占位符，方便预览实际效果。
-    const first = selected[0]
+    const first = selectedEditors[0]
     setTesting(true)
     try {
-      const subject = fillPlaceholders(form.subject.trim() || form.title, first?.raw ?? '', form.title)
-      const body = fillPlaceholders(form.body, first?.raw ?? '', form.title)
+      const subject = fillPlaceholders(form.subject.trim() || form.title, first ? editorRecipient(first) : '', form.title)
+      const body = fillPlaceholders(form.body, first ? editorRecipient(first) : '', form.title)
       // 测试邮件也带上附件：新导入的文件直接用字节；编辑已有计划时按稿件 id 从数据库读已保存的附件。
       const attachment = form.file_data?.length
         ? { name: form.file_name, data: form.file_data }
@@ -335,312 +257,193 @@ export function PlanEditor({
     })
   }
 
-  const emptyHint = !editors.length
-    ? <>还没有编辑。去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 里先存邮箱、风格和作品类型。</>
-    : !form.style && !matchGenres.size
-        ? '先选好作品风格或作品类型，名单会按这两项匹配，每个平台只出一位。'
-        : excludedTypes.size
-          ? '当前条件下没有编辑。可减少排除的作品类型，或改风格 / 作品类型。'
-          : '没有对上当前风格或作品类型的编辑。可以改风格、作品类型，或手动添加。'
-
-  const visibleEmptyHint = query.trim()
-    ? '没有符合当前搜索的编辑。换个姓名、邮箱、平台或标签试试。'
-    : emptyHint
+  const steps = [
+    { n: 1, label: '填写投稿内容' },
+    { n: 2, label: '选择编辑' },
+    { n: 3, label: '选择发送邮箱' },
+  ]
 
   return (
     <div className="plan-desk">
       <header className="plan-bar">
-        <button className="plan-back" onClick={onClose}><ArrowLeft size={16} />返回</button>
-        <strong className="plan-bar-name">{form.title.trim() || (editing ? '编辑计划' : '新建计划')}</strong>
+        <div className="plan-bar-left">
+          <button className="plan-back" onClick={onClose}><ArrowLeft size={16} />返回</button>
+          <strong className="plan-bar-name">{form.title.trim() || (editing ? '编辑计划' : '新建计划')}</strong>
+        </div>
+        <div className="plan-steps" role="tablist" aria-label="新建投稿步骤">
+          {steps.map((s) => (
+            <button key={s.n} type="button" role="tab" aria-selected={step === s.n}
+              className={`plan-step ${step === s.n ? 'on' : ''} ${step > s.n ? 'done' : ''}`}
+              onClick={() => setStep(s.n)}>
+              <i>{s.n}</i>{s.label}
+            </button>
+          ))}
+        </div>
         <div className="plan-bar-actions">
           <Button variant="ghost" disabled={saving} onClick={onSaveDraft}>保存草稿</Button>
-          <Button variant="ghost" disabled={saving || testing} onClick={() => void testSend()}>
-            {testing ? '发送中…' : '测试发送'}
-          </Button>
-          <Button variant="primary" disabled={saving || !ready} onClick={() => onSaveAndSend()}>
-            <Send size={15} />{taskForm.schedule_type === 'scheduled' ? '预约发送' : '开始发送'}
-          </Button>
         </div>
       </header>
 
-      <div className="plan-split">
-        <section className="plan-sheet">
-          <div className="plan-work-card">
-            <div className="plan-file-title">
-              <div
-                className={`plan-drop ${dragging ? 'is-over' : ''} ${form.file_name ? 'has-file' : ''}`}
-                onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
-                onDragLeave={() => setDragging(false)}
-                onDrop={(e) => { e.preventDefault(); setDragging(false); setMailDirty(false); void onImportFile(e.dataTransfer.files[0] ?? null) }}
-              >
-                <input ref={fileRef} type="file" accept=".docx,.txt,.md,.html,.htm" hidden
-                  onChange={(e) => { setMailDirty(false); void onImportFile(e.target.files?.[0] ?? null); e.target.value = '' }} />
-                <Button variant="ghost" onClick={() => fileRef.current?.click()}><FileUp size={15} />选择文件</Button>
-                <b>{form.file_name || '未选文件'}</b>
-                {(form.file_data || form.has_file) && <small className="file-attach-hint">✓ 发送时会作为附件附带</small>}
-              </div>
-              <input className="plan-title-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="作品名称" />
-            </div>
-
-            <div className="plan-meta">
-              <label>字数
-                <input type="number" min={0} value={form.word_count || ''}
-                  onChange={(e) => setForm({ ...form, word_count: Number(e.target.value) || 0 })} />
-              </label>
-              <label>篇幅
-                <Select value={form.category} onChange={(value) => setForm({ ...form, category: value })} ariaLabel="选择作品篇幅"
-                  options={[{ value: '', label: '未选' }, ...CATEGORIES.map((x) => ({ value: x, label: x }))]} />
-              </label>
-              <label>风格
-                <Select value={form.style} onChange={(value) => setForm({ ...form, style: value })} ariaLabel="选择作品风格"
-                  options={[{ value: '', label: '未选' }, ...STYLES.map((x) => ({ value: x, label: x }))]} />
-              </label>
-            </div>
-
-            <div className="plan-genre-row">
-              <span>作品类型（按编辑库筛选，可多选）</span>
-              {genreChips.length ? (
-                <div className="field-filter-chips">
-                  {genreChips.map(([tag, count]) => (
-                    <button type="button" key={tag} className={`field-chip ${form.genres.includes(tag) ? 'on' : ''}`}
-                      onClick={() => setForm((f) => ({
-                        ...f,
-                        genres: f.genres.includes(tag) ? f.genres.filter((x) => x !== tag) : [...f.genres, tag],
-                      }))}>
-                      {tag}{count > 0 && <small>{count}</small>}
-                    </button>
-                  ))}
+      <div className="plan-step-body">
+        {step === 1 && (
+          <section className="plan-sheet plan-step-1">
+            <div className="plan-work-card">
+              <div className="plan-file-title">
+                <div
+                  className={`plan-drop ${dragging ? 'is-over' : ''} ${form.file_name ? 'has-file' : ''}`}
+                  onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(e) => { e.preventDefault(); setDragging(false); setMailDirty(false); void onImportFile(e.dataTransfer.files[0] ?? null) }}
+                >
+                  <input ref={fileRef} type="file" accept=".docx,.txt,.md,.html,.htm" hidden
+                    onChange={(e) => { setMailDirty(false); void onImportFile(e.target.files?.[0] ?? null); e.target.value = '' }} />
+                  <Button variant="ghost" onClick={() => fileRef.current?.click()}><FileUp size={15} />选择文件</Button>
+                  <b>{form.file_name || '未选文件'}</b>
+                  {(form.file_data || form.has_file) && <small className="file-attach-hint">✓ 发送时会作为附件附带</small>}
                 </div>
-              ) : (
-                <p className="field-filter-empty">
-                  {editors.length
-                    ? '编辑库里还没有作品类型。去编辑页补上后再筛。'
-                    : '还没有编辑，先去编辑页存收稿人。'}
-                </p>
-              )}
-            </div>
+                <input className="plan-title-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="作品名称" />
+              </div>
 
-            <div className="plan-mail">
-              <input value={form.subject} onChange={(e) => { setMailDirty(true); setForm({ ...form, subject: e.target.value }) }}
-                placeholder="标题+字数+作品类型" />
-              <textarea className="plan-body" rows={8} value={form.body}
-                onChange={(e) => { setMailDirty(true); setForm({ ...form, body: e.target.value }) }}
-                placeholder={'尊敬的编辑大大：\n\n辛苦审阅，期待您的意见！'} />
-              {liveCount > 0 && <div className="plan-body-meta">作品 {liveCount} 字</div>}
-            </div>
-          </div>
-        </section>
+              <div className="plan-meta">
+                <label>字数
+                  <input type="number" min={0} value={form.word_count || ''}
+                    onChange={(e) => setForm({ ...form, word_count: Number(e.target.value) || 0 })} />
+                </label>
+                <label>篇幅
+                  <Select value={form.category} onChange={(value) => setForm({ ...form, category: value })} ariaLabel="选择作品篇幅"
+                    options={[{ value: '', label: '未选' }, ...CATEGORIES.map((x) => ({ value: x, label: x }))]} />
+                </label>
+                <label>风格
+                  <Select value={form.style} onChange={(value) => setForm({ ...form, style: value })} ariaLabel="选择作品风格"
+                    options={[{ value: '', label: '未选' }, ...STYLES.map((x) => ({ value: x, label: x }))]} />
+                </label>
+              </div>
 
-        <aside className="plan-board">
-          <div className="plan-recipient-card">
-            <div className="plan-recipient-info">
-              <h3>收件名单</h3>
-              <p>已选 <strong>{selected.length}</strong> / {rows.length} 位</p>
-            </div>
-            <Button size="sm" variant="ghost" onClick={() => setShowRecipients(true)}><Users size={14} />编辑名单</Button>
-          </div>
+              <div className="plan-genre-row">
+                <span>作品类型（按编辑库筛选，可多选）</span>
+                {genreChips.length ? (
+                  <div className="field-filter-chips">
+                    {genreChips.map(([tag, count]) => (
+                      <button type="button" key={tag} className={`field-chip ${form.genres.includes(tag) ? 'on' : ''}`}
+                        onClick={() => setForm((f) => ({
+                          ...f,
+                          genres: f.genres.includes(tag) ? f.genres.filter((x) => x !== tag) : [...f.genres, tag],
+                        }))}>
+                        {tag}{count > 0 && <small>{count}</small>}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="field-filter-empty">
+                    {editors.length
+                      ? '编辑库里还没有作品类型。去编辑页补上后再筛。'
+                      : '还没有编辑，先去编辑页存收稿人。'}
+                  </p>
+                )}
+              </div>
 
-          <div className="plan-send">
-            <div className="plan-accounts">
-              <span className="plan-accounts-label">参与发送的邮箱</span>
-              <div className="plan-accounts-list">
+              <div className="plan-mail">
+                <input value={form.subject} onChange={(e) => { setMailDirty(true); setForm({ ...form, subject: e.target.value }) }}
+                  placeholder="标题+字数+作品类型" />
+                <textarea className="plan-body" rows={5} value={form.body}
+                  onChange={(e) => { setMailDirty(true); setForm({ ...form, body: e.target.value }) }}
+                  placeholder={'尊敬的编辑大大：\n\n辛苦审阅，期待您的意见！'} />
+                {liveCount > 0 && <div className="plan-body-meta">作品 {liveCount} 字</div>}
+              </div>
+            </div>
+            <div className="step-actions">
+              <Button variant="primary" onClick={goToStep2}>下一步：选择编辑</Button>
+            </div>
+          </section>
+        )}
+
+        {step === 2 && (
+          <section className="plan-step-2">
+            <div className="step-toolbar">
+              <span className="step-meta">已选 <strong>{selectedIds.size}</strong> / {editors.length} 位编辑</span>
+              <Button size="sm" onClick={openAddEditor}><Plus size={14} />添加编辑</Button>
+            </div>
+            <EditorsList
+              items={editors}
+              selectable
+              selectedIds={selectedIds}
+              onToggleSelect={toggleSelect}
+              pageSize={6}
+              emptyText="还没有编辑，先去编辑页存收稿人，也可以点右上角「添加编辑」。"
+            />
+            {!!orphans.length && (
+              <p className="step-orphan">另有 {orphans.length} 位保存过的收件人不在编辑库中，将保留发送。</p>
+            )}
+            <div className="step-actions">
+              <Button onClick={() => setStep(1)}>上一步</Button>
+              <Button variant="primary" onClick={() => setStep(3)}>下一步：选择邮箱</Button>
+            </div>
+          </section>
+        )}
+
+        {step === 3 && (
+          <section className="plan-step-3">
+            <div className="plan-work-card">
+              <h3 className="plan-send-title">选择发送邮箱</h3>
+              <p className="plan-send-desc">勾选参与发送的邮箱，多选时按顺序轮流使用。</p>
+              <div className="account-pick-list">
                 {enabledAccounts.map((account) => {
                   const on = !taskForm.account_ids.length || taskForm.account_ids.includes(account.id)
                   return (
-                    <label key={account.id} className={`plan-account-chip ${on ? 'on' : ''}`}>
-                      <input type="checkbox" checked={on} onChange={() => toggleAccount(account.id)} />
-                      <span>{account.email}</span>
+                    <label key={account.id} className={`account-pick-row ${on ? 'on' : ''}`}>
+                      <input type="checkbox" checked={on} onChange={() => toggleAccount(account.id)}
+                        aria-label={`${on ? '取消选择' : '选择'} ${account.email}`} />
+                      <span className="account-pick-main">
+                        <b>{account.email}</b>
+                        <small>{account.sender_name || '未设笔名'} · {providerName[account.provider] ?? account.provider}</small>
+                      </span>
+                      <span className="account-pick-check"><Check size={15} /></span>
                     </label>
                   )
                 })}
-                {!enabledAccounts.length && <span className="hint">还没有启用邮箱，去「邮箱」页添加并启用</span>}
-              </div>
-            </div>
-            <div className="plan-send-fields">
-              <label className="plan-setting-field">时间
-                <Select
-                  value={taskForm.schedule_type}
-                  onChange={(value) => setTaskForm({ ...taskForm, schedule_type: value })}
-                  ariaLabel="选择发送时间"
-                  className="plan-send-select"
-                  options={SCHEDULE_OPTIONS.map((o) => ({ value: o.value, label: o.label, description: o.description }))}
-                />
-              </label>
-            </div>
-            {taskForm.schedule_type === 'scheduled' && (
-              <input type="datetime-local" value={scheduledInput} onChange={(e) => setScheduledInput(e.target.value)} />
-            )}
-            {taskForm.schedule_type === 'loop' && (
-              <p className="field-hint">循环是这份名单投完后再投一遍，需手动停止。不是等上一个计划结束。</p>
-            )}
-            <div className="plan-rhythm">
-              <Clock3 size={15} />
-              <div>
-                <strong>固定节奏</strong>
-                <p>每封邮件间隔 2–4 分钟随机发送，时间点偏向 3 分钟，更像人工投稿。无需设置频次。</p>
-              </div>
-            </div>
-            <div className="plan-send-summary">
-              <div className="plan-estimate">
-                <Clock3 size={15} />
-                <span>{sendCount > 0 ? `约 ${minutes} 分钟发完 ${sendCount} 封` : '等待选择编辑'}</span>
-              </div>
-            </div>
-            {!enabledAccounts.length && <p className="warn-text">还没有可用发件邮箱，只能先存草稿。</p>}
-            {!ready && blockers.length > 0 && (
-              <p className="warn-text">还不能发送：{blockers.join('、')}。测试发送会把一封预览邮件发到你的发件邮箱（勾选的第一个邮箱），不会发给编辑。</p>
-            )}
-          </div>
-        </aside>
-      </div>
-
-      {showRecipients && (
-        <Modal title="收件名单" width={880} onClose={() => setShowRecipients(false)}>
-          <div className="send-detail-head">
-            <div className="send-detail-title">
-              <h3>收件名单</h3>
-              <p>已选 {selected.length} / {rows.length} 位</p>
-            </div>
-            <div className="send-detail-actions">
-              <label className="plan-search send-detail-search">
-                <Search size={14} />
-                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="姓名、邮箱或平台" />
-              </label>
-              <Button size="sm" variant="ghost" onClick={openAddEditor}><Plus size={14} />添加编辑</Button>
-              <Button size="sm" variant="primary" onClick={() => setShowRecipients(false)}>完成</Button>
-            </div>
-          </div>
-
-          <div className="plan-board-toolbar recipients-toolbar">
-            <div className="plan-list-actions">
-              <div className="plan-board-meta">
-                <span>显示 {visible.length} 位</span>
-                {!!visible.length && (
-                  <div className="plan-bulk">
-                    <button type="button" onClick={() => setPoolChecked(true)}>全选</button>
-                    <button type="button" onClick={() => setPoolChecked(false)}>取消</button>
-                  </div>
+                {!enabledAccounts.length && (
+                  <p className="account-pick-empty">还没有启用邮箱，去「邮箱」页添加并启用后再来。</p>
                 )}
               </div>
             </div>
-          </div>
 
-          <div className="plan-exclude-bar">
-            <span className="plan-exclude-label">作品类型</span>
-            <div className="plan-exclude-chips">
-              {genreChips.map(([tag, count]) => (
-                <button type="button" key={tag}
-                  className={`plan-exclude-chip ${matchGenres.has(tag) ? 'on' : ''}`}
-                  onClick={() => toggleMatchGenre(tag)}
-                  title={matchGenres.has(tag) ? `不参与匹配「${tag}」` : `参与匹配「${tag}」`}>
-                  {tag}<small>{count}</small>
-                </button>
-              ))}
-            </div>
-            <div className="plan-exclude-ops">
-              <button type="button" className="plan-exclude-clear" onClick={() => setMatchGenres(new Set())}>清空</button>
-              <button type="button" className="plan-exclude-clear" onClick={() => setMatchGenres(new Set(genreChips.map(([tag]) => tag)))}>全部</button>
-            </div>
-          </div>
-
-          {!matchGenres.size && (
-            <p className="plan-genres-empty plan-genres-hint">未选作品类型，名单将只按风格匹配。</p>
-          )}
-
-          {!!genreChips.length && (
-            <div className="plan-exclude-bar">
-              <span className="plan-exclude-label">排除作品类型</span>
-              <div className="plan-exclude-chips">
-                {genreChips.map(([tag, count]) => (
-                  <button type="button" key={tag}
-                    className={`plan-exclude-chip danger ${excludedTypes.has(tag) ? 'on' : ''}`}
-                    onClick={() => toggleExcludedType(tag)}
-                    title={excludedTypes.has(tag) ? `取消排除「${tag}」` : `排除「${tag}」`}>
-                    {tag}<small>{count}</small>
-                  </button>
-                ))}
+            <div className="plan-work-card plan-send-summary-card">
+              <div className="plan-send-summary">
+                <div className="plan-estimate">
+                  <Clock3 size={15} />
+                  <span>已选编辑 {recipients.length} 位{orphans.length ? `（含 ${orphans.length} 位不在编辑库）` : ''}</span>
+                </div>
+                <div className="plan-estimate">
+                  <Clock3 size={15} />
+                  <span>{sendCount > 0 ? `约 ${minutes} 分钟发完 ${sendCount} 封` : '等待选择编辑'}</span>
+                </div>
               </div>
-              {!!excludedTypes.size && (
-                <button type="button" className="plan-exclude-clear" onClick={() => setExcludedTypes(new Set())}>
-                  清空（{excludedTypes.size}）
-                </button>
+              <div className="plan-rhythm">
+                <Clock3 size={15} />
+                <div>
+                  <strong>固定节奏</strong>
+                  <p>每封邮件间隔 2–4 分钟随机发送，时间点偏向 3 分钟，更像人工投稿。无需设置频次。</p>
+                </div>
+              </div>
+              {!enabledAccounts.length && <p className="warn-text">还没有可用发件邮箱，只能先存草稿。</p>}
+              {!ready && blockers.length > 0 && (
+                <p className="warn-text">还不能发送：{blockers.join('、')}。测试发送会把一封预览邮件发到你的发件邮箱（勾选的第一个邮箱），不会发给编辑。</p>
               )}
+              <div className="plan-send-actions">
+                <Button variant="ghost" disabled={saving || testing} onClick={() => void testSend()}>
+                  {testing ? '发送中…' : '测试发送'}
+                </Button>
+                <Button variant="primary" disabled={saving || !ready} onClick={() => onSaveAndSend()}>
+                  <Send size={15} />开始发送
+                </Button>
+              </div>
             </div>
-          )}
-
-          <div className="recipients-table-wrap">
-            <table className="recipients-table">
-              <thead>
-                <tr>
-                  <th className="col-check" aria-label="选择" />
-                  <th>编辑</th>
-                  <th className="col-platform">平台</th>
-                  <th>风格 / 作品类型</th>
-                  <th className="col-switch" aria-label="换人" />
-                </tr>
-              </thead>
-              <tbody>
-                {visible.map((r) => {
-                  const styles = r.editor?.style ?? []
-                  const workTypes = r.editor?.work_type ?? []
-                  const tags = [...new Set([...styles, ...workTypes])]
-                  const displayName = r.editor?.name.trim() || r.name
-                  const platformLabel = r.pinned ? '名单内' : (r.editor?.platform.trim() || '未填平台')
-                  return (
-                    <tr key={r.raw} className={`${r.checked ? '' : 'is-off'} ${r.pinned ? 'is-pinned' : ''}`}>
-                      <td className="col-check">
-                        <input type="checkbox" checked={r.checked} onChange={() => toggleOne(r.email)} aria-label={`${r.checked ? '取消选择' : '选择'} ${displayName}`} />
-                      </td>
-                      <td className="recipients-editor">
-                        <b>{displayName}</b>
-                        <small>{r.email}</small>
-                      </td>
-                      <td className="col-platform">
-                        {r.pinned
-                          ? <span className="chip on">{platformLabel}</span>
-                          : <span className="recipients-platform">{platformLabel}</span>}
-                      </td>
-                      <td>
-                        {tags.length ? (
-                          <div className="editor-row-tags recipients-tags">
-                            {styles.map((d) => <span className="chip on" key={d}>{d}</span>)}
-                            {!!styles.length && !!workTypes.length && <i className="editor-tag-divider" />}
-                            {workTypes.map((d) => <span className="chip on tone" key={d}>{d}</span>)}
-                          </div>
-                        ) : <span className="hint">无标签</span>}
-                      </td>
-                      <td className="col-switch">
-                        {!r.pinned && r.alts.length > 1 && (
-                          <Select
-                            value={r.email}
-                            className="plan-alt-select"
-                            ariaLabel={`${r.editor?.platform || '该平台'}换一位编辑`}
-                            onChange={(next) => {
-                              const email = String(next).toLowerCase()
-                              setPickedByPlatform((prev) => ({ ...prev, [editorPlatformKey(r.editor!)]: email }))
-                              setExcluded((prev) => {
-                                const copy = new Set(prev)
-                                copy.delete(email)
-                                return copy
-                              })
-                            }}
-                            options={r.alts.map((alt) => ({
-                              value: alt.email,
-                              label: alt.name.trim() || alt.email,
-                              description: alt.email === r.email ? '当前' : alt.email,
-                            }))}
-                          />
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-            {!visible.length && <p className="plan-empty">{visibleEmptyHint}</p>}
-          </div>
-        </Modal>
-      )}
+            <div className="step-actions">
+              <Button onClick={() => setStep(2)}>上一步</Button>
+            </div>
+          </section>
+        )}
+      </div>
 
       {showEditorForm && (
         <Modal title="添加编辑" width={520}

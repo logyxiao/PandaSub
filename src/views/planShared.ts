@@ -64,7 +64,7 @@ export const TEMPLATES = [
 export const emptyManuscript: ManuscriptInput = {
   title: '', body: '', content_type: 'text/plain', recipients: [], sender_name: '',
   word_count: 0, category: '', reader_emotion: '', style: '',
-  genres: [], excluded_types: [], subject: '', file_name: '',
+  genres: [], excluded_types: [], account_ids: [], subject: '', file_name: '',
 }
 
 export function countChars(text: string) {
@@ -116,7 +116,7 @@ export function toInput(m: Manuscript): ManuscriptInput {
     title: m.title, body: m.body, content_type: m.content_type, recipients: m.recipients,
     sender_name: m.sender_name, word_count: m.word_count, category: m.category,
     reader_emotion: m.reader_emotion, style: m.style,
-    genres: m.genres ?? [], excluded_types: m.excluded_types ?? [], subject: m.subject,
+    genres: m.genres ?? [], excluded_types: m.excluded_types ?? [], account_ids: m.account_ids ?? [], subject: m.subject,
     file_name: m.file_name, has_file: m.has_file,
   }
 }

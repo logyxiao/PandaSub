@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS manuscripts (
   style TEXT NOT NULL DEFAULT '',
   genres TEXT NOT NULL DEFAULT '[]',
   excluded_types TEXT NOT NULL DEFAULT '[]',
+  account_ids TEXT NOT NULL DEFAULT '[]',
   subject TEXT NOT NULL DEFAULT '',
   file_name TEXT NOT NULL DEFAULT '',
   file_data BLOB,
@@ -133,6 +134,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_task_account_columns(&connection)?;
     add_task_log_recipient_column(&connection)?;
     add_manuscript_file_column(&connection)?;
+    add_manuscript_account_ids_column(&connection)?;
     add_reply_accepted_column(&connection)?;
     add_reply_accepted_column(&connection)?;
     connection
@@ -467,6 +469,27 @@ fn add_reply_accepted_column(conn: &Connection) -> Result<(), String> {
     if table_lacks_column(conn, "replies", "accepted") {
         conn.execute(
             "ALTER TABLE replies ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn add_manuscript_account_ids_column(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'manuscripts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "manuscripts", "account_ids") {
+        conn.execute(
+            "ALTER TABLE manuscripts ADD COLUMN account_ids TEXT NOT NULL DEFAULT '[]'",
             [],
         )
         .map_err(|e| e.to_string())?;

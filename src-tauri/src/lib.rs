@@ -147,6 +147,7 @@ pub fn run() {
             commands::list_tasks,
             commands::get_task,
             commands::create_task,
+            commands::update_task_accounts,
             commands::delete_task,
             commands::start_task,
             commands::pause_task,

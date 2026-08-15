@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { FileUp, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, onTask } from '../api'
+import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, RuntimeTrack } from '../components/ui'
 import { formatTime, fromDbTime, isValidEmail, parseRecipient, statusLabel, taskTone, toDbTime } from '../format'
@@ -26,6 +27,8 @@ export function PlansView() {
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<Manuscript | null>(null)
   const [showEditor, setShowEditor] = useState(false)
+  const [accountFor, setAccountFor] = useState<Manuscript | null>(null)
+  const [draftIds, setDraftIds] = useState<number[]>([])
   const [detail, setDetail] = useState<Manuscript | null>(null)
   const [form, setForm] = useState<ManuscriptInput>(emptyManuscript)
   const [taskForm, setTaskForm] = useState<TaskInput>(emptyTask)
@@ -87,7 +90,7 @@ export function PlansView() {
     setTaskForm({
       name: task?.name || m.title,
       manuscript_ids: [m.id],
-      account_ids: task?.account_ids ?? [],
+      account_ids: (m.account_ids?.length ? m.account_ids : task?.account_ids) ?? [],
       schedule_type: task?.schedule_type ?? 'immediate',
       scheduled_at: task?.scheduled_at ?? null,
       retry_max: task?.retry_max ?? settings?.default_retry_max ?? 3,
@@ -223,6 +226,38 @@ export function PlansView() {
     try { await api.deleteManuscript(m.id); await load(); toast('计划已删除', 'success') } catch (e) { toast(String(e), 'error') }
   }
 
+  const planAccounts = (m: Manuscript) => {
+    const task = latestTask(m.id, tasks)
+    return (m.account_ids?.length ? m.account_ids : task?.account_ids) ?? []
+  }
+
+  const openAccountFor = (m: Manuscript) => {
+    setAccountFor(m)
+    setDraftIds(planAccounts(m))
+  }
+
+  const toggleDraftAccount = (accountId: number) => {
+    setDraftIds((cur) => cur.includes(accountId) ? cur.filter((x) => x !== accountId) : [...cur, accountId])
+  }
+
+  const saveAccount = async () => {
+    if (!accountFor) return
+    setSaving(true)
+    try {
+      const ids = draftIds.slice()
+      const cur = planAccounts(accountFor)
+      await api.updateManuscript(accountFor.id, { ...toInput(accountFor), account_ids: ids })
+      const task = latestTask(accountFor.id, tasks)
+      if (task && (cur.length !== ids.length || cur.some((x, i) => x !== ids[i]))) {
+        await api.updateTaskAccounts(task.id, ids)
+      }
+      await load()
+      setAccountFor(null)
+      toast('邮箱配置已保存', 'success')
+    } catch (e) { toast(String(e), 'error') }
+    finally { setSaving(false) }
+  }
+
   if (showEditor) {
     return (
       <PlanEditor
@@ -235,8 +270,6 @@ export function PlansView() {
         setForm={setForm}
         taskForm={taskForm}
         setTaskForm={setTaskForm}
-        scheduledInput={scheduledInput}
-        setScheduledInput={setScheduledInput}
         saving={saving}
         onClose={() => setShowEditor(false)}
         onSaveDraft={() => void saveDraft()}
@@ -307,6 +340,7 @@ export function PlansView() {
                           {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
                           {task && ['running', 'paused'].includes(task.status) && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
                           <Button size="sm" onClick={() => void openDetail(m)}>发送详情</Button>
+                          <IconButton title="配置投稿邮箱" onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
                           <Button size="sm" onClick={() => openEdit(m)}>编辑</Button>
                           {!(task && ['running', 'paused'].includes(task.status)) && (
                             <IconButton title="删除" className="danger" onClick={() => void remove(m)}><Trash2 size={15} /></IconButton>
@@ -335,6 +369,34 @@ export function PlansView() {
           onChanged={() => void load()}
           onClose={() => setDetail(null)}
         />
+      )}
+
+      {accountFor && (
+        <Modal title="配置投稿邮箱" width={560} onClose={() => setAccountFor(null)}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setAccountFor(null)}>取消</Button>
+              <Button variant="primary" disabled={saving} onClick={() => void saveAccount()}>保存</Button>
+            </>
+          }>
+          <p className="plan-acct-hint">为《{accountFor.title || '未命名'}》指定使用的投稿邮箱；留空表示使用全部启用邮箱。已发送的计划会同时更新对应的发送任务。</p>
+          <div className="plan-acct-list">
+            <div className="plan-acct-row">
+              <div className="plan-accounts-list">
+                {enabledAccounts.map((a) => {
+                  const on = draftIds.includes(a.id)
+                  return (
+                    <label key={a.id} className={`plan-account-chip ${on ? 'on' : ''}`}>
+                      <input type="checkbox" checked={on} onChange={() => toggleDraftAccount(a.id)} />
+                      <span>{a.email}</span>
+                    </label>
+                  )
+                })}
+                {!enabledAccounts.length && <span className="hint">还没有启用邮箱，去「邮箱」页添加并启用</span>}
+              </div>
+            </div>
+          </div>
+        </Modal>
       )}
     </>
   )
