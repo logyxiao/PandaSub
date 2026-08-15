@@ -4,7 +4,7 @@ use serde_json;
 use crate::models::{Account, Delivery, Editor, Manuscript, Reply, Settings, Task, TaskLog};
 
 const ACCOUNT_COLS: &str = "id, email, password, smtp_host, smtp_port, sender_name, provider, enabled,
-                    hourly_limit, daily_limit, sent_hour, hour_key, sent_day, day_key, last_sent_at, limited, limited_until,
+                    last_sent_at,
                     imap_host, imap_port, check_replies, imap_uid, created_at";
 
 fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
@@ -17,20 +17,12 @@ fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         sender_name: r.get(5)?,
         provider: r.get(6)?,
         enabled: r.get::<_, i64>(7)? != 0,
-        hourly_limit: r.get(8)?,
-        daily_limit: r.get(9)?,
-        sent_hour: r.get(10)?,
-        hour_key: r.get(11)?,
-        sent_day: r.get(12)?,
-        day_key: r.get(13)?,
-        last_sent_at: r.get(14)?,
-        limited: r.get::<_, i64>(15)? != 0,
-        limited_until: r.get(16)?,
-        imap_host: r.get(17)?,
-        imap_port: r.get::<_, i64>(18)? as u16,
-        check_replies: r.get::<_, i64>(19)? != 0,
-        imap_uid: r.get(20)?,
-        created_at: r.get(21)?,
+        last_sent_at: r.get(8)?,
+        imap_host: r.get(9)?,
+        imap_port: r.get::<_, i64>(10)? as u16,
+        check_replies: r.get::<_, i64>(11)? != 0,
+        imap_uid: r.get(12)?,
+        created_at: r.get(13)?,
     })
 }
 
@@ -177,8 +169,7 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
-                    interval_min, interval_max, batch_size_min, batch_size_max,
-                    batch_pause_min, batch_pause_max, retry_max, sent, total,
+                    retry_max, sent, total,
                     created_at, started_at, finished_at
              FROM tasks WHERE id = ?1",
         )
@@ -195,18 +186,12 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
                 status: r.get(4)?,
                 schedule_type: r.get(5)?,
                 scheduled_at: r.get(6)?,
-                interval_min: r.get(7)?,
-                interval_max: r.get(8)?,
-                batch_size_min: r.get(9)?,
-                batch_size_max: r.get(10)?,
-                batch_pause_min: r.get(11)?,
-                batch_pause_max: r.get(12)?,
-                retry_max: r.get(13)?,
-                sent: r.get(14)?,
-                total: r.get(15)?,
-                created_at: r.get(16)?,
-                started_at: r.get(17)?,
-                finished_at: r.get(18)?,
+                retry_max: r.get(7)?,
+                sent: r.get(8)?,
+                total: r.get(9)?,
+                created_at: r.get(10)?,
+                started_at: r.get(11)?,
+                finished_at: r.get(12)?,
             })
         })
         .optional()
@@ -218,8 +203,7 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
-                    interval_min, interval_max, batch_size_min, batch_size_max,
-                    batch_pause_min, batch_pause_max, retry_max, sent, total,
+                    retry_max, sent, total,
                     created_at, started_at, finished_at
              FROM tasks ORDER BY id DESC",
         )
@@ -236,18 +220,12 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
                 status: r.get(4)?,
                 schedule_type: r.get(5)?,
                 scheduled_at: r.get(6)?,
-                interval_min: r.get(7)?,
-                interval_max: r.get(8)?,
-                batch_size_min: r.get(9)?,
-                batch_size_max: r.get(10)?,
-                batch_pause_min: r.get(11)?,
-                batch_pause_max: r.get(12)?,
-                retry_max: r.get(13)?,
-                sent: r.get(14)?,
-                total: r.get(15)?,
-                created_at: r.get(16)?,
-                started_at: r.get(17)?,
-                finished_at: r.get(18)?,
+                retry_max: r.get(7)?,
+                sent: r.get(8)?,
+                total: r.get(9)?,
+                created_at: r.get(10)?,
+                started_at: r.get(11)?,
+                finished_at: r.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -407,92 +385,12 @@ pub fn reset_task_progress(conn: &Connection, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Reset per-hour / per-day counters when the date window has rolled over.
-fn refresh_counters(conn: &Connection, account: &Account) -> Result<Account, String> {
-    let day_key: String = conn
-        .query_row("SELECT strftime('%Y-%m-%d','now','localtime')", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    let hour_key: String = conn
-        .query_row("SELECT strftime('%Y-%m-%d %H','now','localtime')", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-
-    let mut updated = account.clone();
-    if account.day_key != day_key {
-        conn.execute(
-            "UPDATE accounts SET sent_day = 0, day_key = ?1 WHERE id = ?2",
-            params![day_key, account.id],
-        )
-        .map_err(|e| e.to_string())?;
-        updated.sent_day = 0;
-    }
-    if account.hour_key != hour_key {
-        conn.execute(
-            "UPDATE accounts SET sent_hour = 0, hour_key = ?1 WHERE id = ?2",
-            params![hour_key, account.id],
-        )
-        .map_err(|e| e.to_string())?;
-        updated.sent_hour = 0;
-    }
-    Ok(updated)
-}
-
-/// Clears an expired cooldown and returns whether the account is usable now.
-pub fn account_available(conn: &Connection, account: &Account) -> Result<bool, String> {
-    if !account.enabled {
-        return Ok(false);
-    }
-    let now = now_str(conn)?;
-    if account.limited {
-        if let Some(until) = &account.limited_until {
-            if until.as_str() > now.as_str() {
-                return Ok(false);
-            }
-        }
-        conn.execute(
-            "UPDATE accounts SET limited = 0, limited_until = NULL WHERE id = ?1",
-            [account.id],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    let fresh = refresh_counters(conn, account)?;
-    if fresh.hourly_limit > 0 && fresh.sent_hour >= fresh.hourly_limit {
-        return Ok(false);
-    }
-    if fresh.daily_limit > 0 && fresh.sent_day >= fresh.daily_limit {
-        return Ok(false);
-    }
-    Ok(true)
-}
-
+/// 记录一次成功发送：仅更新「上次发送时间」，用于界面展示。
 pub fn record_account_send(conn: &Connection, account_id: i64) -> Result<(), String> {
     let now = now_str(conn)?;
-    let day_key: String = conn
-        .query_row("SELECT strftime('%Y-%m-%d','now','localtime')", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    let hour_key: String = conn
-        .query_row("SELECT strftime('%Y-%m-%d %H','now','localtime')", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE accounts SET sent_hour = sent_hour + 1, hour_key = ?1,
-                sent_day = sent_day + 1, day_key = ?2, last_sent_at = ?3
-         WHERE id = ?4",
-        params![hour_key, day_key, now, account_id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-pub fn freeze_account(conn: &Connection, account_id: i64, minutes: i64) -> Result<(), String> {
-    let until: String = conn
-        .query_row(
-            "SELECT datetime('now','localtime', '+' || ?1 || ' minutes')",
-            [minutes],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE accounts SET limited = 1, limited_until = ?1 WHERE id = ?2",
-        params![until, account_id],
+        "UPDATE accounts SET last_sent_at = ?1 WHERE id = ?2",
+        params![now, account_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())

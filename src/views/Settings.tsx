@@ -1,22 +1,19 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { DatabaseBackup, Inbox, Power, RefreshCw, Save, Search, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import { DatabaseBackup, Inbox, Power, RefreshCw, Save, Search, Send, ShieldCheck } from 'lucide-react'
 import { api } from '../api'
 import { useToast } from '../components/feedback'
 import { Button, Switch } from '../components/ui'
 import type { Settings } from '../types'
 
 const defaults: Settings = {
-  default_interval_min: 5, default_interval_max: 20,
-  default_batch_size_min: 6, default_batch_size_max: 8,
-  default_batch_pause_min: 180, default_batch_pause_max: 300,
-  default_retry_max: 3, limit_cooldown_minutes: 60,
+  default_retry_max: 3,
   anti_spam_mutation: true, auto_start: false, close_to_tray: true, auto_backup: false,
   update_feed_url: '', reply_poll_minutes: 2,
 }
 
 const sections = [
-  { id: 'defaults', label: '发送节奏', icon: SlidersHorizontal },
-  { id: 'guard', label: '限流保护', icon: ShieldCheck },
+  { id: 'send', label: '发送', icon: Send },
+  { id: 'guard', label: '内容保护', icon: ShieldCheck },
   { id: 'replies', label: '回复检查', icon: Inbox },
   { id: 'system', label: '开关机', icon: Power },
   { id: 'data', label: '备份', icon: DatabaseBackup },
@@ -30,7 +27,7 @@ export function SettingsView() {
   const [saved, setSaved] = useState<Settings>(defaults)
   const [notice, setNotice] = useState('')
   const [version, setVersion] = useState('')
-  const [section, setSection] = useState<SectionId>('defaults')
+  const [section, setSection] = useState<SectionId>('send')
   const toast = useToast()
 
   useEffect(() => {
@@ -77,7 +74,7 @@ export function SettingsView() {
   return (
     <>
       <div className="toolbar">
-        <p className="hint">{dirty ? '有未保存的修改。' : '这里改的是新建计划时的默认节奏，已经在跑的计划不会变。'}</p>
+        <p className="hint">{dirty ? '有未保存的修改。' : '发送间隔固定为 2–4 分钟随机（平均约 3 分钟），无需设置节奏。'}</p>
         <div className="toolbar-actions">
           <Button variant="primary" disabled={!dirty} onClick={() => void save()}><Save size={15} />保存设置</Button>
         </div>
@@ -95,27 +92,23 @@ export function SettingsView() {
         </nav>
 
         <div className="settings-content">
-          {section === 'defaults' && (
+          {section === 'send' && (
             <div className="panel settings-section">
-              <div className="panel-heading"><div><h2>发送节奏</h2><p>发送间隔由系统按本计划累计发送量自动分档，无需手动设置。</p></div></div>
+              <div className="panel-heading"><div><h2>发送</h2><p>每封邮件间隔 2–4 分钟随机发送，时间点偏向 3 分钟，更像人工投稿节奏。</p></div></div>
               <div className="form-grid pad">
-                <div className="field span2">
-                  <p className="hint" style={{ marginBottom: 10 }}>自动分档：前 11 封 3 分钟 → 12–19 封 30 秒 → 20–51 封 1 分钟 → 52 封起 2 分钟。到点才发下一封。</p>
-                </div>
-                <label className="field span2">失败后重试几次<input type="number" min={1} {...num('default_retry_max')} /></label>
+                <label className="field span2">发送失败后重试几次
+                  <input type="number" min={1} {...num('default_retry_max')} />
+                  <span className="field-hint">网络或服务器临时错误会按这个次数重试，重试仍失败则跳过该收件人。</span></label>
               </div>
             </div>
           )}
 
           {section === 'guard' && (
             <div className="panel settings-section">
-              <div className="panel-heading"><div><h2>限流保护</h2><p>某个邮箱被判定连发时，先停用一段时间再继续。</p></div></div>
+              <div className="panel-heading"><div><h2>内容保护</h2><p>降低「内容完全重复」被拦截的概率。</p></div></div>
               <div className="form-grid pad">
-                <label className="field span2">被限流后等待多久再试（分钟）
-                  <input type="number" min={1} {...num('limit_cooldown_minutes')} /></label>
                 <div className="field span2">
-                  <p className="hint" style={{ marginBottom: 10 }}>在正文里插入看不见的空格，降低「内容完全重复」被拦截的概率。不影响阅读。</p>
-                  <Switch checked={form.anti_spam_mutation} label="发送时微调正文"
+                  <Switch checked={form.anti_spam_mutation} label="发送时微调正文（插入看不见的空格）"
                     onChange={(v) => setForm({ ...form, anti_spam_mutation: v })} />
                 </div>
               </div>

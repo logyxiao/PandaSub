@@ -53,7 +53,7 @@ const pageCopy: Record<ViewId, { title: string; sub: string }> = {
   plans: { title: '投稿计划', sub: '写好作品和邮件，收件人按风格、作品类型从编辑库筛出。保存后可以直接发送。' },
   logs: { title: '记录', sub: '每封邮件的发送结果。失败时可以按计划筛选排查。' },
   replies: { title: '回复', sub: '检查收件箱，区分编辑人工回复、网站自动回复和退信。' },
-  settings: { title: '设置', sub: '默认发送节奏、限流等待，以及备份。改完请点保存。' },
+  settings: { title: '设置', sub: '发送节奏、内容保护，以及备份。改完请点保存。' },
 }
 
 export default function App() {

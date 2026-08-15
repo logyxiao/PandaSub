@@ -140,41 +140,19 @@ fn emit_task(app: &AppHandle, db: &Arc<Mutex<Connection>>, task_id: i64) {
     }
 }
 
-fn qq_global_cooldown(conn: &Connection) -> i64 {
-    conn.query_row(
-        "SELECT MAX(0, strftime('%s', value) - strftime('%s', 'now', 'localtime'))
-         FROM settings WHERE key = 'qq_next_send_at'",
-        [],
-        |r| r.get(0),
-    )
-    .unwrap_or(0)
-}
-
-/// 参考工具投稿节奏：按本计划累计发送量分档，控制下一封的等待秒数。
-/// 前 11 封 180 秒（起步预热）→ 12–19 封 30 秒 → 20–51 封 60 秒 → 之后 120 秒。
-fn tier_interval_secs(next_send: i64) -> i64 {
-    match next_send {
-        1..=11 => 180,
-        12..=19 => 30,
-        20..=51 => 60,
-        _ => 120,
-    }
-}
-
-fn reserve_qq_send_slot(conn: &Connection, secs: i64) -> bool {
-    conn.execute(
-        "INSERT INTO settings (key, value)
-         VALUES ('qq_next_send_at', datetime('now', 'localtime', '+' || ?1 || ' seconds'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [secs],
-    ).is_ok()
+/// 每封邮件之间的等待时间：2–4 分钟随机，且偏向 3 分钟。
+/// 用两个均匀随机数相加取平均（三角分布），范围 [120, 240] 秒，峰值在 180 秒。
+fn send_delay_secs() -> u64 {
+    let mut rng = rand::rng();
+    let a = rng.random_range(0..=120);
+    let b = rng.random_range(0..=120);
+    (120 + (a + b) / 2) as u64
 }
 
 fn pick_available_account(
     db: &Arc<Mutex<Connection>>,
     cursor: &mut usize,
     allowed: &std::collections::HashSet<i64>,
-    qq_reserve_secs: i64,
 ) -> Option<Account> {
     let conn = db.lock().unwrap();
     let accounts = store::load_accounts(&conn).ok()?;
@@ -189,21 +167,12 @@ fn pick_available_account(
     if scope.is_empty() {
         return None;
     }
-    // QQ keeps the exact sender/domain/IP thresholds private. Serialize QQ sends
-    // across tasks at the current task's tier cadence for a conservative floor.
-    let qq_cooldown = qq_global_cooldown(&conn);
     let n = scope.len();
     let cursor_mod = if n == 0 { 0 } else { *cursor % n };
     for i in 0..n {
         let idx = (cursor_mod + i) % n;
         let account = scope[idx];
-        if account.provider == "qq" && qq_cooldown > 0 {
-            continue;
-        }
-        if store::account_available(&conn, account).unwrap_or(false) {
-            if account.provider == "qq" && !reserve_qq_send_slot(&conn, qq_reserve_secs) {
-                continue;
-            }
+        if account.enabled {
             *cursor = (idx + 1) % n;
             return Some(account.clone());
         }
@@ -356,7 +325,6 @@ async fn run_task_worker(
 
     let mut cursor: usize = 0;
     let allowed_accounts: std::collections::HashSet<i64> = task.account_ids.iter().copied().collect();
-    let mut sent_total = task.sent;
 
     loop {
         if handle.is_stopped() {
@@ -421,17 +389,17 @@ async fn run_task_worker(
 
         let target = queue.pop_front().unwrap();
 
-        let interval = tier_interval_secs(sent_total + 1);
-        let account = match pick_available_account(&db, &mut cursor, &allowed_accounts, interval) {
+        let delay = send_delay_secs();
+        let account = match pick_available_account(&db, &mut cursor, &allowed_accounts) {
             Some(a) => a,
             None => {
-                let message = "无可用账号（全部禁用、限流或已达上限），60 秒后重试";
+                let message = "没有可用的发件邮箱（全部被禁用），60 秒后重试";
                 let log = store::insert_log(
                     &db.lock().unwrap(),
                     Some(task_id),
                     None,
                     "warning",
-                    "limit",
+                    "task",
                     message,
                 );
                 if let Ok(log) = log {
@@ -471,10 +439,8 @@ async fn run_task_worker(
             &subject,
             &body,
             task.retry_max,
-            settings.limit_cooldown_minutes,
             &mut cursor,
             &allowed_accounts,
-            interval,
             &handle,
         )
         .await;
@@ -495,7 +461,6 @@ async fn run_task_worker(
                         &message_id,
                     );
                 }
-                sent_total += 1;
                 let log = store::insert_send_log(
                     &db.lock().unwrap(),
                     Some(task_id),
@@ -521,8 +486,7 @@ async fn run_task_worker(
             break;
         }
 
-        let delay = interval;
-        interruptible_sleep(delay as u64, &handle).await;
+        interruptible_sleep(delay, &handle).await;
         if handle.is_stopped() {
             break;
         }
@@ -563,10 +527,8 @@ async fn send_with_retry(
     subject: &str,
     body: &str,
     retry_max: i64,
-    cooldown_minutes: i64,
     cursor: &mut usize,
     allowed: &std::collections::HashSet<i64>,
-    qq_reserve_secs: i64,
     handle: &TaskHandle,
 ) -> SendOutcome {
     let mut account = initial_account.clone();
@@ -618,34 +580,7 @@ async fn send_with_retry(
                             let conn = db.lock().unwrap();
                             let _ = store::mark_account_faulty(&conn, account.id);
                         }
-                        match pick_available_account(db, cursor, allowed, qq_reserve_secs) {
-                            Some(next) => {
-                                account = next;
-                                continue;
-                            }
-                            None => return SendOutcome::RetryLater,
-                        }
-                    }
-                    "limit" => {
-                        let log = store::insert_log(
-                            &db.lock().unwrap(),
-                            Some(task_id),
-                            Some(account.id),
-                            "warning",
-                            "limit",
-                            &format!(
-                                "账号 {} 触发限流，冻结 {} 分钟：{}",
-                                account.email, cooldown_minutes, message
-                            ),
-                        );
-                        if let Ok(log) = log {
-                            emit_log(app, &log);
-                        }
-                        {
-                            let conn = db.lock().unwrap();
-                            let _ = store::freeze_account(&conn, account.id, cooldown_minutes);
-                        }
-                        match pick_available_account(db, cursor, allowed, qq_reserve_secs) {
+                        match pick_available_account(db, cursor, allowed) {
                             Some(next) => {
                                 account = next;
                                 continue;

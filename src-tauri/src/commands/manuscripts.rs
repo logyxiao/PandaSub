@@ -1,0 +1,263 @@
+use serde_json::json;
+use tauri::{AppHandle, Emitter, State};
+
+use crate::models::Manuscript;
+use crate::smtp;
+use crate::state::AppState;
+use crate::store;
+
+// ---------- 重新发送单条投递 ----------
+
+/// 把某条已投递的邮件重新发给同一收件人：复用原稿件内容与附件，选一个已启用的账号发送。
+#[tauri::command]
+pub async fn resend_delivery(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    delivery_id: i64,
+) -> Result<(), String> {
+    let (delivery, manuscript, account) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let delivery = store::load_delivery(&conn, delivery_id)?.ok_or("投递记录不存在")?;
+        let manuscript = match delivery.manuscript_id {
+            Some(mid) => store::load_manuscript(&conn, mid)?.ok_or("原稿件已删除，无法重发")?,
+            None => return Err("这条投递没有关联稿件，无法重发".into()),
+        };
+        let account = store::load_account(&conn, delivery.account_id.unwrap_or(0))?
+            .ok_or("原发件账号已删除，无法重发")?;
+        (delivery, manuscript, account)
+    };
+
+    if !account.enabled {
+        return Err(format!("发件账号 {} 已禁用，请先启用", account.email));
+    }
+
+    let settings = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::load_settings(&conn).unwrap_or_default()
+    };
+    let attachment = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::load_manuscript_attachment(&conn, manuscript.id).unwrap_or(None)
+    };
+
+    let (editor_name, recipient_email) = smtp::parse_recipient(&delivery.recipient);
+    let subject_src = if manuscript.subject.trim().is_empty() {
+        manuscript.title.as_str()
+    } else {
+        manuscript.subject.as_str()
+    };
+    let subject = smtp::apply_placeholders(subject_src, &editor_name, &recipient_email, &manuscript.title);
+    let body = smtp::apply_placeholders(
+        &smtp::mutate_body(&manuscript.body, settings.anti_spam_mutation),
+        &editor_name,
+        &recipient_email,
+        &manuscript.title,
+    );
+    let sender_name = if manuscript.sender_name.trim().is_empty() {
+        account.sender_name.clone()
+    } else {
+        manuscript.sender_name.clone()
+    };
+
+    let message_id = smtp::send_email(
+        &account,
+        &recipient_email,
+        &sender_name,
+        &subject,
+        &body,
+        &manuscript.content_type,
+        attachment.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
+    )
+    .await
+    .map_err(|err| {
+        let (_, msg) = smtp::classify_error(&err);
+        msg
+    })?;
+
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let _ = store::record_account_send(&conn, account.id);
+        let _ = store::insert_delivery(
+            &conn,
+            delivery.task_id.unwrap_or(0),
+            account.id,
+            manuscript.id,
+            &recipient_email,
+            &subject,
+            &message_id,
+        );
+    }
+    let log = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::insert_send_log(
+            &conn,
+            delivery.task_id,
+            Some(account.id),
+            "success",
+            "send",
+            "重新发送成功",
+            &delivery.recipient,
+        )
+    };
+    if let Ok(log) = log {
+        let _ = app.emit("log", &log);
+    }
+    Ok(())
+}
+
+// ---------- Manuscripts ----------
+#[tauri::command]
+pub fn list_manuscripts(state: State<'_, AppState>) -> Result<Vec<Manuscript>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::load_all_manuscripts(&conn)
+}
+
+#[tauri::command]
+pub fn get_manuscript(state: State<'_, AppState>, id: i64) -> Result<Option<Manuscript>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::load_manuscript(&conn, id)
+}
+
+#[tauri::command]
+pub fn add_manuscript(
+    state: State<'_, AppState>,
+    input: crate::models::ManuscriptInput,
+) -> Result<i64, String> {
+    if input.title.trim().is_empty() {
+        return Err("作品名称不能为空".into());
+    }
+    if input.body.trim().is_empty() {
+        return Err("邮件正文不能为空".into());
+    }
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let recipients = json!(input.recipients).to_string();
+    let genres = json!(input.genres).to_string();
+    let excluded_types = json!(input.excluded_types).to_string();
+    conn.execute(
+        "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
+            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, subject, file_name, file_data)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        rusqlite::params![
+            input.title.trim(),
+            input.body,
+            input.content_type,
+            recipients,
+            input.sender_name.trim(),
+            input.word_count,
+            input.category.trim(),
+            input.reader_category.trim(),
+            input.reader_emotion.trim(),
+            input.style.trim(),
+            genres,
+            excluded_types,
+            input.subject.trim(),
+            input.file_name.trim(),
+            input.file_data,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[tauri::command]
+pub fn update_manuscript(
+    state: State<'_, AppState>,
+    id: i64,
+    input: crate::models::ManuscriptInput,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let recipients = json!(input.recipients).to_string();
+    let genres = json!(input.genres).to_string();
+    let excluded_types = json!(input.excluded_types).to_string();
+    conn.execute(
+        "UPDATE manuscripts SET title = ?1, body = ?2, content_type = ?3, recipients = ?4,
+                sender_name = ?5, word_count = ?6, category = ?7, reader_category = ?8,
+                reader_emotion = ?9, style = ?10, genres = ?11, excluded_types = ?16,
+                subject = ?12, file_name = ?13,
+                file_data = COALESCE(?15, file_data),
+                updated_at = datetime('now','localtime')
+         WHERE id = ?14",
+        rusqlite::params![
+            input.title.trim(),
+            input.body,
+            input.content_type,
+            recipients,
+            input.sender_name.trim(),
+            input.word_count,
+            input.category.trim(),
+            input.reader_category.trim(),
+            input.reader_emotion.trim(),
+            input.style.trim(),
+            genres,
+            input.subject.trim(),
+            input.file_name.trim(),
+            id,
+            input.file_data,
+            excluded_types,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_manuscript(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let tasks = store::load_tasks(&conn)?;
+    for task in &tasks {
+        if task.manuscript_ids.contains(&id) && matches!(task.status.as_str(), "running" | "paused") {
+            return Err("这个计划正在发送，请先停止".into());
+        }
+    }
+    conn.execute("DELETE FROM manuscripts WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    for task in tasks {
+        if !task.manuscript_ids.contains(&id) {
+            continue;
+        }
+        if task.manuscript_ids.len() <= 1 {
+            conn.execute("DELETE FROM tasks WHERE id = ?1", [task.id])
+                .map_err(|e| e.to_string())?;
+        } else {
+            let ids: Vec<i64> = task.manuscript_ids.into_iter().filter(|x| *x != id).collect();
+            conn.execute(
+                "UPDATE tasks SET manuscript_ids = ?1 WHERE id = ?2",
+                rusqlite::params![json!(ids).to_string(), task.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn extract_docx_text(data: Vec<u8>) -> Result<String, String> {
+    let reader = std::io::Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(reader).map_err(|_| "不是有效的 Word 文件".to_string())?;
+    let mut file = archive
+        .by_name("word/document.xml")
+        .map_err(|_| "不是有效的 Word 文件".to_string())?;
+    let mut xml = String::new();
+    std::io::Read::read_to_string(&mut file, &mut xml).map_err(|e| e.to_string())?;
+    Ok(docx_xml_to_text(&xml))
+}
+
+fn docx_xml_to_text(xml: &str) -> String {
+    let with_breaks = xml.replace("</w:p>", "\n").replace("<w:tab/>", "\t");
+    let mut out = String::new();
+    let mut in_tag = false;
+    for ch in with_breaks.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+}
+

@@ -167,8 +167,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
         account_ids: enabledAccounts.map((a) => a.id),
         schedule_type: 'immediate',
         scheduled_at: null,
-        interval_min: 300, interval_max: 300, batch_size_min: 6, batch_size_max: 8,
-        batch_pause_min: 180, batch_pause_max: 300, retry_max: 3,
+        retry_max: 3,
       })
       toast('已开始手动发送', 'success')
       onChanged()

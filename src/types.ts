@@ -7,15 +7,7 @@ export interface Account {
   sender_name: string
   provider: string
   enabled: boolean
-  hourly_limit: number
-  daily_limit: number
-  sent_hour: number
-  hour_key: string
-  sent_day: number
-  day_key: string
   last_sent_at: string | null
-  limited: boolean
-  limited_until: string | null
   imap_host: string
   imap_port: number
   check_replies: boolean
@@ -31,8 +23,6 @@ export interface AccountInput {
   sender_name: string
   provider: string
   enabled: boolean
-  hourly_limit: number
-  daily_limit: number
   imap_host: string
   imap_port: number
   check_replies: boolean
@@ -115,12 +105,6 @@ export interface Task {
   status: TaskStatus
   schedule_type: ScheduleType
   scheduled_at: string | null
-  interval_min: number
-  interval_max: number
-  batch_size_min: number
-  batch_size_max: number
-  batch_pause_min: number
-  batch_pause_max: number
   retry_max: number
   sent: number
   total: number
@@ -135,12 +119,6 @@ export interface TaskInput {
   account_ids: number[]
   schedule_type: ScheduleType
   scheduled_at: string | null
-  interval_min: number
-  interval_max: number
-  batch_size_min: number
-  batch_size_max: number
-  batch_pause_min: number
-  batch_pause_max: number
   retry_max: number
 }
 
@@ -158,14 +136,7 @@ export interface TaskLog {
 }
 
 export interface Settings {
-  default_interval_min: number
-  default_interval_max: number
-  default_batch_size_min: number
-  default_batch_size_max: number
-  default_batch_pause_min: number
-  default_batch_pause_max: number
   default_retry_max: number
-  limit_cooldown_minutes: number
   anti_spam_mutation: boolean
   auto_start: boolean
   close_to_tray: boolean

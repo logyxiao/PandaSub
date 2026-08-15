@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Download, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react'
+import { ChevronDown, ChevronRight, ChevronUp, Download, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
@@ -182,13 +182,17 @@ export function EditorsView() {
     <>
       <div className="toolbar">
         <div className="filters">
-          <label className="plan-search">
+          <label className="plan-search editor-search">
             <Search size={14} />
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索姓名、平台或邮箱" />
           </label>
-          <Select value={platform} onChange={setPlatform} ariaLabel="按平台筛选" className="filter-select"
+          <Select value={platform} onChange={setPlatform} ariaLabel="按平台筛选" className="editor-filter-select"
             options={[{ value: '', label: '全部平台' }, ...platforms.map((p) => ({ value: p, label: p }))]} />
-          <Select value={status} onChange={setStatus} ariaLabel="按状态筛选" className="filter-select"
+          <Select value={style} onChange={setStyle} ariaLabel="按风格筛选" className="editor-filter-select"
+            options={[{ value: '', label: '全部风格' }, ...styleCounts.map(([tag, count]) => ({ value: tag, label: `${tag}（${count}）` }))]} />
+          <Select value={workType} onChange={setWorkType} ariaLabel="按作品类型筛选" className="editor-filter-select"
+            options={[{ value: '', label: '全部作品类型' }, ...workTypeCounts.map(([tag, count]) => ({ value: tag, label: `${tag}（${count}）` }))]} />
+          <Select value={status} onChange={setStatus} ariaLabel="按状态筛选" className="editor-filter-select"
             options={[
               { value: 'all', label: '全部状态' },
               { value: 'on', label: '使用中' },
@@ -200,7 +204,6 @@ export function EditorsView() {
             onChange={(e) => { void importList(e.target.files?.[0] ?? null); e.target.value = '' }} />
           <Button variant="ghost" onClick={() => fileRef.current?.click()}><Upload size={15} />导入</Button>
           <Button variant="ghost" onClick={() => void exportList()}><Download size={15} />导出 Excel</Button>
-          <Button variant="ghost" onClick={toggleAll}>{allExpanded ? '全部收起' : '全部展开'}</Button>
           <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
           <Button variant="primary" onClick={openAdd}><Plus size={16} />添加编辑</Button>
         </div>
@@ -220,36 +223,15 @@ export function EditorsView() {
         </div>
       ) : (
         <>
-          <div className="field-filter-bar">
-            <span className="field-filter-label">风格</span>
-            <div className="field-filter-chips">
-              <button type="button" className={`field-chip ${!style ? 'on' : ''}`} onClick={() => setStyle('')}>全部</button>
-              {styleCounts.map(([tag, count]) => (
-                <button type="button" key={tag} className={`field-chip ${style === tag ? 'on' : ''}`}
-                  onClick={() => setStyle(style === tag ? '' : tag)}>
-                  {tag}<small>{count}</small>
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="field-filter-bar">
-            <span className="field-filter-label">作品类型</span>
-            <div className="field-filter-chips">
-              <button type="button" className={`field-chip ${!workType ? 'on' : ''}`} onClick={() => setWorkType('')}>全部</button>
-              {workTypeCounts.map(([tag, count]) => (
-                <button type="button" key={tag} className={`field-chip ${workType === tag ? 'on' : ''}`}
-                  onClick={() => setWorkType(workType === tag ? '' : tag)}>
-                  {tag}<small>{count}</small>
-                </button>
-              ))}
-              {!workTypeCounts.length && <span className="field-filter-empty">暂无数据，编辑时可补填作品类型</span>}
-            </div>
-          </div>
           <div className="editors-summary" aria-label="编辑库概览">
             <span><b>{grouped.length}</b> 个平台</span>
             <span><b>{visible.length}</b> 位编辑</span>
             <span><b>{visible.filter((e) => e.enabled !== false).length}</b> 使用中</span>
             <span><b>{visible.filter((e) => e.enabled === false).length}</b> 已暂停</span>
+            <button type="button" className="editors-summary-toggle" onClick={toggleAll}>
+              {allExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              {allExpanded ? '全部收起' : '全部展开'}
+            </button>
           </div>
           <div className="panel">
             <div className="editor-groups">
@@ -327,12 +309,13 @@ export function EditorsView() {
             <label className="field span2">收稿邮箱（必填）
               <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="editor@example.com" /></label>
             <div className="field span2">风格
-              <div className="chip-picks">
-                {STYLES.map((g) => (
-                  <button type="button" key={g} className={`chip ${form.style.includes(g) ? 'on' : ''}`}
-                    onClick={() => toggleTag('style', g)}>{g}</button>
-                ))}
-              </div>
+              <Select
+                value={form.style[0] ?? ''}
+                options={[{ value: '', label: '不设风格' }, ...STYLES.map((s) => ({ value: s, label: s }))]}
+                onChange={(v) => setForm({ ...form, style: v ? [v] : [] })}
+                ariaLabel="风格"
+                placeholder="不设风格"
+              />
             </div>
             <div className="field span2">作品类型
               <div className="chip-picks">

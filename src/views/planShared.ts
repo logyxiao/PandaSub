@@ -29,29 +29,9 @@ export function normalizeEditorTags<T extends Pick<Editor, 'style' | 'work_type'
   return { ...editor, style, work_type }
 }
 
-// 自动投稿节奏（参考工具实测）：按本计划累计发送量分档控制下一封的等待时间。
-export const TIER_STEPS = [
-  { upTo: 11, seconds: 180, label: '前 11 封 3 分钟' },
-  { upTo: 19, seconds: 30, label: '12–19 封 30 秒' },
-  { upTo: 51, seconds: 60, label: '20–51 封 1 分钟' },
-  { upTo: Infinity, seconds: 120, label: '52 封起 2 分钟' },
-] as const
-
-export function tierSecondsAt(nextSend: number) {
-  if (nextSend <= 11) return 180
-  if (nextSend <= 19) return 30
-  if (nextSend <= 51) return 60
-  return 120
-}
-
-export function estimateAutoMinutes(count: number, startSent = 0) {
-  let sent = startSent
-  let total = 0
-  for (let i = 0; i < count; i++) {
-    total += tierSecondsAt(sent + 1)
-    sent += 1
-  }
-  return Math.max(1, Math.round(total / 60))
+// 发送节奏：每封邮件间隔 2–4 分钟随机，偏向 3 分钟（平均按 3 分钟估算）。
+export function estimateAutoMinutes(count: number) {
+  return Math.max(1, Math.round((count * 3 * 60) / 60))
 }
 
 export const SCHEDULE_OPTIONS = [

@@ -277,6 +277,9 @@
 .select-option.is-selected b { font-weight: 650; }
 .filter-select { min-width: 150px; }
 .filter-select:first-child { min-width: 190px; }
+/* 编辑列表页筛选：紧凑一行 */
+.editor-search { flex: none; min-width: 180px; max-width: 240px; }
+.editor-filter-select { min-width: 116px; }
 .plan-meta .select-trigger { height: 38px; font-size: 12px; }
 .plan-import-select { max-width: 170px; }
 .plan-import-select .select-trigger { height: 32px; font-size: 11.5px; }
@@ -1602,9 +1605,23 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   font-size: 12.5px;
 }
 .editors-summary b { margin-right: 4px; color: var(--ink); font-family: var(--font-mono); font-size: 15px; }
+.editors-summary-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .12s, color .12s;
+}
+.editors-summary-toggle:hover { border-color: #B9C9CB; color: var(--ink); }
 
-.field-filter-bar { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
-.field-filter-label { flex: none; min-width: 58px; padding-top: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .field-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .field-chip {
   display: inline-flex;

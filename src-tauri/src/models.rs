@@ -10,15 +10,7 @@ pub struct Account {
     pub sender_name: String,
     pub provider: String,
     pub enabled: bool,
-    pub hourly_limit: i64,
-    pub daily_limit: i64,
-    pub sent_hour: i64,
-    pub hour_key: String,
-    pub sent_day: i64,
-    pub day_key: String,
     pub last_sent_at: Option<String>,
-    pub limited: bool,
-    pub limited_until: Option<String>,
     pub imap_host: String,
     pub imap_port: u16,
     pub check_replies: bool,
@@ -35,8 +27,6 @@ pub struct AccountInput {
     pub sender_name: String,
     pub provider: String,
     pub enabled: bool,
-    pub hourly_limit: i64,
-    pub daily_limit: i64,
     #[serde(default)]
     pub imap_host: String,
     #[serde(default = "default_imap_port")]
@@ -127,12 +117,6 @@ pub struct Task {
     pub status: String,
     pub schedule_type: String,
     pub scheduled_at: Option<String>,
-    pub interval_min: i64,
-    pub interval_max: i64,
-    pub batch_size_min: i64,
-    pub batch_size_max: i64,
-    pub batch_pause_min: i64,
-    pub batch_pause_max: i64,
     pub retry_max: i64,
     pub sent: i64,
     pub total: i64,
@@ -149,12 +133,6 @@ pub struct TaskInput {
     pub account_ids: Vec<i64>,
     pub schedule_type: String,
     pub scheduled_at: Option<String>,
-    pub interval_min: i64,
-    pub interval_max: i64,
-    pub batch_size_min: i64,
-    pub batch_size_max: i64,
-    pub batch_pause_min: i64,
-    pub batch_pause_max: i64,
     pub retry_max: i64,
 }
 
@@ -173,14 +151,7 @@ pub struct TaskLog {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
-    pub default_interval_min: i64,
-    pub default_interval_max: i64,
-    pub default_batch_size_min: i64,
-    pub default_batch_size_max: i64,
-    pub default_batch_pause_min: i64,
-    pub default_batch_pause_max: i64,
     pub default_retry_max: i64,
-    pub limit_cooldown_minutes: i64,
     pub anti_spam_mutation: bool,
     pub auto_start: bool,
     pub close_to_tray: bool,
@@ -197,14 +168,7 @@ fn default_reply_poll() -> i64 { 2 }
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            default_interval_min: 5,
-            default_interval_max: 20,
-            default_batch_size_min: 6,
-            default_batch_size_max: 8,
-            default_batch_pause_min: 180,
-            default_batch_pause_max: 300,
             default_retry_max: 3,
-            limit_cooldown_minutes: 60,
             anti_spam_mutation: true,
             auto_start: false,
             close_to_tray: true,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Ban, Check, Eye, EyeOff, Gauge, Mail, Plus, RefreshCw, ShieldCheck, Timer, Trash2, X } from 'lucide-react'
+import { Ban, Check, Eye, EyeOff, Mail, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
@@ -16,7 +16,7 @@ const presets: Record<string, { host: string; port: number; imap_host: string; i
 
 const emptyForm: AccountInput = {
   email: '', password: '', smtp_host: 'smtp.qq.com', smtp_port: 465,
-  sender_name: '', provider: 'qq', enabled: true, hourly_limit: 7, daily_limit: 50,
+  sender_name: '', provider: 'qq', enabled: true,
   imap_host: 'imap.qq.com', imap_port: 993, check_replies: true,
 }
 
@@ -44,8 +44,6 @@ const normalizeForm = (form: AccountInput): AccountInput => {
     imap_port: preset.imap_port,
     enabled: true,
     check_replies: true,
-    hourly_limit: Math.max(1, Math.ceil(form.daily_limit / 8)),
-    daily_limit: Math.max(1, form.daily_limit),
   }
 }
 
@@ -83,7 +81,6 @@ export function AccountsView() {
     setForms([{
       email: a.email, password: a.password, smtp_host: a.smtp_host, smtp_port: a.smtp_port,
       sender_name: a.sender_name, provider: a.provider, enabled: a.enabled,
-      hourly_limit: a.hourly_limit, daily_limit: a.daily_limit,
       imap_host: a.imap_host, imap_port: a.imap_port, check_replies: a.check_replies,
     }])
     setShowPasswords([false])
@@ -109,7 +106,6 @@ export function AccountsView() {
     const invalidEmail = forms.find((form) => !isValidEmail(form.email.trim()))
     if (invalidEmail) { toast('请输入有效的邮箱地址', 'warning'); return }
     if (forms.some((form) => !form.password.trim())) { toast('请填写邮箱授权码，不是登录密码', 'warning'); return }
-    if (forms.some((form) => form.daily_limit < 1)) { toast('每天发送限制至少为 1 封', 'warning'); return }
 
     try {
       if (editing) await api.updateAccount(editing.id, normalizeForm(forms[0]))
@@ -141,27 +137,20 @@ export function AccountsView() {
   }
 
   const accountState = (a: Account): { tone: Tone; label: string } => {
-    if (a.limited) return { tone: 'warning', label: '暂时限流' }
     if (!a.enabled) return { tone: 'neutral', label: '已停用' }
-    const nearDay = a.daily_limit > 0 && a.sent_day >= a.daily_limit * 0.9
-    const nearHour = a.hourly_limit > 0 && a.sent_hour >= a.hourly_limit * 0.9
-    if (nearDay || nearHour) return { tone: 'warning', label: '额度将尽' }
     return { tone: 'success', label: '可用' }
   }
 
-  const active = accounts.filter((a) => a.enabled && !a.limited)
+  const active = accounts.filter((a) => a.enabled)
   const summary = [
     { label: '可用邮箱', value: active.length, unit: '个', icon: Mail },
-    { label: '今日还能发', value: active.reduce((s, a) => s + Math.max(0, a.daily_limit - a.sent_day), 0), unit: '封', icon: Gauge },
-    { label: '本小时还能发', value: active.reduce((s, a) => s + Math.max(0, a.hourly_limit - a.sent_hour), 0), unit: '封', icon: Timer },
-    { label: '暂时限流', value: accounts.filter((a) => a.limited).length, unit: '个', icon: AlertTriangle, warn: true },
     { label: '已停用', value: accounts.filter((a) => !a.enabled).length, unit: '个', icon: Ban },
   ]
 
   return (
     <>
       <div className="toolbar">
-        <p className="hint">管理投稿邮箱、授权码、笔名与每日发送额度。</p>
+        <p className="hint">管理投稿邮箱、授权码与笔名。</p>
         <div className="toolbar-actions">
           <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
           <Button variant="primary" onClick={openAdd}><Plus size={16} />添加邮箱</Button>
@@ -177,24 +166,18 @@ export function AccountsView() {
         </div>
       ) : (
         <>
-          {accounts.some((account) => account.provider === 'qq') && (
-            <div className="notice notice-info">
-              <ShieldCheck size={16} />
-              <span>QQ 安全模式已启用：所有 QQ 邮箱和同时运行的计划共用至少 5 分钟的发送间隔。QQ 官方按发件人、qq.com 域名、出口 IP 和连接频率限流，但不公开具体数字；页面额度是应用自己的保护上限。</span>
-            </div>
-          )}
-          <section className="stat-strip" aria-label="邮箱额度">
-            {summary.map(({ label, value, unit, icon: Icon, warn }) => (
+          <section className="stat-strip" aria-label="邮箱概览">
+            {summary.map(({ label, value, unit, icon: Icon }) => (
               <div className="stat" key={label}>
-                <div className="stat-top"><span className="stat-label">{label}</span><Icon size={16} className={`stat-icon ${warn ? 'warn' : ''}`} /></div>
-                <div className={`stat-value ${warn ? 'warn' : ''}`}>{value}<small>{unit}</small></div>
+                <div className="stat-top"><span className="stat-label">{label}</span><Icon size={16} className="stat-icon" /></div>
+                <div className="stat-value">{value}<small>{unit}</small></div>
               </div>
             ))}
           </section>
           <div className="panel">
             <div className="table-wrap">
               <table>
-                <thead><tr><th>邮箱</th><th>类型</th><th>今日已发 / 上限</th><th>本小时</th><th>状态</th><th>上次发送</th><th aria-label="操作" /></tr></thead>
+                <thead><tr><th>邮箱</th><th>类型</th><th>状态</th><th>上次发送</th><th aria-label="操作" /></tr></thead>
                 <tbody>
                   {accounts.map((a) => {
                     const st = accountState(a)
@@ -202,8 +185,6 @@ export function AccountsView() {
                       <tr key={a.id} className={!a.enabled ? 'dim' : ''}>
                         <td><b>{a.email}</b><small>{a.sender_name || '未设笔名'}</small></td>
                         <td>{providerName[a.provider] ?? a.provider}<small>{a.smtp_host}:{a.smtp_port}</small></td>
-                        <td><b>{a.sent_day} / {a.daily_limit}</b></td>
-                        <td>{a.sent_hour} / {a.hourly_limit}</td>
                         <td><Badge tone={st.tone} dot>{st.label}</Badge></td>
                         <td>{formatTime(a.last_sent_at)}</td>
                         <td>
@@ -232,7 +213,7 @@ export function AccountsView() {
           footer={<><Button variant="ghost" onClick={() => setShowForm(false)}>取消</Button><Button variant="primary" onClick={() => void save()}>保存配置</Button></>}>
           <div className="mail-config">
             <div className="mail-config-intro">
-              <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">授权码用于 SMTP / IMAP。每天上限是应用本地保护值，不是邮箱官方承诺的额度。</p></div>
+              <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">授权码用于 SMTP / IMAP。</p></div>
               {!editing && <Button variant="ghost" onClick={addForm}><Plus size={16} />添加邮箱</Button>}
             </div>
 
@@ -253,8 +234,6 @@ export function AccountsView() {
                       </div></label>
                     <label className="field">笔名（可选）
                       <input value={form.sender_name} onChange={(e) => updateForm(index, { sender_name: e.target.value })} placeholder="留空则使用邮箱名称" /></label>
-                    <label className="field mail-limit-field">每天发送限制
-                      <div className="number-with-suffix"><input type="number" min={1} value={form.daily_limit} onChange={(e) => updateForm(index, { daily_limit: Number(e.target.value) })} /><span>封 / 天</span></div></label>
                   </div>
                   <p className="mail-auto-note">{form.email && isValidEmail(form.email) ? `已识别为 ${providerName[detectProvider(form.email)] ?? '其他邮箱'}，服务参数将自动配置` : '填写邮箱地址后将自动识别邮箱服务商'}</p>
                 </section>
@@ -263,7 +242,7 @@ export function AccountsView() {
 
             <div className="mail-help">
               <div className="mail-help-icon"><Mail size={18} /></div>
-              <div><strong>授权码与发送限制</strong><p>QQ 邮箱：设置 → 账户 → POP3/IMAP/SMTP/Exchange 服务 → 开启服务并获取授权码。</p><p>QQ 官方会按发件人、qq.com 域名、出口 IP 和连接频率限流，但不公开具体数字；应用会按所有 QQ 邮箱整体保护，含 QQ 的计划至少间隔 5 分钟。</p><p>163 邮箱：设置 → POP3/SMTP/IMAP → 开启服务并设置授权码。</p></div>
+              <div><strong>授权码</strong><p>QQ 邮箱：设置 → 账户 → POP3/IMAP/SMTP/Exchange 服务 → 开启服务并获取授权码。</p><p>163 邮箱：设置 → POP3/SMTP/IMAP → 开启服务并设置授权码。</p></div>
             </div>
           </div>
         </Modal>

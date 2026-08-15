@@ -8,7 +8,7 @@ import { formatTime, isValidEmail, parseRecipient } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, EditorInput, Manuscript, ManuscriptInput, TaskInput } from '../types'
 import {
-  CATEGORIES, GENRES, READERS, SCHEDULE_OPTIONS, STYLES, TIER_STEPS, editorWorkTypeOptions, isPlanStyle, normalizeEditorTags,
+  CATEGORIES, GENRES, READERS, SCHEDULE_OPTIONS, STYLES, editorWorkTypeOptions, isPlanStyle, normalizeEditorTags,
   categoryFromWords, defaultBody, defaultSubject, editorPlatformKey, editorRecipient, estimateAutoMinutes, fillPlaceholders, pickOneEditorPerPlatform, sentCountByEmail,
 } from './planShared'
 
@@ -524,8 +524,8 @@ export function PlanEditor({
             <div className="plan-rhythm">
               <Clock3 size={15} />
               <div>
-                <strong>自动调速</strong>
-                <p>按本计划累计发送量自动切换：{TIER_STEPS.map((t) => t.label).join(' → ')}。到点才发下一封，不需要手动设置频次。</p>
+                <strong>固定节奏</strong>
+                <p>每封邮件间隔 2–4 分钟随机发送，时间点偏向 3 分钟，更像人工投稿。无需设置频次。</p>
               </div>
             </div>
             <div className="plan-send-summary">

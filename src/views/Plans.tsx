@@ -12,8 +12,7 @@ import { categoryFromWords, countChars, defaultBody, defaultSubject, emptyManusc
 
 const emptyTask: TaskInput = {
   name: '', manuscript_ids: [], account_ids: [], schedule_type: 'immediate', scheduled_at: null,
-  interval_min: 300, interval_max: 300, batch_size_min: 6, batch_size_max: 8,
-  batch_pause_min: 180, batch_pause_max: 300, retry_max: 3,
+  retry_max: 3,
 }
 
 export function PlansView() {
@@ -75,12 +74,7 @@ export function PlansView() {
     setTaskForm({
       ...emptyTask,
       account_ids: enabledAccounts.map((a) => a.id),
-      ...(settings ? {
-        interval_min: settings.default_interval_min, interval_max: settings.default_interval_max,
-        batch_size_min: settings.default_batch_size_min, batch_size_max: settings.default_batch_size_max,
-        batch_pause_min: settings.default_batch_pause_min, batch_pause_max: settings.default_batch_pause_max,
-        retry_max: settings.default_retry_max,
-      } : {}),
+      ...(settings ? { retry_max: settings.default_retry_max } : {}),
     })
     setScheduledInput('')
     setShowEditor(true)
@@ -96,12 +90,6 @@ export function PlansView() {
       account_ids: task?.account_ids ?? [],
       schedule_type: task?.schedule_type ?? 'immediate',
       scheduled_at: task?.scheduled_at ?? null,
-      interval_min: task?.interval_min ?? settings?.default_interval_min ?? 5,
-      interval_max: task?.interval_max ?? settings?.default_interval_max ?? 20,
-      batch_size_min: task?.batch_size_min ?? settings?.default_batch_size_min ?? 6,
-      batch_size_max: task?.batch_size_max ?? settings?.default_batch_size_max ?? 8,
-      batch_pause_min: task?.batch_pause_min ?? settings?.default_batch_pause_min ?? 180,
-      batch_pause_max: task?.batch_pause_max ?? settings?.default_batch_pause_max ?? 300,
       retry_max: task?.retry_max ?? settings?.default_retry_max ?? 3,
     })
     setScheduledInput(task?.scheduled_at ? fromDbTime(task.scheduled_at) : '')
