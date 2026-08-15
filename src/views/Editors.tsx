@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { Download, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react'
+import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Button, EmptyState, IconButton, PagedList, Select } from '../components/ui'
-import { isValidEmail } from '../format'
+import { isValidEmail, formatTime } from '../format'
 import { useNav } from '../nav'
 import type { Editor, EditorInput } from '../types'
 import { GENRES, STYLES, isPlanStyle, normalizeEditorTags } from './planShared'
@@ -22,6 +24,7 @@ export function EditorsView() {
   const [workType, setWorkType] = useState('')
   const [editing, setEditing] = useState<Editor | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const [more, setMore] = useState<{ id: number; anchor: HTMLButtonElement } | null>(null)
   const [form, setForm] = useState<EditorInput>(emptyForm)
   const [customWorkType, setCustomWorkType] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
@@ -66,6 +69,9 @@ export function EditorsView() {
     return true
   }), [basePool, style, workType])
 
+  // 筛选变化时收起展开中的标签气泡
+  useEffect(() => { setMore(null) }, [visible])
+
   const openAdd = () => { setEditing(null); setForm(emptyForm); setCustomWorkType(''); setShowForm(true) }
   const openEdit = (e: Editor) => {
     const next = normalizeEditorTags(e)
@@ -106,9 +112,15 @@ export function EditorsView() {
   }
 
   const exportList = async () => {
+    const path = await saveDialog({
+      title: '导出编辑库',
+      defaultPath: '编辑库.xlsx',
+      filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }],
+    })
+    if (!path) return
     try {
-      const path = await api.exportEditors()
-      toast(`已导出到 ${path}`, 'success')
+      const saved = await api.exportEditors(path)
+      toast(`已导出到 ${saved}`, 'success')
     } catch (e) { toast(String(e), 'error') }
   }
 
@@ -195,28 +207,46 @@ export function EditorsView() {
               items={visible}
               keyOf={(e) => e.id}
               listClassName="editor-groups"
-              renderItem={(e) => (
-                <div className="editor-row">
-                  <div className="editor-row-main">
-                    <b>{e.name.trim() || e.email}</b>
-                    {e.name.trim() ? <small>{e.email}</small> : null}
+              renderItem={(e) => {
+                const styles = e.style ?? []
+                const workTypes = e.work_type ?? []
+                const tags = [...styles, ...workTypes]
+                const shown = tags.slice(0, 2)
+                return (
+                  <div className="editor-row">
+                    <div className="editor-row-main">
+                      <b>{e.name.trim() || '佚名'}</b>
+                      <small>{e.email}</small>
+                    </div>
+                    <div className="editor-row-platform">{e.platform.trim() || UNASSIGNED}</div>
+                    <div className="editor-row-time" title={e.updated_at}>录入 {formatTime(e.updated_at)}</div>
+                    <div className="editor-row-tags">
+                      {tags.length ? (
+                        <>
+                          {shown.map((d, i) => (
+                            <span key={d} className={`chip on ${i >= styles.length ? 'tone' : ''}`}>{d}</span>
+                          ))}
+                          {tags.length > shown.length && (
+                            <button type="button" className="editor-chip-more"
+                              onClick={(ev) => setMore((m) => (m?.id === e.id ? null : { id: e.id, anchor: ev.currentTarget }))}>
+                              +{tags.length - shown.length}
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <span className="hint">未设标签</span>
+                      )}
+                    </div>
+                    <div className="row-actions">
+                      <Button size="sm" onClick={() => openEdit(e)}>编辑</Button>
+                      <IconButton title="删除" className="danger" onClick={() => void remove(e.id)}><Trash2 size={15} /></IconButton>
+                    </div>
+                    {more?.id === e.id && (
+                      <EditorTagsPop anchor={more.anchor} styles={styles} workTypes={workTypes} onClose={() => setMore(null)} />
+                    )}
                   </div>
-                  <div className="editor-row-platform">{e.platform.trim() || UNASSIGNED}</div>
-                  <div className="editor-row-tags">
-                    {(e.style ?? []).length
-                      ? e.style.map((d) => <span className="chip on" key={d}>{d}</span>)
-                      : <span className="hint">未设风格</span>}
-                    {(e.work_type ?? []).length > 0 && <i className="editor-tag-divider" />}
-                    {(e.work_type ?? []).length
-                      ? e.work_type.map((d) => <span className="chip on tone" key={d}>{d}</span>)
-                      : null}
-                  </div>
-                  <div className="row-actions">
-                    <Button size="sm" onClick={() => openEdit(e)}>编辑</Button>
-                    <IconButton title="删除" className="danger" onClick={() => void remove(e.id)}><Trash2 size={15} /></IconButton>
-                  </div>
-                </div>
-              )}
+                )
+              }}
               empty={!visible.length && (
                 <p className="editor-groups-empty">{loading ? '读取中…' : '没有符合筛选的编辑'}</p>
               )}
@@ -274,5 +304,62 @@ export function EditorsView() {
         </Modal>
       )}
     </>
+  )
+}
+
+// 「+N」标签气泡：跟随按钮定位，超出视口时向上弹开，滚动/缩放跟随。
+function EditorTagsPop({ anchor, styles, workTypes, onClose }: {
+  anchor: HTMLButtonElement
+  styles: string[]
+  workTypes: string[]
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<CSSProperties>()
+
+  useLayoutEffect(() => {
+    const place = () => {
+      if (!anchor.isConnected) { onClose(); return }
+      const rect = anchor.getBoundingClientRect()
+      const gap = 7
+      const width = Math.min(300, Math.max(170, rect.width))
+      const estimate = 16 + Math.ceil((styles.length + workTypes.length) / 3) * 30
+      const spaceBelow = window.innerHeight - rect.bottom - gap
+      const spaceAbove = rect.top - gap
+      const up = spaceBelow < estimate && spaceAbove > spaceBelow
+      let left = Math.min(rect.right - width, window.innerWidth - width - 12)
+      if (left < 12) left = 12
+      setPos(up
+        ? { top: 'auto', bottom: window.innerHeight - rect.top + gap, left, width }
+        : { top: rect.bottom + gap, bottom: 'auto', left, width })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [anchor, styles.length, workTypes.length, onClose])
+
+  useEffect(() => {
+    const onDown = (ev: MouseEvent) => {
+      const target = ev.target as Node
+      if (ref.current?.contains(target) || anchor.contains(target)) return
+      onClose()
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [anchor, onClose])
+
+  return createPortal(
+    <div ref={ref} className="editor-more-pop" style={pos} role="tooltip">
+      <div className="editor-more-tags">
+        {styles.map((d) => <span className="chip on" key={d}>{d}</span>)}
+        {!!styles.length && !!workTypes.length && <i className="editor-tag-divider" />}
+        {workTypes.map((d) => <span className="chip on tone" key={d}>{d}</span>)}
+      </div>
+    </div>,
+    document.body,
   )
 }

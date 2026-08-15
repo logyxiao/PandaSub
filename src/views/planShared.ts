@@ -1,9 +1,8 @@
 import { parseRecipient } from '../format'
 import type { Delivery, Editor, Manuscript, ManuscriptInput, Task } from '../types'
 
-export const GENRES = ['古风', '现代', '都市', '校园', '玄幻', '仙侠', '科幻', '悬疑', '恐怖', '民间', '脑洞', '重生', '穿越', '甜宠', '虐恋', '社会', '性转', '女主', '男主']
+export const GENRES = ['女频', '古风', '现代', '都市', '校园', '玄幻', '仙侠', '科幻', '悬疑', '恐怖', '民间', '脑洞', '重生', '穿越', '甜宠', '虐恋', '社会', '性转', '女主', '男主']
 export const CATEGORIES = ['短篇（8000字以下）', '短篇（8000-12000字）', '中篇（1.2-5万字）', '长篇（5万字以上）', '微小说']
-export const READERS = ['女频', '男频', '不限']
 export const STYLES = ['小程序', '知乎风', '番茄风'] as const
 export type PlanStyle = (typeof STYLES)[number]
 
@@ -64,7 +63,7 @@ export const TEMPLATES = [
 
 export const emptyManuscript: ManuscriptInput = {
   title: '', body: '', content_type: 'text/plain', recipients: [], sender_name: '',
-  word_count: 0, category: '', reader_category: '', reader_emotion: '', style: '',
+  word_count: 0, category: '', reader_emotion: '', style: '',
   genres: [], excluded_types: [], subject: '', file_name: '',
 }
 
@@ -88,11 +87,10 @@ export function categoryLabel(category: string) {
   return category
 }
 
-export function defaultSubject(input: Pick<ManuscriptInput, 'title' | 'word_count' | 'reader_category' | 'genres'>) {
+export function defaultSubject(input: Pick<ManuscriptInput, 'title' | 'word_count' | 'genres'>) {
   return [
     input.title.trim(),
     input.word_count > 0 ? `${input.word_count}字` : '',
-    input.reader_category.trim(),
     input.genres.join('、'),
   ].filter(Boolean).join('+')
 }
@@ -117,7 +115,7 @@ export function toInput(m: Manuscript): ManuscriptInput {
   return {
     title: m.title, body: m.body, content_type: m.content_type, recipients: m.recipients,
     sender_name: m.sender_name, word_count: m.word_count, category: m.category,
-    reader_category: m.reader_category, reader_emotion: m.reader_emotion, style: m.style,
+    reader_emotion: m.reader_emotion, style: m.style,
     genres: m.genres ?? [], excluded_types: m.excluded_types ?? [], subject: m.subject,
     file_name: m.file_name, has_file: m.has_file,
   }

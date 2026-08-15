@@ -8,7 +8,7 @@ import { isValidEmail, parseRecipient } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, EditorInput, Manuscript, ManuscriptInput, TaskInput } from '../types'
 import {
-  CATEGORIES, GENRES, READERS, SCHEDULE_OPTIONS, STYLES, editorWorkTypeOptions, isPlanStyle, normalizeEditorTags,
+  CATEGORIES, GENRES, SCHEDULE_OPTIONS, STYLES, editorWorkTypeOptions, isPlanStyle, normalizeEditorTags,
   categoryFromWords, defaultBody, defaultSubject, editorPlatformKey, editorRecipient, estimateAutoMinutes, fillPlaceholders, pickOneEditorPerPlatform, sentCountByEmail,
 } from './planShared'
 
@@ -182,7 +182,7 @@ export function PlanEditor({
       if (f.subject === subject && f.body === body) return f
       return { ...f, subject, body }
     })
-  }, [form.title, form.word_count, form.category, form.reader_category, form.genres, mailDirty, setForm])
+  }, [form.title, form.word_count, form.category, form.genres, mailDirty, setForm])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -391,10 +391,6 @@ export function PlanEditor({
                 <Select value={form.category} onChange={(value) => setForm({ ...form, category: value })} ariaLabel="选择作品篇幅"
                   options={[{ value: '', label: '未选' }, ...CATEGORIES.map((x) => ({ value: x, label: x }))]} />
               </label>
-              <label>读者
-                <Select value={form.reader_category} onChange={(value) => setForm({ ...form, reader_category: value })} ariaLabel="选择读者类型"
-                  options={[{ value: '', label: '未选' }, ...READERS.map((x) => ({ value: x, label: x }))]} />
-              </label>
               <label>风格
                 <Select value={form.style} onChange={(value) => setForm({ ...form, style: value })} ariaLabel="选择作品风格"
                   options={[{ value: '', label: '未选' }, ...STYLES.map((x) => ({ value: x, label: x }))]} />
@@ -426,7 +422,7 @@ export function PlanEditor({
 
             <div className="plan-mail">
               <input value={form.subject} onChange={(e) => { setMailDirty(true); setForm({ ...form, subject: e.target.value }) }}
-                placeholder="标题+字数+读者+作品类型" />
+                placeholder="标题+字数+作品类型" />
               <textarea className="plan-body" rows={8} value={form.body}
                 onChange={(e) => { setMailDirty(true); setForm({ ...form, body: e.target.value }) }}
                 placeholder={'尊敬的编辑大大：\n\n辛苦审阅，期待您的意见！'} />

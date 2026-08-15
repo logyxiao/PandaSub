@@ -1,10 +1,8 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use calamine::Reader;
 use rusqlite::OptionalExtension;
 use rust_xlsxwriter::Workbook;
 use serde_json::json;
-use tauri::{AppHandle, Manager, State};
+use tauri::State;
 
 use crate::models::{EditorImportResult, EditorInput};
 use crate::state::AppState;
@@ -120,18 +118,20 @@ pub fn delete_editor(state: State<'_, AppState>, id: i64) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn export_editors(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String, String> {
     let editors = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         store::load_editors(&conn)?
     };
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let path = dir.join(format!("编辑库_{ts}.xlsx"));
+    let path = if path.trim().to_lowercase().ends_with(".xlsx") {
+        path
+    } else {
+        format!("{path}.xlsx")
+    };
+    let file = std::path::PathBuf::from(&path);
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
@@ -160,7 +160,7 @@ pub fn export_editors(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
             .map_err(|e| e.to_string())?;
     }
     workbook.save(&path).map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().to_string())
+    Ok(path)
 }
 
 #[tauri::command]

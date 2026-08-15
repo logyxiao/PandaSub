@@ -278,7 +278,7 @@ export function PlansView() {
                     <tr key={m.id}>
                       <td>
                         <b>{m.title}</b>
-                        <small>{[m.category, m.reader_category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || '未填写分类'}</small>
+                        <small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || '未填写分类'}</small>
                       </td>
                       <td>{n ? `${n} 家` : <span className="warn-text">未设置</span>}</td>
                       <td style={{ minWidth: 140 }}>

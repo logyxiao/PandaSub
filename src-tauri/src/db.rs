@@ -129,6 +129,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_editor_tag_columns(&connection)?;
     migrate_editor_directions(&connection)?;
     normalize_editor_style_values(&connection)?;
+    seed_editor_reader_tags(&connection)?;
     add_task_account_columns(&connection)?;
     add_task_log_recipient_column(&connection)?;
     add_manuscript_file_column(&connection)?;
@@ -308,6 +309,57 @@ fn migrate_editor_directions(conn: &Connection) -> Result<(), String> {
         "UPDATE editors SET work_type = directions
          WHERE (work_type IS NULL OR work_type = '' OR work_type = '[]')
            AND directions IS NOT NULL AND TRIM(directions) != '' AND directions != '[]'",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 一次性：给现有每个编辑的作品类型补上「女频」标签（用 settings 标记，只跑一次）。
+fn seed_editor_reader_tags(conn: &Connection) -> Result<(), String> {
+    let seeded: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.reader_tag_seeded'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if seeded > 0 {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 || table_lacks_column(conn, "editors", "work_type") {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare("SELECT id, work_type FROM editors")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+    for (id, raw) in rows {
+        let mut work_type: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        if work_type.iter().any(|t| t == "女频") {
+            continue;
+        }
+        work_type.push("女频".into());
+        conn.execute(
+            "UPDATE editors SET work_type = ?1, updated_at = datetime('now','localtime') WHERE id = ?2",
+            rusqlite::params![serde_json::json!(work_type).to_string(), id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.reader_tag_seeded', '1')",
         [],
     )
     .map_err(|e| e.to_string())?;

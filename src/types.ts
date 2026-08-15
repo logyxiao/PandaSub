@@ -63,7 +63,6 @@ export interface Manuscript {
   sender_name: string
   word_count: number
   category: string
-  reader_category: string
   reader_emotion: string
   style: string
   genres: string[]
@@ -83,7 +82,6 @@ export interface ManuscriptInput {
   sender_name: string
   word_count: number
   category: string
-  reader_category: string
   reader_emotion: string
   style: string
   genres: string[]
