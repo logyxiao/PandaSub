@@ -128,6 +128,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard,
+            commands::get_stats,
             commands::list_accounts,
             commands::add_account,
             commands::update_account,
@@ -160,6 +161,7 @@ pub fn run() {
             commands::show_main_window,
             commands::list_replies,
             commands::scan_replies,
+            commands::reclassify_replies,
             commands::extract_docx_text,
             commands::list_deliveries,
             commands::list_editors,

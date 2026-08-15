@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ChevronDown, Clock3, FileUp, Plus, RotateCcw, Search, Send, Users } from 'lucide-react'
+import { ArrowLeft, Clock3, FileUp, Plus, RotateCcw, Search, Send, Users } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
@@ -47,6 +47,7 @@ export function PlanEditor({
   const [showRecipients, setShowRecipients] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set())
+  const [matchGenres, setMatchGenres] = useState<Set<string>>(() => new Set())
   const [excludedTypes, setExcludedTypes] = useState<Set<string>>(() => new Set())
   const [pickedByPlatform, setPickedByPlatform] = useState<Record<string, string>>({})
   const [mailDirty, setMailDirty] = useState(() => Boolean(editing && (form.subject.trim() || form.body.trim())))
@@ -102,8 +103,8 @@ export function PlanEditor({
   }, [workTypeOptions, form.genres])
 
   const { picked, groups } = useMemo(
-    () => pickOneEditorPerPlatform(editors, form.style, form.genres, sentMap, pickedByPlatform, excludedTypes),
-    [editors, form.style, form.genres, sentMap, pickedByPlatform, excludedTypes],
+    () => pickOneEditorPerPlatform(editors, form.style, [...matchGenres], sentMap, pickedByPlatform, excludedTypes),
+    [editors, form.style, matchGenres, sentMap, pickedByPlatform, excludedTypes],
   )
 
   const rows = useMemo(() => {
@@ -166,16 +167,17 @@ export function PlanEditor({
     setPinned([])
   }, [form.style, form.genres])
 
-  // 编辑已有计划：进入时以保存的收件名单为准，把匹配池里不在名单中的编辑排除、名单里不在池中的收件人固定显示，并恢复排除的作品类型。
+  // 匹配的作品类型默认取作品已勾选的类型；编辑已有计划时额外恢复保存的收件名单状态与排除类型。
   useEffect(() => {
     if (initRef.current) return
     initRef.current = true
+    setMatchGenres(new Set(form.genres))
+    if (form.excluded_types?.length) setExcludedTypes(new Set(form.excluded_types))
     if (!editing) return
     const savedEmails = new Set(form.recipients.map((r) => parseRecipient(r).email.toLowerCase()))
     const poolEmails = new Set(picked.map((e) => e.email.toLowerCase()))
     setExcluded(new Set(picked.filter((e) => !savedEmails.has(e.email.toLowerCase())).map((e) => e.email.toLowerCase())))
     setPinned(form.recipients.filter((r) => !poolEmails.has(parseRecipient(r).email.toLowerCase())))
-    if (form.excluded_types?.length) setExcludedTypes(new Set(form.excluded_types))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在进入时按保存的数据初始化一次
   }, [])
 
@@ -235,6 +237,15 @@ export function PlanEditor({
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
+      return next
+    })
+  }
+
+  const toggleMatchGenre = (tag: string) => {
+    setMatchGenres((prev) => {
+      const next = new Set(prev)
+      if (next.has(tag)) next.delete(tag)
+      else next.add(tag)
       return next
     })
   }
@@ -377,7 +388,7 @@ export function PlanEditor({
     ? <>还没有编辑。去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 里先存邮箱、风格和作品类型。</>
     : editors.every((e) => e.enabled === false)
       ? <>编辑都已暂停。去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 里启动后再筛选。</>
-      : !form.style && !form.genres.length
+      : !form.style && !matchGenres.size
         ? '先选好作品风格或作品类型，名单会按这两项匹配，每个平台只出一位。'
         : excludedTypes.size
           ? '当前条件下没有编辑。可减少排除的作品类型，或改风格 / 作品类型。'
@@ -547,7 +558,7 @@ export function PlanEditor({
           <div className="send-detail-head">
             <div className="send-detail-title">
               <h3>收件名单</h3>
-              <p>按类型匹配，每个平台保留一位编辑 · 已选 {selected.length} / {rows.length} 位 · 已投 {selected.filter((r) => r.sent > 0).length} · 未投 {pending}</p>
+              <p>已选 {selected.length} / {rows.length} 位 · 已投 {selected.filter((r) => r.sent > 0).length} · 未投 {pending}</p>
             </div>
             <div className="send-detail-actions">
               <label className="plan-search send-detail-search">
@@ -570,32 +581,6 @@ export function PlanEditor({
               ))}
             </div>
             <div className="plan-list-actions">
-              {!!workTypeOptions.length && (
-                <details className="plan-exclude-dropdown">
-                  <summary>
-                    <span>排除作品类型</span>
-                    {!!excludedTypes.size && <b>{excludedTypes.size}</b>}
-                    <ChevronDown size={14} />
-                  </summary>
-                  <div className="plan-exclude-menu">
-                    <div className="plan-exclude-menu-head">
-                      <span>勾选不参与匹配的类型</span>
-                      {!!excludedTypes.size && (
-                        <button type="button" onClick={() => setExcludedTypes(new Set())}>清空</button>
-                      )}
-                    </div>
-                    <div className="plan-exclude-options">
-                      {workTypeOptions.map(([tag, count]) => (
-                        <label key={tag} className={excludedTypes.has(tag) ? 'is-selected' : ''}>
-                          <input type="checkbox" checked={excludedTypes.has(tag)} onChange={() => toggleExcludedType(tag)} />
-                          <span>{tag}</span>
-                          <small>{count}</small>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                </details>
-              )}
               <div className="plan-board-meta">
                 <span>显示 {visible.length} 位</span>
                 {!!visible.length && (
@@ -608,70 +593,133 @@ export function PlanEditor({
             </div>
           </div>
 
-          <div className="plan-people recipients-list">
-            {visible.map((r) => {
-              const tags = r.editor ? [...new Set([...(r.editor.style ?? []), ...(r.editor.work_type ?? [])])] : []
-              const displayName = r.editor?.name.trim() || r.name
-              const platformLabel = r.pinned ? '名单内' : (r.editor?.platform.trim() || '未填平台')
-              return (
-              <div className={`plan-person ${r.sent ? 'is-sent' : ''} ${r.checked ? '' : 'is-off'} ${r.pinned ? 'is-pinned' : ''}`} key={r.raw}>
-                <input type="checkbox" checked={r.checked} onChange={() => toggleOne(r.email)} aria-label={`${r.checked ? '取消选择' : '选择'} ${displayName}`} />
-                <div className="plan-person-body">
-                  <div className="plan-person-top">
-                    <div className="plan-person-identity">
-                      <span>{platformLabel}</span>
-                      <b>{displayName}</b>
-                    </div>
-                    <span className="plan-person-sent-state">
-                      {r.sent > 0 ? (
-                        <>
-                          <Badge tone="success" dot>已投 {r.sent}</Badge>
-                          {r.lastSentAt && <small>最近 {formatTime(r.lastSentAt)}</small>}
-                          {deliveryByEmail.has(r.email.toLowerCase()) && (
-                            <IconButton title={resending === r.email.toLowerCase() ? '发送中…' : '重新发送该编辑'}
-                              disabled={resending !== null} onClick={() => void resend(r.email)}>
-                              <RotateCcw size={13} />
-                            </IconButton>
-                          )}
-                        </>
-                      ) : (
-                        <Badge tone="neutral">未投</Badge>
-                      )}
-                    </span>
-                    {!r.pinned && r.alts.length > 1 && (
-                      <Select
-                        value={r.email}
-                        className="plan-alt-select"
-                        ariaLabel={`${r.editor?.platform || '该平台'}换一位编辑`}
-                        onChange={(next) => {
-                          const email = String(next).toLowerCase()
-                          setPickedByPlatform((prev) => ({ ...prev, [editorPlatformKey(r.editor!)]: email }))
-                          setExcluded((prev) => {
-                            const copy = new Set(prev)
-                            copy.delete(email)
-                            return copy
-                          })
-                        }}
-                        options={r.alts.map((alt) => ({
-                          value: alt.email,
-                          label: alt.name.trim() || alt.email,
-                          description: alt.email === r.email ? '当前' : alt.email,
-                        }))}
-                      />
-                    )}
-                  </div>
-                  {(r.pinned || r.editor?.name.trim()) && <small className="plan-person-email">{r.email}</small>}
-                  {!!tags.length && (
-                    <div className="plan-person-tags">
-                      {tags.map((d) => (
-                        <span className={`chip ${(form.style && form.style === d) || form.genres.includes(d) ? 'on' : ''}`} key={d}>{d}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
+          <div className="plan-exclude-bar">
+            <span className="plan-exclude-label">作品类型</span>
+            <div className="plan-exclude-chips">
+              {genreChips.map(([tag, count]) => (
+                <button type="button" key={tag}
+                  className={`plan-exclude-chip ${matchGenres.has(tag) ? 'on' : ''}`}
+                  onClick={() => toggleMatchGenre(tag)}
+                  title={matchGenres.has(tag) ? `不参与匹配「${tag}」` : `参与匹配「${tag}」`}>
+                  {tag}<small>{count}</small>
+                </button>
+              ))}
+            </div>
+            <div className="plan-exclude-ops">
+              <button type="button" className="plan-exclude-clear" onClick={() => setMatchGenres(new Set())}>清空</button>
+              <button type="button" className="plan-exclude-clear" onClick={() => setMatchGenres(new Set(genreChips.map(([tag]) => tag)))}>全部</button>
+            </div>
+          </div>
+
+          {!matchGenres.size && (
+            <p className="plan-genres-empty plan-genres-hint">未选作品类型，名单将只按风格匹配。</p>
+          )}
+
+          {!!genreChips.length && (
+            <div className="plan-exclude-bar">
+              <span className="plan-exclude-label">排除作品类型</span>
+              <div className="plan-exclude-chips">
+                {genreChips.map(([tag, count]) => (
+                  <button type="button" key={tag}
+                    className={`plan-exclude-chip danger ${excludedTypes.has(tag) ? 'on' : ''}`}
+                    onClick={() => toggleExcludedType(tag)}
+                    title={excludedTypes.has(tag) ? `取消排除「${tag}」` : `排除「${tag}」`}>
+                    {tag}<small>{count}</small>
+                  </button>
+                ))}
               </div>
-              )
-            })}
+              {!!excludedTypes.size && (
+                <button type="button" className="plan-exclude-clear" onClick={() => setExcludedTypes(new Set())}>
+                  清空（{excludedTypes.size}）
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="recipients-table-wrap">
+            <table className="recipients-table">
+              <thead>
+                <tr>
+                  <th className="col-check" aria-label="选择" />
+                  <th>编辑</th>
+                  <th className="col-platform">平台</th>
+                  <th>风格 / 作品类型</th>
+                  <th className="col-state">发送状态</th>
+                  <th className="col-switch" aria-label="换人" />
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((r) => {
+                  const styles = r.editor?.style ?? []
+                  const workTypes = r.editor?.work_type ?? []
+                  const tags = [...new Set([...styles, ...workTypes])]
+                  const displayName = r.editor?.name.trim() || r.name
+                  const platformLabel = r.pinned ? '名单内' : (r.editor?.platform.trim() || '未填平台')
+                  return (
+                    <tr key={r.raw} className={`${r.sent ? 'is-sent' : ''} ${r.checked ? '' : 'is-off'} ${r.pinned ? 'is-pinned' : ''}`}>
+                      <td className="col-check">
+                        <input type="checkbox" checked={r.checked} onChange={() => toggleOne(r.email)} aria-label={`${r.checked ? '取消选择' : '选择'} ${displayName}`} />
+                      </td>
+                      <td className="recipients-editor">
+                        <b>{displayName}</b>
+                        <small>{r.email}</small>
+                      </td>
+                      <td className="col-platform">
+                        {r.pinned
+                          ? <span className="chip on">{platformLabel}</span>
+                          : <span className="recipients-platform">{platformLabel}</span>}
+                      </td>
+                      <td>
+                        {tags.length ? (
+                          <div className="editor-row-tags recipients-tags">
+                            {styles.map((d) => <span className="chip on" key={d}>{d}</span>)}
+                            {!!styles.length && !!workTypes.length && <i className="editor-tag-divider" />}
+                            {workTypes.map((d) => <span className="chip on tone" key={d}>{d}</span>)}
+                          </div>
+                        ) : <span className="hint">无标签</span>}
+                      </td>
+                      <td className="col-state">
+                        {r.sent > 0 ? (
+                          <span className="send-state">
+                            <Badge tone="success" dot>已投 {r.sent}</Badge>
+                            {r.lastSentAt && <small>最近 {formatTime(r.lastSentAt)}</small>}
+                            {deliveryByEmail.has(r.email.toLowerCase()) && (
+                              <IconButton title={resending === r.email.toLowerCase() ? '发送中…' : '重新发送该编辑'}
+                                disabled={resending !== null} onClick={() => void resend(r.email)}>
+                                <RotateCcw size={13} />
+                              </IconButton>
+                            )}
+                          </span>
+                        ) : <Badge tone="neutral">未投</Badge>}
+                      </td>
+                      <td className="col-switch">
+                        {!r.pinned && r.alts.length > 1 && (
+                          <Select
+                            value={r.email}
+                            className="plan-alt-select"
+                            ariaLabel={`${r.editor?.platform || '该平台'}换一位编辑`}
+                            onChange={(next) => {
+                              const email = String(next).toLowerCase()
+                              setPickedByPlatform((prev) => ({ ...prev, [editorPlatformKey(r.editor!)]: email }))
+                              setExcluded((prev) => {
+                                const copy = new Set(prev)
+                                copy.delete(email)
+                                return copy
+                              })
+                            }}
+                            options={r.alts.map((alt) => ({
+                              value: alt.email,
+                              label: alt.name.trim() || alt.email,
+                              description: alt.email === r.email ? '当前' : alt.email,
+                            }))}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
             {!visible.length && <p className="plan-empty">{visibleEmptyHint}</p>}
           </div>
         </Modal>

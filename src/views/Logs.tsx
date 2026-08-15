@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Download, FileText, RefreshCw, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Download, FileText, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { api, onLog } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
@@ -20,6 +20,7 @@ export function LogsView() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [taskFilter, setTaskFilter] = useState<number | ''>('')
   const [levelFilter, setLevelFilter] = useState<string>('')
+  const [emailQuery, setEmailQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
   const [notice, setNotice] = useState('')
   const toast = useToast()
@@ -51,13 +52,24 @@ export function LogsView() {
     }
   }, [taskFilter])
 
-  const filtered = levelFilter ? logs.filter((l) => l.level === levelFilter) : logs
+  const accountEmail = (id: number | null) =>
+    id ? accounts.find((a) => a.id === id)?.email ?? '—' : '—'
+
   const taskName = (id: number | null) => {
     if (!id) return '—'
     return tasks.find((t) => t.id === id)?.name ?? `#${id}`
   }
-  const accountEmail = (id: number | null) =>
-    id ? accounts.find((a) => a.id === id)?.email ?? '—' : '—'
+
+  const filtered = useMemo(() => {
+    const q = emailQuery.trim().toLowerCase()
+    return logs.filter((l) => {
+      if (levelFilter && l.level !== levelFilter) return false
+      if (!q) return true
+      const sender = (l.account_id ? accounts.find((a) => a.id === l.account_id)?.email ?? '' : '').toLowerCase()
+      const recipient = (l.recipient ?? '').toLowerCase()
+      return sender.includes(q) || recipient.includes(q)
+    })
+  }, [logs, levelFilter, emailQuery, accounts])
 
   const toggleMsg = (id: number) => {
     setExpanded((prev) => {
@@ -96,6 +108,10 @@ export function LogsView() {
     <>
       <div className="toolbar">
         <div className="filters">
+          <label className="plan-search editor-search">
+            <Search size={14} />
+            <input value={emailQuery} onChange={(e) => setEmailQuery(e.target.value)} placeholder="搜索发件 / 编辑邮箱" />
+          </label>
           <Select value={taskFilter} onChange={setTaskFilter} ariaLabel="按计划筛选" className="filter-select"
             options={[{ value: '' as const, label: '全部计划' }, ...tasks.map((t) => ({ value: t.id, label: t.name }))]} />
           <Select value={levelFilter} onChange={setLevelFilter} ariaLabel="按结果筛选" className="filter-select"
@@ -117,9 +133,14 @@ export function LogsView() {
 
       {!filtered.length ? (
         <div className="panel">
-          <EmptyState icon={FileText} title="还没有发送记录"
-            desc={tasks.length ? '计划开始后，每封邮件的结果会显示在这里。' : '创建计划并开始发送后，这里会出现结果。'}
-            action={!tasks.length ? <Button variant="primary" onClick={() => go('plans')}>去创建计划</Button> : undefined} />
+          {logs.length ? (
+            <EmptyState icon={Search} title="没有匹配的记录"
+              desc="换个发件 / 编辑邮箱，或调整筛选条件试试。" />
+          ) : (
+            <EmptyState icon={FileText} title="还没有发送记录"
+              desc={tasks.length ? '计划开始后，每封邮件的结果会显示在这里。' : '创建计划并开始发送后，这里会出现结果。'}
+              action={!tasks.length ? <Button variant="primary" onClick={() => go('plans')}>去创建计划</Button> : undefined} />
+          )}
         </div>
       ) : (
         <div className="panel">

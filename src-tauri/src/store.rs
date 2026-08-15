@@ -546,13 +546,14 @@ pub fn insert_reply(
     body: &str,
     kind: &str,
     reason: &str,
+    accepted: bool,
     message_id: &str,
     in_reply_to: &str,
     imap_uid: i64,
 ) -> Result<Reply, String> {
     conn.execute(
-        "INSERT INTO replies (delivery_id, account_id, task_id, from_email, subject, snippet, body, kind, reason, message_id, in_reply_to, imap_uid)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        "INSERT INTO replies (delivery_id, account_id, task_id, from_email, subject, snippet, body, kind, reason, accepted, message_id, in_reply_to, imap_uid)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             delivery_id,
             account_id,
@@ -563,6 +564,7 @@ pub fn insert_reply(
             body,
             kind,
             reason,
+            accepted,
             message_id,
             in_reply_to,
             imap_uid
@@ -582,6 +584,7 @@ pub fn insert_reply(
         body: body.into(),
         kind: kind.into(),
         reason: reason.into(),
+        accepted,
         message_id: message_id.into(),
         in_reply_to: in_reply_to.into(),
         imap_uid,
@@ -604,19 +607,20 @@ fn map_reply(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reply> {
         body: r.get(7)?,
         kind: r.get(8)?,
         reason: r.get(9)?,
-        message_id: r.get(10)?,
-        in_reply_to: r.get(11)?,
-        imap_uid: r.get(12)?,
-        received_at: r.get(13)?,
-        created_at: r.get(14)?,
-        recipient: r.get::<_, Option<String>>(15)?.unwrap_or_default(),
-        task_name: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+        accepted: r.get::<_, i64>(10)? != 0,
+        message_id: r.get(11)?,
+        in_reply_to: r.get(12)?,
+        imap_uid: r.get(13)?,
+        received_at: r.get(14)?,
+        created_at: r.get(15)?,
+        recipient: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+        task_name: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
     })
 }
 
 pub fn load_replies(conn: &Connection, kind: Option<&str>, limit: i64) -> Result<Vec<Reply>, String> {
     let sql = "SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject, r.snippet, r.body,
-                      r.kind, r.reason, r.message_id, r.in_reply_to, r.imap_uid, r.received_at, r.created_at,
+                      r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid, r.received_at, r.created_at,
                       d.recipient, t.name
                FROM replies r
                LEFT JOIN deliveries d ON d.id = r.delivery_id
@@ -647,4 +651,14 @@ pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
         |r| r.get(0),
     )
     .map_err(|e| e.to_string())
+}
+
+/// 按新分类规则更新某条回复的判定结果（kind / reason / accepted）。
+pub fn update_reply_kind(conn: &Connection, id: i64, kind: &str, reason: &str, accepted: bool) -> Result<(), String> {
+    conn.execute(
+        "UPDATE replies SET kind = ?1, reason = ?2, accepted = ?3 WHERE id = ?4",
+        params![kind, reason, accepted, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }

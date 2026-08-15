@@ -182,6 +182,7 @@ export interface Reply {
   body: string
   kind: ReplyKind
   reason: string
+  accepted: boolean
   message_id: string
   in_reply_to: string
   imap_uid: number
@@ -189,4 +190,17 @@ export interface Reply {
   created_at: string
   recipient: string
   task_name: string
+}
+
+export interface StatsGroup {
+  period: string
+  deliveries: number
+  human_replies: number
+  failures: number
+  accepted: number
+}
+
+export interface StatsReport {
+  groups: StatsGroup[]
+  totals: StatsGroup
 }

@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react'
 
-export type ViewId = 'dashboard' | 'plans' | 'logs' | 'replies' | 'accounts' | 'editors' | 'settings'
+export type ViewId = 'dashboard' | 'stats' | 'plans' | 'logs' | 'replies' | 'accounts' | 'editors' | 'settings'
 
 export const NavContext = createContext<{
   go: (id: ViewId) => void

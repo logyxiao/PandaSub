@@ -17,8 +17,6 @@ pub struct FetchedMail {
     pub message_id: String,
     pub in_reply_to: String,
     pub references: String,
-    pub auto_submitted: String,
-    pub precedence: String,
     pub content_type: String,
     pub extra_headers: Vec<(String, String)>,
 }
@@ -105,12 +103,12 @@ fn scan_one_account(
             from: mail.from.clone(),
             subject: mail.subject.clone(),
             body: mail.body.clone(),
-            auto_submitted: mail.auto_submitted.clone(),
-            precedence: mail.precedence.clone(),
             content_type: mail.content_type.clone(),
             extra_headers: mail.extra_headers.clone(),
         });
         let snippet: String = mail.body.chars().take(180).collect();
+        let accepted = classification.kind == classify::ReplyKind::Human
+            && classify::body_suggests_accepted(&mail.body);
         let reply = {
             let conn = db.lock().map_err(|e| e.to_string())?;
             store::insert_reply(
@@ -124,6 +122,7 @@ fn scan_one_account(
                 &mail.body,
                 classification.kind.as_str(),
                 &classification.reason,
+                accepted,
                 &mail.message_id,
                 &mail.in_reply_to,
                 mail.uid as i64,
@@ -280,8 +279,6 @@ fn parse_message(uid: u32, raw: &[u8]) -> FetchedMail {
             message_id: parsed.message_id().unwrap_or("").to_string(),
             in_reply_to: header_ids(parsed.in_reply_to()),
             references: header_ids(parsed.references()),
-            auto_submitted: header_text(&parsed, "Auto-Submitted"),
-            precedence: header_text(&parsed, "Precedence"),
             content_type: content_type_of(&parsed),
             extra_headers: extra,
         };
@@ -294,8 +291,6 @@ fn parse_message(uid: u32, raw: &[u8]) -> FetchedMail {
         message_id: String::new(),
         in_reply_to: String::new(),
         references: String::new(),
-        auto_submitted: String::new(),
-        precedence: String::new(),
         content_type: String::new(),
         extra_headers: Vec::new(),
     }

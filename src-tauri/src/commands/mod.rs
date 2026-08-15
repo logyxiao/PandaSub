@@ -8,6 +8,7 @@ pub mod editors;
 pub mod logs;
 pub mod manuscripts;
 pub mod replies;
+pub mod stats;
 pub mod system;
 pub mod tasks;
 
@@ -17,5 +18,6 @@ pub use editors::*;
 pub use logs::*;
 pub use manuscripts::*;
 pub use replies::*;
+pub use stats::*;
 pub use system::*;
 pub use tasks::*;

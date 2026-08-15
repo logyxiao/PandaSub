@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS replies (
   body TEXT NOT NULL DEFAULT '',
   kind TEXT NOT NULL,
   reason TEXT NOT NULL DEFAULT '',
+  accepted INTEGER NOT NULL DEFAULT 0,
   message_id TEXT NOT NULL DEFAULT '',
   in_reply_to TEXT NOT NULL DEFAULT '',
   imap_uid INTEGER NOT NULL DEFAULT 0,
@@ -131,6 +132,8 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_task_account_columns(&connection)?;
     add_task_log_recipient_column(&connection)?;
     add_manuscript_file_column(&connection)?;
+    add_reply_accepted_column(&connection)?;
+    add_reply_accepted_column(&connection)?;
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
@@ -390,6 +393,28 @@ fn add_task_log_recipient_column(conn: &Connection) -> Result<(), String> {
     if table_lacks_column(conn, "task_logs", "recipient") {
         conn.execute(
             "ALTER TABLE task_logs ADD COLUMN recipient TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// 历史库补 replies.accepted 列（过稿标记）。
+fn add_reply_accepted_column(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'replies'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "replies", "accepted") {
+        conn.execute(
+            "ALTER TABLE replies ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0",
             [],
         )
         .map_err(|e| e.to_string())?;

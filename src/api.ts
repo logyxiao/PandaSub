@@ -2,11 +2,13 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
   Account, AccountInput, Dashboard, Delivery, Editor, EditorImportResult, EditorInput, Manuscript, ManuscriptInput,
-  Reply, Settings, Task, TaskInput, TaskLog,
+  Reply, Settings, StatsReport, Task, TaskInput, TaskLog,
 } from './types'
 
 export const api = {
   dashboard: () => invoke<Dashboard>('get_dashboard'),
+  getStats: (start?: string, end?: string, group?: string) =>
+    invoke<StatsReport>('get_stats', { start: start || null, end: end || null, group: group || null }),
 
   listAccounts: () => invoke<Account[]>('list_accounts'),
   addAccount: (input: AccountInput) => invoke<number>('add_account', { input }),
@@ -41,6 +43,7 @@ export const api = {
   backup: () => invoke<string>('backup_data'),
   listReplies: (kind?: string) => invoke<Reply[]>('list_replies', { kind: kind || null }),
   scanReplies: () => invoke<number>('scan_replies'),
+  reclassifyReplies: () => invoke<number>('reclassify_replies'),
   extractDocx: (data: number[]) => invoke<string>('extract_docx_text', { data }),
   listDeliveries: () => invoke<Delivery[]>('list_deliveries'),
   resendDelivery: (deliveryId: number) => invoke('resend_delivery', { deliveryId }),

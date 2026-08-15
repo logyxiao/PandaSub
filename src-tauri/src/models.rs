@@ -251,6 +251,21 @@ pub struct Dashboard {
     pub logs: Vec<TaskLog>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct StatsGroup {
+    pub period: String,
+    pub deliveries: i64,
+    pub human_replies: i64,
+    pub failures: i64,
+    pub accepted: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct StatsReport {
+    pub groups: Vec<StatsGroup>,
+    pub totals: StatsGroup,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Delivery {
     pub id: i64,
@@ -275,6 +290,7 @@ pub struct Reply {
     pub body: String,
     pub kind: String,
     pub reason: String,
+    pub accepted: bool,
     pub message_id: String,
     pub in_reply_to: String,
     pub imap_uid: i64,
