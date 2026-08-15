@@ -65,12 +65,25 @@ pub struct Manuscript {
     pub style: String,
     #[serde(default)]
     pub genres: Vec<String>,
+    /// 排除的作品类型（不参与匹配筛选），随计划持久化。
+    #[serde(default)]
+    pub excluded_types: Vec<String>,
     #[serde(default)]
     pub subject: String,
     #[serde(default)]
     pub file_name: String,
+    /// 是否存有附件文件内容（列表查询用，不携带实际字节）。
+    #[serde(default)]
+    pub has_file: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// 测试发送时附带附件：文件名 + 文件内容字节。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AttachmentInput {
+    pub name: String,
+    pub data: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -92,10 +105,16 @@ pub struct ManuscriptInput {
     pub style: String,
     #[serde(default)]
     pub genres: Vec<String>,
+    /// 排除的作品类型（不参与匹配筛选），随计划持久化。
+    #[serde(default)]
+    pub excluded_types: Vec<String>,
     #[serde(default)]
     pub subject: String,
     #[serde(default)]
     pub file_name: String,
+    /// 上传的附件文件内容（Word / 文本）。None 表示无附件；更新时 None 保留原附件。
+    #[serde(default)]
+    pub file_data: Option<Vec<u8>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -103,6 +122,8 @@ pub struct Task {
     pub id: i64,
     pub name: String,
     pub manuscript_ids: Vec<i64>,
+    #[serde(default)]
+    pub account_ids: Vec<i64>,
     pub status: String,
     pub schedule_type: String,
     pub scheduled_at: Option<String>,
@@ -124,6 +145,8 @@ pub struct Task {
 pub struct TaskInput {
     pub name: String,
     pub manuscript_ids: Vec<i64>,
+    #[serde(default)]
+    pub account_ids: Vec<i64>,
     pub schedule_type: String,
     pub scheduled_at: Option<String>,
     pub interval_min: i64,
@@ -143,6 +166,8 @@ pub struct TaskLog {
     pub level: String,
     pub category: String,
     pub message: String,
+    /// 收件人（编辑）邮箱，仅发送类日志有值。
+    pub recipient: Option<String>,
     pub created_at: String,
 }
 
@@ -190,6 +215,29 @@ impl Default for Settings {
     }
 }
 
+pub const EDITOR_STYLES: &[&str] = &["小程序", "知乎风", "番茄风"];
+
+pub fn split_editor_tags(style: &[String], work_type: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut styles = Vec::new();
+    let mut types = Vec::new();
+    let mut seen_style = std::collections::BTreeSet::new();
+    let mut seen_type = std::collections::BTreeSet::new();
+    for raw in style.iter().chain(work_type.iter()) {
+        let tag = raw.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if EDITOR_STYLES.contains(&tag) {
+            if seen_style.insert(tag.to_string()) {
+                styles.push(tag.to_string());
+            }
+        } else if seen_type.insert(tag.to_string()) {
+            types.push(tag.to_string());
+        }
+    }
+    (styles, types)
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Editor {
     pub id: i64,
@@ -197,7 +245,11 @@ pub struct Editor {
     pub name: String,
     pub email: String,
     #[serde(default)]
-    pub directions: Vec<String>,
+    pub style: Vec<String>,
+    #[serde(default)]
+    pub work_type: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -208,7 +260,9 @@ pub struct EditorInput {
     pub name: String,
     pub email: String,
     #[serde(default)]
-    pub directions: Vec<String>,
+    pub style: Vec<String>,
+    #[serde(default)]
+    pub work_type: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]

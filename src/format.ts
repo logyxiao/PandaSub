@@ -25,6 +25,8 @@ export const toDbTime = (dt: string) => {
   return withSeconds.replace('T', ' ')
 }
 
+export const fromDbTime = (value: string) => value.replace(' ', 'T').slice(0, 16)
+
 export const statusLabel = (s: TaskStatus): string =>
   ({ running: '发送中', paused: '已暂停', stopped: '已停止', completed: '已完成', scheduled: '等待定时' })[s]
 

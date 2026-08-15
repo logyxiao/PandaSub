@@ -1,4 +1,4 @@
-use lettre::message::{header::ContentType, Mailbox, Message};
+use lettre::message::{header::ContentType, Attachment, Mailbox, Message, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::transport::smtp::Error as SmtpError;
@@ -22,7 +22,7 @@ impl std::fmt::Display for SendError {
     }
 }
 
-fn parse_mailbox(input: &str) -> Result<Mailbox, SendError> {
+pub fn parse_mailbox(input: &str) -> Result<Mailbox, SendError> {
     match input.parse::<Mailbox>() {
         Ok(m) => Ok(m),
         Err(e) => Err(SendError::Build(e.to_string())),
@@ -85,6 +85,7 @@ pub async fn send_email(
     subject: &str,
     body: &str,
     content_type: &str,
+    attachment: Option<(&str, &[u8])>,
 ) -> Result<String, SendError> {
     let mailer = build_mailer(account).map_err(SendError::Smtp)?;
     let from_src = if sender_name.trim().is_empty() {
@@ -100,14 +101,27 @@ pub async fn send_email(
         ContentType::TEXT_PLAIN
     };
     let message_id = make_message_id();
-    let message = Message::builder()
+    let builder = Message::builder()
         .from(from)
         .to(to)
         .subject(subject)
-        .message_id(Some(message_id.clone()))
-        .header(content)
-        .body(body.to_string())
-        .map_err(|e| SendError::Build(e.to_string()))?;
+        .message_id(Some(message_id.clone()));
+    let message = if let Some((name, data)) = attachment {
+        // 正文 + 附件（multipart/mixed），正文在前、附件在后。
+        let part = Attachment::new(name.to_string()).body(
+            data.to_vec(),
+            ContentType::parse("application/octet-stream")
+                .map_err(|e| SendError::Build(e.to_string()))?,
+        );
+        builder.multipart(
+            MultiPart::mixed()
+                .singlepart(SinglePart::builder().header(content).body(body.to_string()))
+                .singlepart(part),
+        )
+    } else {
+        builder.header(content).body(body.to_string())
+    }
+    .map_err(|e| SendError::Build(e.to_string()))?;
     mailer.send(message).await.map_err(SendError::Smtp)?;
     Ok(message_id)
 }

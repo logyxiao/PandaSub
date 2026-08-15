@@ -43,7 +43,9 @@ export interface Editor {
   platform: string
   name: string
   email: string
-  directions: string[]
+  style: string[]
+  work_type: string[]
+  enabled: boolean
   created_at: string
   updated_at: string
 }
@@ -52,7 +54,8 @@ export interface EditorInput {
   platform: string
   name: string
   email: string
-  directions: string[]
+  style: string[]
+  work_type: string[]
 }
 
 export interface EditorImportResult {
@@ -74,8 +77,10 @@ export interface Manuscript {
   reader_emotion: string
   style: string
   genres: string[]
+  excluded_types?: string[]
   subject: string
   file_name: string
+  has_file?: boolean
   created_at: string
   updated_at: string
 }
@@ -92,8 +97,11 @@ export interface ManuscriptInput {
   reader_emotion: string
   style: string
   genres: string[]
+  excluded_types?: string[]
   subject: string
   file_name: string
+  file_data?: number[] | null
+  has_file?: boolean
 }
 
 export type TaskStatus = 'stopped' | 'scheduled' | 'running' | 'paused' | 'completed'
@@ -103,6 +111,7 @@ export interface Task {
   id: number
   name: string
   manuscript_ids: number[]
+  account_ids: number[]
   status: TaskStatus
   schedule_type: ScheduleType
   scheduled_at: string | null
@@ -123,6 +132,7 @@ export interface Task {
 export interface TaskInput {
   name: string
   manuscript_ids: number[]
+  account_ids: number[]
   schedule_type: ScheduleType
   scheduled_at: string | null
   interval_min: number
@@ -143,6 +153,7 @@ export interface TaskLog {
   level: LogLevel
   category: string
   message: string
+  recipient?: string | null
   created_at: string
 }
 

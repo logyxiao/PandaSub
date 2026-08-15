@@ -40,11 +40,12 @@ fn parse_list<T: serde::de::DeserializeOwned>(raw: &str) -> Vec<T> {
 
 const MANUSCRIPT_COLS: &str = "id, title, body, content_type, recipients, sender_name,
     word_count, category, reader_category, reader_emotion, style, genres, subject, file_name,
-    created_at, updated_at";
+    created_at, updated_at, (file_data IS NOT NULL AND length(file_data) > 0), excluded_types";
 
 fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
     let raw_recipients: String = r.get(4)?;
     let raw_genres: String = r.get(11)?;
+    let raw_excluded: String = r.get(17)?;
     Ok(Manuscript {
         id: r.get(0)?,
         title: r.get(1)?,
@@ -58,8 +59,10 @@ fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
         reader_emotion: r.get(9)?,
         style: r.get(10)?,
         genres: parse_list(&raw_genres),
+        excluded_types: parse_list(&raw_excluded),
         subject: r.get(12)?,
         file_name: r.get(13)?,
+        has_file: r.get::<_, i64>(16)? != 0,
         created_at: r.get(14)?,
         updated_at: r.get(15)?,
     })
@@ -123,18 +126,40 @@ pub fn load_all_manuscripts(conn: &Connection) -> Result<Vec<Manuscript>, String
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
-const EDITOR_COLS: &str = "id, platform, name, email, directions, created_at, updated_at";
+/// 加载稿件的附件（文件名 + 内容），没有附件时返回 None。列表查询不带附件，仅发送时按需读取。
+pub fn load_manuscript_attachment(
+    conn: &Connection,
+    id: i64,
+) -> Result<Option<(String, Vec<u8>)>, String> {
+    let row: Option<(String, Option<Vec<u8>>)> = conn
+        .query_row(
+            "SELECT file_name, file_data FROM manuscripts WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match row {
+        Some((name, Some(data))) if !data.is_empty() => Ok(Some((name, data))),
+        _ => Ok(None),
+    }
+}
+
+const EDITOR_COLS: &str = "id, platform, name, email, style, work_type, created_at, updated_at, enabled";
 
 fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
-    let raw_directions: String = r.get(4)?;
+    let raw_style: String = r.get(4)?;
+    let raw_work_type: String = r.get(5)?;
     Ok(Editor {
         id: r.get(0)?,
         platform: r.get(1)?,
         name: r.get(2)?,
         email: r.get(3)?,
-        directions: parse_list(&raw_directions),
-        created_at: r.get(5)?,
-        updated_at: r.get(6)?,
+        style: parse_list(&raw_style),
+        work_type: parse_list(&raw_work_type),
+        created_at: r.get(6)?,
+        updated_at: r.get(7)?,
+        enabled: r.get::<_, i64>(8)? != 0,
     })
 }
 
@@ -151,7 +176,7 @@ pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
 pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, manuscript_ids, status, schedule_type, scheduled_at,
+            "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
                     interval_min, interval_max, batch_size_min, batch_size_max,
                     batch_pause_min, batch_pause_max, retry_max, sent, total,
                     created_at, started_at, finished_at
@@ -161,25 +186,27 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
     let row = stmt
         .query_row([id], |r| {
             let raw_ids: String = r.get(2)?;
+            let raw_accounts: String = r.get(3)?;
             Ok(Task {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 manuscript_ids: parse_list::<i64>(&raw_ids),
-                status: r.get(3)?,
-                schedule_type: r.get(4)?,
-                scheduled_at: r.get(5)?,
-                interval_min: r.get(6)?,
-                interval_max: r.get(7)?,
-                batch_size_min: r.get(8)?,
-                batch_size_max: r.get(9)?,
-                batch_pause_min: r.get(10)?,
-                batch_pause_max: r.get(11)?,
-                retry_max: r.get(12)?,
-                sent: r.get(13)?,
-                total: r.get(14)?,
-                created_at: r.get(15)?,
-                started_at: r.get(16)?,
-                finished_at: r.get(17)?,
+                account_ids: parse_list::<i64>(&raw_accounts),
+                status: r.get(4)?,
+                schedule_type: r.get(5)?,
+                scheduled_at: r.get(6)?,
+                interval_min: r.get(7)?,
+                interval_max: r.get(8)?,
+                batch_size_min: r.get(9)?,
+                batch_size_max: r.get(10)?,
+                batch_pause_min: r.get(11)?,
+                batch_pause_max: r.get(12)?,
+                retry_max: r.get(13)?,
+                sent: r.get(14)?,
+                total: r.get(15)?,
+                created_at: r.get(16)?,
+                started_at: r.get(17)?,
+                finished_at: r.get(18)?,
             })
         })
         .optional()
@@ -190,7 +217,7 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
 pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, name, manuscript_ids, status, schedule_type, scheduled_at,
+            "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
                     interval_min, interval_max, batch_size_min, batch_size_max,
                     batch_pause_min, batch_pause_max, retry_max, sent, total,
                     created_at, started_at, finished_at
@@ -200,25 +227,27 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
     let rows = stmt
         .query_map([], |r| {
             let raw_ids: String = r.get(2)?;
+            let raw_accounts: String = r.get(3)?;
             Ok(Task {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 manuscript_ids: parse_list::<i64>(&raw_ids),
-                status: r.get(3)?,
-                schedule_type: r.get(4)?,
-                scheduled_at: r.get(5)?,
-                interval_min: r.get(6)?,
-                interval_max: r.get(7)?,
-                batch_size_min: r.get(8)?,
-                batch_size_max: r.get(9)?,
-                batch_pause_min: r.get(10)?,
-                batch_pause_max: r.get(11)?,
-                retry_max: r.get(12)?,
-                sent: r.get(13)?,
-                total: r.get(14)?,
-                created_at: r.get(15)?,
-                started_at: r.get(16)?,
-                finished_at: r.get(17)?,
+                account_ids: parse_list::<i64>(&raw_accounts),
+                status: r.get(4)?,
+                schedule_type: r.get(5)?,
+                scheduled_at: r.get(6)?,
+                interval_min: r.get(7)?,
+                interval_max: r.get(8)?,
+                batch_size_min: r.get(9)?,
+                batch_size_max: r.get(10)?,
+                batch_pause_min: r.get(11)?,
+                batch_pause_max: r.get(12)?,
+                retry_max: r.get(13)?,
+                sent: r.get(14)?,
+                total: r.get(15)?,
+                created_at: r.get(16)?,
+                started_at: r.get(17)?,
+                finished_at: r.get(18)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -239,7 +268,8 @@ pub fn load_logs(
             level: r.get(3)?,
             category: r.get(4)?,
             message: r.get(5)?,
-            created_at: r.get(6)?,
+            recipient: r.get(6)?,
+            created_at: r.get(7)?,
         })
     };
 
@@ -247,7 +277,7 @@ pub fn load_logs(
         Some(tid) => {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, task_id, account_id, level, category, message, created_at
+                    "SELECT id, task_id, account_id, level, category, message, recipient, created_at
                      FROM task_logs WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
                 )
                 .map_err(|e| e.to_string())?;
@@ -261,7 +291,7 @@ pub fn load_logs(
         None => {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, task_id, account_id, level, category, message, created_at
+                    "SELECT id, task_id, account_id, level, category, message, recipient, created_at
                      FROM task_logs ORDER BY id DESC LIMIT ?1 OFFSET ?2",
                 )
                 .map_err(|e| e.to_string())?;
@@ -298,6 +328,36 @@ pub fn insert_log(
         level: level.to_string(),
         category: category.to_string(),
         message: message.to_string(),
+        recipient: None,
+        created_at,
+    })
+}
+
+/// 发送类日志：额外记录收件人（编辑）邮箱，供记录页「编辑邮箱」列展示。
+pub fn insert_send_log(
+    conn: &Connection,
+    task_id: Option<i64>,
+    account_id: Option<i64>,
+    level: &str,
+    category: &str,
+    message: &str,
+    recipient: &str,
+) -> Result<TaskLog, String> {
+    conn.execute(
+        "INSERT INTO task_logs (task_id, account_id, level, category, message, recipient) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![task_id, account_id, level, category, message, recipient],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    let created_at = now_str(conn)?;
+    Ok(TaskLog {
+        id,
+        task_id,
+        account_id,
+        level: level.to_string(),
+        category: category.to_string(),
+        message: message.to_string(),
+        recipient: (!recipient.trim().is_empty()).then(|| recipient.to_string()),
         created_at,
     })
 }
@@ -482,6 +542,53 @@ pub fn insert_delivery(
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
+}
+
+/// 本次运行开始后已投递成功的收件人邮箱集合（统一小写），用于停止后「继续发送」时跳过已投的收件人。
+pub fn delivered_emails_since(
+    conn: &Connection,
+    task_id: i64,
+    started_at: &str,
+) -> Result<std::collections::HashSet<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT recipient FROM deliveries WHERE task_id = ?1 AND sent_at >= ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![task_id, started_at], |r| {
+            let raw: String = r.get(0)?;
+            Ok(raw.to_lowercase())
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+/// 按 id 读取一条投递记录，用于「重新发送」。
+pub fn load_delivery(conn: &Connection, id: i64) -> Result<Option<Delivery>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, task_id, account_id, manuscript_id, recipient, subject, message_id, sent_at
+             FROM deliveries WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let row = stmt
+        .query_row([id], |r| {
+            Ok(Delivery {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                account_id: r.get(2)?,
+                manuscript_id: r.get(3)?,
+                recipient: r.get(4)?,
+                subject: r.get(5)?,
+                message_id: r.get(6)?,
+                sent_at: r.get(7)?,
+            })
+        })
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(row)
 }
 
 pub fn load_recent_deliveries(conn: &Connection, days: i64) -> Result<Vec<Delivery>, String> {

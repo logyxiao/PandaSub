@@ -15,6 +15,8 @@ use crate::store;
 struct SendTarget {
     manuscript: Manuscript,
     recipient: String,
+    /// 附件（文件名 + 内容），无附件时为 None。
+    attachment: Option<(String, Vec<u8>)>,
 }
 
 enum SendOutcome {
@@ -23,21 +25,19 @@ enum SendOutcome {
     RetryLater,
 }
 
-fn rand_between(min: i64, max: i64) -> i64 {
-    let (lo, hi) = if min > max { (max, min) } else { (min, max) };
-    if lo == hi {
-        return lo;
-    }
-    rand::rng().random_range(lo..=hi)
-}
-
-fn build_queue(_task: &Task, manuscripts: &[Manuscript]) -> VecDeque<SendTarget> {
+fn build_queue(
+    _task: &Task,
+    manuscripts: &[Manuscript],
+    attachments: &HashMap<i64, Option<(String, Vec<u8>)>>,
+) -> VecDeque<SendTarget> {
     let mut queue = VecDeque::new();
     for manuscript in manuscripts {
+        let attachment = attachments.get(&manuscript.id).cloned().flatten();
         for recipient in &manuscript.recipients {
             queue.push_back(SendTarget {
                 manuscript: manuscript.clone(),
                 recipient: recipient.clone(),
+                attachment: attachment.clone(),
             });
         }
     }
@@ -140,17 +140,70 @@ fn emit_task(app: &AppHandle, db: &Arc<Mutex<Connection>>, task_id: i64) {
     }
 }
 
-fn pick_available_account(db: &Arc<Mutex<Connection>>, cursor: &mut usize) -> Option<Account> {
+fn qq_global_cooldown(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT MAX(0, strftime('%s', value) - strftime('%s', 'now', 'localtime'))
+         FROM settings WHERE key = 'qq_next_send_at'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/// 参考工具投稿节奏：按本计划累计发送量分档，控制下一封的等待秒数。
+/// 前 11 封 180 秒（起步预热）→ 12–19 封 30 秒 → 20–51 封 60 秒 → 之后 120 秒。
+fn tier_interval_secs(next_send: i64) -> i64 {
+    match next_send {
+        1..=11 => 180,
+        12..=19 => 30,
+        20..=51 => 60,
+        _ => 120,
+    }
+}
+
+fn reserve_qq_send_slot(conn: &Connection, secs: i64) -> bool {
+    conn.execute(
+        "INSERT INTO settings (key, value)
+         VALUES ('qq_next_send_at', datetime('now', 'localtime', '+' || ?1 || ' seconds'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [secs],
+    ).is_ok()
+}
+
+fn pick_available_account(
+    db: &Arc<Mutex<Connection>>,
+    cursor: &mut usize,
+    allowed: &std::collections::HashSet<i64>,
+    qq_reserve_secs: i64,
+) -> Option<Account> {
     let conn = db.lock().unwrap();
     let accounts = store::load_accounts(&conn).ok()?;
     if accounts.is_empty() {
         return None;
     }
-    let n = accounts.len();
+    let scope: Vec<&Account> = if allowed.is_empty() {
+        accounts.iter().collect()
+    } else {
+        accounts.iter().filter(|a| allowed.contains(&a.id)).collect()
+    };
+    if scope.is_empty() {
+        return None;
+    }
+    // QQ keeps the exact sender/domain/IP thresholds private. Serialize QQ sends
+    // across tasks at the current task's tier cadence for a conservative floor.
+    let qq_cooldown = qq_global_cooldown(&conn);
+    let n = scope.len();
+    let cursor_mod = if n == 0 { 0 } else { *cursor % n };
     for i in 0..n {
-        let idx = (*cursor + i) % n;
-        let account = &accounts[idx];
+        let idx = (cursor_mod + i) % n;
+        let account = scope[idx];
+        if account.provider == "qq" && qq_cooldown > 0 {
+            continue;
+        }
         if store::account_available(&conn, account).unwrap_or(false) {
+            if account.provider == "qq" && !reserve_qq_send_slot(&conn, qq_reserve_secs) {
+                continue;
+            }
             *cursor = (idx + 1) % n;
             return Some(account.clone());
         }
@@ -175,6 +228,18 @@ async fn run_task_worker(
             None => Vec::new(),
         };
         (task, settings, manuscripts)
+    };
+
+    // 发送时按需读取各稿件的附件（文件名 + 内容），列表加载不带附件。
+    let attachments: HashMap<i64, Option<(String, Vec<u8>)>> = {
+        let conn = db.lock().unwrap();
+        manuscripts
+            .iter()
+            .map(|m| {
+                let att = store::load_manuscript_attachment(&conn, m.id).unwrap_or(None);
+                (m.id, att)
+            })
+            .collect()
     };
 
     let task = match task {
@@ -220,12 +285,54 @@ async fn run_task_worker(
     }
 
     let is_loop = task.schedule_type == "loop";
-    let mut queue = build_queue(&task, &manuscripts);
+    let mut queue = build_queue(&task, &manuscripts, &attachments);
     if !is_loop {
-        let total = queue.len() as i64;
-        let conn = db.lock().unwrap();
-        let _ = conn.execute("UPDATE tasks SET total = ?1 WHERE id = ?2", [total, task_id]);
+        let full_total = queue.len() as i64;
+        // 继续模式：任务已发过一部分（sent > 0），跳过本次运行已投递成功的收件人，
+        // 从剩下的继续投递；进度和节奏档位接着 task.sent 算。
+        if task.sent > 0 {
+            if let Some(started_at) = task.started_at.as_deref() {
+                let delivered = {
+                    let conn = db.lock().unwrap();
+                    store::delivered_emails_since(&conn, task_id, started_at).unwrap_or_default()
+                };
+                if !delivered.is_empty() {
+                    queue.retain(|t| {
+                        let (_, email) = smtp::parse_recipient(&t.recipient);
+                        !delivered.contains(&email.to_lowercase())
+                    });
+                }
+            }
+        }
+        {
+            let conn = db.lock().unwrap();
+            let _ = conn.execute(
+                "UPDATE tasks SET total = ?1 WHERE id = ?2",
+                [full_total, task_id],
+            );
+        }
         if queue.is_empty() {
+            if task.sent > 0 {
+                // 继续时所有收件人本次运行都投递过了：任务实际已投完。
+                let log = store::insert_log(
+                    &db.lock().unwrap(),
+                    Some(task_id),
+                    None,
+                    "success",
+                    "task",
+                    "任务全部投递完成",
+                );
+                if let Ok(log) = log {
+                    emit_log(&app, &log);
+                }
+                {
+                    let conn = db.lock().unwrap();
+                    let _ = store::mark_task_finished(&conn, task_id, "completed");
+                }
+                emit_task(&app, &db, task_id);
+                registry.lock().unwrap().remove(&task_id);
+                return;
+            }
             let log = store::insert_log(
                 &db.lock().unwrap(),
                 Some(task_id),
@@ -248,7 +355,8 @@ async fn run_task_worker(
     }
 
     let mut cursor: usize = 0;
-    let mut batch_remaining = rand_between(task.batch_size_min, task.batch_size_max);
+    let allowed_accounts: std::collections::HashSet<i64> = task.account_ids.iter().copied().collect();
+    let mut sent_total = task.sent;
 
     loop {
         if handle.is_stopped() {
@@ -273,7 +381,7 @@ async fn run_task_worker(
 
         if queue.is_empty() {
             if is_loop {
-                queue = build_queue(&task, &manuscripts);
+                queue = build_queue(&task, &manuscripts, &attachments);
                 if queue.is_empty() {
                     let log = store::insert_log(
                         &db.lock().unwrap(),
@@ -313,16 +421,18 @@ async fn run_task_worker(
 
         let target = queue.pop_front().unwrap();
 
-        let account = match pick_available_account(&db, &mut cursor) {
+        let interval = tier_interval_secs(sent_total + 1);
+        let account = match pick_available_account(&db, &mut cursor, &allowed_accounts, interval) {
             Some(a) => a,
             None => {
+                let message = "无可用账号（全部禁用、限流或已达上限），60 秒后重试";
                 let log = store::insert_log(
                     &db.lock().unwrap(),
                     Some(task_id),
                     None,
                     "warning",
                     "limit",
-                    "无可用账号（全部禁用、限流或已达上限），60 秒后重试",
+                    message,
                 );
                 if let Ok(log) = log {
                     emit_log(&app, &log);
@@ -363,6 +473,8 @@ async fn run_task_worker(
             task.retry_max,
             settings.limit_cooldown_minutes,
             &mut cursor,
+            &allowed_accounts,
+            interval,
             &handle,
         )
         .await;
@@ -383,14 +495,15 @@ async fn run_task_worker(
                         &message_id,
                     );
                 }
-                batch_remaining -= 1;
-                let log = store::insert_log(
+                sent_total += 1;
+                let log = store::insert_send_log(
                     &db.lock().unwrap(),
                     Some(task_id),
                     Some(account.id),
                     "success",
                     "send",
-                    &format!("投递成功 → {}", target.recipient),
+                    "投递成功",
+                    &target.recipient,
                 );
                 if let Ok(log) = log {
                     emit_log(&app, &log);
@@ -408,30 +521,13 @@ async fn run_task_worker(
             break;
         }
 
-        let delay = rand_between(task.interval_min, task.interval_max);
+        let delay = interval;
         interruptible_sleep(delay as u64, &handle).await;
         if handle.is_stopped() {
             break;
         }
         if handle.is_paused() {
             continue;
-        }
-
-        if batch_remaining <= 0 {
-            batch_remaining = rand_between(task.batch_size_min, task.batch_size_max);
-            let pause = rand_between(task.batch_pause_min, task.batch_pause_max);
-            let log = store::insert_log(
-                &db.lock().unwrap(),
-                Some(task_id),
-                None,
-                "info",
-                "batch",
-                &format!("本批投递完成，切换账号并休眠 {} 秒", pause),
-            );
-            if let Ok(log) = log {
-                emit_log(&app, &log);
-            }
-            interruptible_sleep(pause as u64, &handle).await;
         }
     }
 
@@ -469,6 +565,8 @@ async fn send_with_retry(
     retry_max: i64,
     cooldown_minutes: i64,
     cursor: &mut usize,
+    allowed: &std::collections::HashSet<i64>,
+    qq_reserve_secs: i64,
     handle: &TaskHandle,
 ) -> SendOutcome {
     let mut account = initial_account.clone();
@@ -491,6 +589,7 @@ async fn send_with_retry(
             subject,
             body,
             &target.manuscript.content_type,
+            target.attachment.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
         )
         .await
         {
@@ -519,7 +618,7 @@ async fn send_with_retry(
                             let conn = db.lock().unwrap();
                             let _ = store::mark_account_faulty(&conn, account.id);
                         }
-                        match pick_available_account(db, cursor) {
+                        match pick_available_account(db, cursor, allowed, qq_reserve_secs) {
                             Some(next) => {
                                 account = next;
                                 continue;
@@ -546,7 +645,7 @@ async fn send_with_retry(
                             let conn = db.lock().unwrap();
                             let _ = store::freeze_account(&conn, account.id, cooldown_minutes);
                         }
-                        match pick_available_account(db, cursor) {
+                        match pick_available_account(db, cursor, allowed, qq_reserve_secs) {
                             Some(next) => {
                                 account = next;
                                 continue;
@@ -562,19 +661,20 @@ async fn send_with_retry(
                             Some(account.id),
                             "warning",
                             "network",
-                            &format!("发送失败，稍后重试：{}", message),
+                            &format!("发送失败（发件：{}），稍后重试：{}", account.email, message),
                         );
                         if let Ok(log) = log {
                             emit_log(app, &log);
                         }
                         if network_attempts >= retry_max.max(1) {
-                            let log = store::insert_log(
+                            let log = store::insert_send_log(
                                 &db.lock().unwrap(),
                                 Some(task_id),
                                 Some(account.id),
                                 "error",
                                 "network",
                                 &format!("重试次数耗尽，跳过 {}", target.recipient),
+                                &target.recipient,
                             );
                             if let Ok(log) = log {
                                 emit_log(app, &log);

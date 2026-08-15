@@ -26,12 +26,20 @@ export function RepliesView() {
   useEffect(() => { void load() }, [load])
 
   useEffect(() => {
+    let cancelled = false
     let un: (() => void) | undefined
     onReply((reply) => {
+      if (cancelled) return
       if (kind && reply.kind !== kind) return
       setItems((prev) => [reply, ...prev.filter((r) => r.id !== reply.id)].slice(0, 300))
-    }).then((u) => { un = u })
-    return () => un?.()
+    }).then((u) => {
+      if (cancelled) u()
+      else un = u
+    })
+    return () => {
+      cancelled = true
+      un?.()
+    }
   }, [kind])
 
   const scan = async () => {

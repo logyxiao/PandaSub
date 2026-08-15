@@ -29,24 +29,38 @@ export function DashboardView() {
   useEffect(() => { void load() }, [])
 
   useEffect(() => {
+    let cancelled = false
     let un1: (() => void) | undefined
     let un2: (() => void) | undefined
+    const seenLogIds = new Set<number>()
     onLog((log: TaskLog) => {
+      if (cancelled || seenLogIds.has(log.id)) return
+      seenLogIds.add(log.id)
       setData((d) => ({
         ...d,
         logs: [log, ...d.logs].slice(0, 50),
         sent_today: d.sent_today + (log.level === 'success' && log.category === 'send' ? 1 : 0),
         failed_today: d.failed_today + (log.level === 'error' && (log.category === 'network' || log.category === 'send') ? 1 : 0),
       }))
-    }).then((u) => { un1 = u })
+    }).then((u) => {
+      if (cancelled) u()
+      else un1 = u
+    })
     onTask((task: Task) => {
+      if (cancelled) return
       setData((d) => {
         const tasks = [task, ...d.tasks.filter((t) => t.id !== task.id)]
         const running = tasks.filter((t) => t.status === 'running').length
         return { ...d, tasks, running_tasks: running }
       })
-    }).then((u) => { un2 = u })
-    return () => { un1?.(); un2?.() }
+    }).then((u) => {
+      if (cancelled) u()
+      else un2 = u
+    })
+    return () => {
+      cancelled = true
+      un1?.(); un2?.()
+    }
   }, [])
 
   const control = async (id: number, action: 'pause' | 'resume' | 'stop') => {
@@ -100,7 +114,7 @@ export function DashboardView() {
                 <span className="setup-index">{data.editor_count > 0 ? '✓' : '2'}</span>
                 <span>
                   <b>添加常投编辑</b>
-                  <small>{data.editor_count > 0 ? `已有 ${data.editor_count} 位` : '邮箱和收稿方向即可'}</small>
+                  <small>{data.editor_count > 0 ? `已有 ${data.editor_count} 位` : '填邮箱、风格或作品类型即可'}</small>
                 </span>
               </button>
             </li>

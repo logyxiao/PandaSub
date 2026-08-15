@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Ban, Check, Eye, EyeOff, Gauge, Mail, Plus, RefreshCw, Timer, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Ban, Check, Eye, EyeOff, Gauge, Mail, Plus, RefreshCw, ShieldCheck, Timer, Trash2, X } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
@@ -16,7 +16,7 @@ const presets: Record<string, { host: string; port: number; imap_host: string; i
 
 const emptyForm: AccountInput = {
   email: '', password: '', smtp_host: 'smtp.qq.com', smtp_port: 465,
-  sender_name: '', provider: 'qq', enabled: true, hourly_limit: 10, daily_limit: 50,
+  sender_name: '', provider: 'qq', enabled: true, hourly_limit: 7, daily_limit: 50,
   imap_host: 'imap.qq.com', imap_port: 993, check_replies: true,
 }
 
@@ -177,6 +177,12 @@ export function AccountsView() {
         </div>
       ) : (
         <>
+          {accounts.some((account) => account.provider === 'qq') && (
+            <div className="notice notice-info">
+              <ShieldCheck size={16} />
+              <span>QQ 安全模式已启用：所有 QQ 邮箱和同时运行的计划共用至少 5 分钟的发送间隔。QQ 官方按发件人、qq.com 域名、出口 IP 和连接频率限流，但不公开具体数字；页面额度是应用自己的保护上限。</span>
+            </div>
+          )}
           <section className="stat-strip" aria-label="邮箱额度">
             {summary.map(({ label, value, unit, icon: Icon, warn }) => (
               <div className="stat" key={label}>
@@ -226,7 +232,7 @@ export function AccountsView() {
           footer={<><Button variant="ghost" onClick={() => setShowForm(false)}>取消</Button><Button variant="primary" onClick={() => void save()}>保存配置</Button></>}>
           <div className="mail-config">
             <div className="mail-config-intro">
-              <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">填写下列四项，发送与收信参数由系统自动配置。</p></div>
+              <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">授权码用于 SMTP / IMAP。每天上限是应用本地保护值，不是邮箱官方承诺的额度。</p></div>
               {!editing && <Button variant="ghost" onClick={addForm}><Plus size={16} />添加邮箱</Button>}
             </div>
 
@@ -257,7 +263,7 @@ export function AccountsView() {
 
             <div className="mail-help">
               <div className="mail-help-icon"><Mail size={18} /></div>
-              <div><strong>如何获取邮箱授权码？</strong><p>QQ 邮箱：设置 → 账户 → POP3/IMAP/SMTP/Exchange 服务 → 开启服务并获取授权码</p><p>163 邮箱：设置 → POP3/SMTP/IMAP → 开启服务并设置授权码</p></div>
+              <div><strong>授权码与发送限制</strong><p>QQ 邮箱：设置 → 账户 → POP3/IMAP/SMTP/Exchange 服务 → 开启服务并获取授权码。</p><p>QQ 官方会按发件人、qq.com 域名、出口 IP 和连接频率限流，但不公开具体数字；应用会按所有 QQ 邮箱整体保护，含 QQ 的计划至少间隔 5 分钟。</p><p>163 邮箱：设置 → POP3/SMTP/IMAP → 开启服务并设置授权码。</p></div>
             </div>
           </div>
         </Modal>

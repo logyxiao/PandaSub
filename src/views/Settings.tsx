@@ -97,17 +97,12 @@ export function SettingsView() {
         <div className="settings-content">
           {section === 'defaults' && (
             <div className="panel settings-section">
-              <div className="panel-heading"><div><h2>发送节奏</h2><p>新建计划时会带上这些默认值。间隔越长，越不容易被限流。</p></div></div>
+              <div className="panel-heading"><div><h2>发送节奏</h2><p>发送间隔由系统按本计划累计发送量自动分档，无需手动设置。</p></div></div>
               <div className="form-grid pad">
-                <label className="field">两封之间最短等待（秒）<input type="number" min={1} {...num('default_interval_min')} /></label>
-                <label className="field">两封之间最长等待（秒）<input type="number" min={1} {...num('default_interval_max')} /></label>
-                <label className="field">每批最少几封<input type="number" min={1} {...num('default_batch_size_min')} /></label>
-                <label className="field">每批最多几封<input type="number" min={1} {...num('default_batch_size_max')} /></label>
-                <label className="field">批次之间最短休息（秒）
-                  <input type="number" min={0} {...num('default_batch_pause_min')} />
-                  <span className="field-hint">180 秒 = 3 分钟</span></label>
-                <label className="field">批次之间最长休息（秒）<input type="number" min={0} {...num('default_batch_pause_max')} /></label>
-                <label className="field">失败后重试几次<input type="number" min={1} {...num('default_retry_max')} /></label>
+                <div className="field span2">
+                  <p className="hint" style={{ marginBottom: 10 }}>自动分档：前 11 封 3 分钟 → 12–19 封 30 秒 → 20–51 封 1 分钟 → 52 封起 2 分钟。到点才发下一封。</p>
+                </div>
+                <label className="field span2">失败后重试几次<input type="number" min={1} {...num('default_retry_max')} /></label>
               </div>
             </div>
           )}

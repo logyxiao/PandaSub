@@ -1,0 +1,285 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Inbox, Plus, RotateCcw, Search, X } from 'lucide-react'
+import { api } from '../api'
+import { Modal } from '../components/Modal'
+import { useConfirm, useToast } from '../components/feedback'
+import { Badge, Button, EmptyState, IconButton, Pager } from '../components/ui'
+import { formatTime, parseRecipient } from '../format'
+import { useNav } from '../nav'
+import type { Account, Delivery, Editor, Manuscript } from '../types'
+import { editorRecipient, toInput } from './planShared'
+
+interface DetailRow {
+  order: number
+  raw: string
+  name: string
+  platform: string
+  email: string
+  sent: boolean
+  sentCount: number
+  lastSentAt: string | null
+}
+
+export function SendDetailModal({ manuscript, deliveries, editors, enabledAccounts, locked, onClose, onChanged }: {
+  manuscript: Manuscript
+  deliveries: Delivery[]
+  editors: Editor[]
+  enabledAccounts: Account[]
+  locked: boolean
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const toast = useToast()
+  const confirm = useConfirm()
+  const { go } = useNav()
+  // 收件人列表在弹窗内可改（移除 / 添加），改动后即时写库。
+  const [recipients, setRecipients] = useState<string[]>(manuscript.recipients)
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<'all' | 'sent' | 'unsent'>('all')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [showPicker, setShowPicker] = useState(false)
+  const [pickQuery, setPickQuery] = useState('')
+  const [resending, setResending] = useState<string | null>(null)
+
+  // 只看这个计划自己的投递记录，按收件人邮箱归组。
+  const sentByEmail = useMemo(() => {
+    const map = new Map<string, Delivery[]>()
+    for (const d of deliveries) {
+      if (d.manuscript_id !== manuscript.id) continue
+      const email = parseRecipient(d.recipient).email.toLowerCase()
+      const list = map.get(email) ?? []
+      list.push(d)
+      map.set(email, list)
+    }
+    return map
+  }, [deliveries, manuscript.id])
+
+  // 按默认发送顺序（收件人保存顺序）排列，并补充编辑资料与发送状态。
+  const rows = useMemo<DetailRow[]>(() => recipients.map((raw, i) => {
+    const parsed = parseRecipient(raw)
+    const email = parsed.email.toLowerCase()
+    const editor = editors.find((e) => e.email.toLowerCase() === email)
+    const sent = sentByEmail.get(email) ?? []
+    return {
+      order: i + 1,
+      raw,
+      name: editor?.name.trim() || parsed.name || parsed.email,
+      platform: editor?.platform.trim() || '—',
+      email: parsed.email,
+      sent: sent.length > 0,
+      sentCount: sent.length,
+      lastSentAt: sent.length ? sent[sent.length - 1].sent_at : null,
+    }
+  }), [recipients, editors, sentByEmail])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    let list = rows
+    if (filter === 'sent') list = list.filter((r) => r.sent)
+    else if (filter === 'unsent') list = list.filter((r) => !r.sent)
+    if (!q) return list
+    return list.filter((r) =>
+      [r.name, r.platform, r.email, r.raw].join(' ').toLowerCase().includes(q))
+  }, [rows, query, filter])
+
+  const sentCount = rows.filter((r) => r.sent).length
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const safePage = Math.min(page, pageCount)
+  const visible = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
+
+  // 添加编辑：编辑库中还没进这个计划的编辑。
+  const existingEmails = useMemo(
+    () => new Set(recipients.map((r) => parseRecipient(r).email.toLowerCase())),
+    [recipients],
+  )
+  const candidates = useMemo(
+    () => editors.filter((e) => !existingEmails.has(e.email.toLowerCase())),
+    [editors, existingEmails],
+  )
+  const filteredCandidates = useMemo(() => {
+    const q = pickQuery.trim().toLowerCase()
+    if (!q) return candidates
+    return candidates.filter((e) =>
+      [e.name, e.platform, e.email].join(' ').toLowerCase().includes(q))
+  }, [candidates, pickQuery])
+
+  useEffect(() => { setPage(1) }, [query, pageSize, filter])
+
+  const mutateRecipients = async (next: string[], okMsg: string) => {
+    if (next.length === recipients.length) return
+    try {
+      await api.updateManuscript(manuscript.id, { ...toInput(manuscript), recipients: next })
+      setRecipients(next)
+      toast(okMsg, 'success')
+      onChanged()
+    } catch (e) { toast(String(e), 'error') }
+  }
+
+  const removeRecipient = (email: string) => {
+    if (locked) { toast('计划正在发送，请先停止再修改收件人', 'warning'); return }
+    void mutateRecipients(
+      recipients.filter((r) => parseRecipient(r).email.toLowerCase() !== email.toLowerCase()),
+      '已从计划中移除该编辑',
+    )
+  }
+
+  const resend = async (row: DetailRow) => {
+    const sent = sentByEmail.get(row.email.toLowerCase()) ?? []
+    const latest = sent[sent.length - 1]
+    if (!latest) { toast('没有找到可重发的投递记录', 'warning'); return }
+    const ok = await confirm({
+      title: '重新发送？',
+      message: `将把「${row.name}」的稿件邮件重新发送一份到 ${row.email}，使用原发件账号。`,
+      confirmLabel: '重新发送',
+    })
+    if (!ok) return
+    setResending(row.email.toLowerCase())
+    try {
+      await api.resendDelivery(latest.id)
+      toast('已重新发送', 'success')
+      onChanged()
+    } catch (e) { toast(String(e), 'error') }
+    finally { setResending(null) }
+  }
+
+  const addEditor = (editor: Editor) => {
+    if (locked) { toast('计划正在发送，请先停止再修改收件人', 'warning'); return }
+    void mutateRecipients([...recipients, editorRecipient(editor)], '已加入计划，将按新顺序发送')
+    setShowPicker(false)
+    setPickQuery('')
+  }
+
+  const manualSend = async () => {
+    if (locked) { toast('这个计划正在发送，请先停止', 'warning'); return }
+    if (!recipients.length) { toast('列表里没有收件人，请先添加编辑', 'warning'); return }
+    const ok = await confirm({
+      title: '手动发送？',
+      message: `将手动发送 ${recipients.length} 封邮件给当前列表的全部收件人，使用已启用的发件邮箱。`
+        + (sentCount > 0 ? `其中 ${sentCount} 位已发送过，会再次发送；不需要的可以先行移除。` : ''),
+      confirmLabel: '手动发送',
+    })
+    if (!ok) return
+    try {
+      await api.createTask({
+        name: manuscript.title.trim(),
+        manuscript_ids: [manuscript.id],
+        account_ids: enabledAccounts.map((a) => a.id),
+        schedule_type: 'immediate',
+        scheduled_at: null,
+        interval_min: 300, interval_max: 300, batch_size_min: 6, batch_size_max: 8,
+        batch_pause_min: 180, batch_pause_max: 300, retry_max: 3,
+      })
+      toast('已开始手动发送', 'success')
+      onChanged()
+    } catch (e) { toast(String(e), 'error') }
+  }
+
+  return (
+    <Modal title="发送详情" width={880} onClose={onClose}>
+      <div className="send-detail-head">
+        <div className="send-detail-title">
+          <h3>{manuscript.title}</h3>
+          <p>按默认发送顺序排列 · 共 {recipients.length} 位收件人 · 已发送 {sentCount} · 未发送 {recipients.length - sentCount}</p>
+        </div>
+        <div className="send-detail-actions">
+          <label className="plan-search send-detail-search">
+            <Search size={14} />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索姓名、平台或邮箱" />
+          </label>
+          <Button size="sm" disabled={locked} onClick={() => setShowPicker((v) => !v)}><Plus size={14} />添加编辑</Button>
+          <Button size="sm" variant="primary" disabled={locked || !recipients.length} onClick={() => void manualSend()}>手动发送</Button>
+        </div>
+      </div>
+
+      {locked && (
+        <p className="warn-text send-detail-locked">这个计划正在发送，收件人修改和手动发送已暂停，停止后才能操作。</p>
+      )}
+
+      {showPicker && (
+        <div className="send-detail-picker">
+          <div className="send-detail-picker-head">
+            <label className="plan-search">
+              <Search size={14} />
+              <input value={pickQuery} onChange={(e) => setPickQuery(e.target.value)} placeholder="搜索编辑库（姓名、平台、邮箱）" />
+            </label>
+            <span className="hint">{filteredCandidates.length} 位可选</span>
+          </div>
+          {filteredCandidates.length ? (
+            <div className="send-detail-picker-list">
+              {filteredCandidates.map((e) => (
+                <div className="send-detail-pick" key={e.id}>
+                  <div className="send-detail-pick-info">
+                    <b>{e.name.trim() || e.email}</b>
+                    <small>{[e.platform.trim(), e.email].filter(Boolean).join(' · ')}</small>
+                  </div>
+                  <Button size="sm" onClick={() => addEditor(e)}>添加</Button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="hint">
+              {editors.length
+                ? '编辑库中没有可添加的编辑（或都已在这个计划里）。'
+                : <>编辑库还是空的，去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 页添加吧。</>}
+            </p>
+          )}
+        </div>
+      )}
+
+      {!rows.length ? (
+        <EmptyState icon={Inbox} title="这个计划还没有收件人"
+          desc="点击右上角「添加编辑」从编辑库选人，这里会按发送顺序列出每一位。" />
+      ) : !filtered.length ? (
+        <EmptyState icon={Search} title="没有匹配的收件人"
+          desc={filter === 'sent' ? '还没有发送成功的记录。' : filter === 'unsent' ? '没有未发送的收件人。' : '换个关键词试试。'} />
+      ) : (
+        <>
+          <div className="send-detail-filter" role="group" aria-label="发送状态筛选">
+            {([['all', '全部'], ['sent', '已发送'], ['unsent', '未发送']] as const).map(([value, label]) => (
+              <button key={value} type="button" className={`seg-btn ${filter === value ? 'is-active' : ''}`}
+                onClick={() => setFilter(value)}>{label}</button>
+            ))}
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>序号</th><th>编辑</th><th>平台</th><th>邮箱</th><th>状态</th><th>发送时间</th><th aria-label="操作" /></tr></thead>
+              <tbody>
+                {visible.map((r) => (
+                  <tr key={r.order}>
+                    <td className="mono">{r.order}</td>
+                    <td><b>{r.name}</b></td>
+                    <td>{r.platform}</td>
+                    <td className="mono">{r.email}</td>
+                    <td>
+                      {r.sent
+                        ? <Badge tone="success" dot>已发送{r.sentCount > 1 ? ` ×${r.sentCount}` : ''}</Badge>
+                        : <Badge tone="neutral">未发送</Badge>}
+                    </td>
+                    <td>{formatTime(r.lastSentAt)}</td>
+                    <td>
+                      <div className="row-actions">
+                        {r.sent && (
+                          <IconButton title={resending === r.email.toLowerCase() ? '发送中…' : '重新发送该编辑'}
+                            disabled={resending !== null} onClick={() => void resend(r)}>
+                            <RotateCcw size={14} />
+                          </IconButton>
+                        )}
+                        <IconButton title={locked ? '计划正在发送，先停止再移除' : '移除该编辑'} className="danger"
+                          disabled={locked} onClick={() => removeRecipient(r.email)}>
+                          <X size={14} />
+                        </IconButton>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager page={safePage} pageCount={pageCount} pageSize={pageSize} total={filtered.length}
+            onPage={setPage} onPageSize={(n) => setPageSize(n)} />
+        </>
+      )}
+    </Modal>
+  )
+}

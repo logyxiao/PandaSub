@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Check, ChevronDown } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { Tone } from '../format'
@@ -37,17 +38,55 @@ export function Select<T extends string | number>({ value, options, onChange, ar
   disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
+  const [up, setUp] = useState(false)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties | null>(null)
   const [active, setActive] = useState(0)
   const rootRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const listId = useId()
   const selectedIndex = options.findIndex((option) => option.value === value)
   const selected = options[selectedIndex]
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuStyle(null)
+      setUp(false)
+      return
+    }
+    const place = () => {
+      const root = rootRef.current
+      if (!root) return
+      const rect = root.getBoundingClientRect()
+      const gap = 7
+      const estimated = Math.min(280, options.length * 48 + 18)
+      const spaceBelow = window.innerHeight - rect.bottom - gap
+      const spaceAbove = rect.top - gap
+      const shouldUp = spaceBelow < estimated && spaceAbove > spaceBelow
+      const width = Math.min(Math.max(rect.width, 190), window.innerWidth - 32)
+      let left = rect.left
+      if (left + width > window.innerWidth - 16) left = Math.max(16, rect.right - width)
+      if (left < 16) left = 16
+      setUp(shouldUp)
+      setMenuStyle(shouldUp
+        ? { top: 'auto', bottom: window.innerHeight - rect.top + gap, left, width }
+        : { top: rect.bottom + gap, bottom: 'auto', left, width })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open, options.length])
 
   useEffect(() => {
     if (!open) return
     setActive(selectedIndex >= 0 ? selectedIndex : 0)
     const onPointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setOpen(false)
     }
     window.addEventListener('mousedown', onPointerDown)
     return () => window.removeEventListener('mousedown', onPointerDown)
@@ -79,13 +118,13 @@ export function Select<T extends string | number>({ value, options, onChange, ar
   }
 
   return (
-    <div ref={rootRef} className={`select-control ${open ? 'is-open' : ''} ${disabled ? 'is-disabled' : ''} ${className}`.trim()}>
+    <div ref={rootRef} className={`select-control ${open ? 'is-open' : ''} ${up ? 'is-up' : ''} ${disabled ? 'is-disabled' : ''} ${className}`.trim()}>
       <button type="button" className="select-trigger" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open}
         aria-controls={open ? listId : undefined} disabled={disabled} onClick={() => setOpen((current) => !current)} onKeyDown={onKeyDown}>
         <span className={selected ? '' : 'is-placeholder'}>{selected?.label ?? placeholder}</span><ChevronDown size={15} />
       </button>
-      {open && (
-        <div id={listId} className="select-menu" role="listbox" aria-label={ariaLabel}>
+      {open && menuStyle && createPortal(
+        <div ref={menuRef} id={listId} className={`select-menu ${up ? 'is-up' : ''}`} role="listbox" aria-label={ariaLabel} style={menuStyle}>
           {options.map((option, index) => (
             <button type="button" role="option" aria-selected={option.value === value} key={String(option.value)}
               className={`select-option ${option.value === value ? 'is-selected' : ''} ${index === active ? 'is-active' : ''}`}
@@ -94,7 +133,8 @@ export function Select<T extends string | number>({ value, options, onChange, ar
               {option.value === value && <Check size={15} />}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
@@ -113,6 +153,51 @@ export function Switch({ checked, onChange, label, disabled }: {
       {label && <span className="switch-label">{label}</span>}
     </label>
   )
+}
+
+export function Pager({ page, pageCount, pageSize, total, onPage, onPageSize, pageSizes = [10, 20, 50] }: {
+  page: number
+  pageCount: number
+  pageSize: number
+  total: number
+  onPage: (page: number) => void
+  onPageSize?: (size: number) => void
+  pageSizes?: number[]
+}) {
+  const start = total ? (page - 1) * pageSize + 1 : 0
+  const end = Math.min(page * pageSize, total)
+  const buttons = pagerButtons(page, pageCount)
+  return (
+    <div className="pager">
+      <span className="pager-meta">第 {start}–{end} 条，共 {total} 条</span>
+      <div className="pager-pages">
+        <button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>上一页</button>
+        {buttons.map((item, i) => item === '…'
+          ? <span key={`e${i}`}>…</span>
+          : <button type="button" key={item} className={item === page ? 'on' : ''} onClick={() => onPage(item)}>{item}</button>)}
+        <button type="button" disabled={page >= pageCount} onClick={() => onPage(page + 1)}>下一页</button>
+      </div>
+      {onPageSize && (
+        <label className="pager-size">每页
+          <select value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))} aria-label="每页条数">
+            {pageSizes.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </label>
+      )}
+    </div>
+  )
+}
+
+function pagerButtons(page: number, pageCount: number): Array<number | '…'> {
+  if (pageCount <= 7) return Array.from({ length: pageCount }, (_, i) => i + 1)
+  const set = new Set([1, pageCount, page - 1, page, page + 1].filter((n) => n >= 1 && n <= pageCount))
+  const sorted = [...set].sort((a, b) => a - b)
+  const out: Array<number | '…'> = []
+  for (const n of sorted) {
+    if (out.length && n - (out[out.length - 1] as number) > 1) out.push('…')
+    out.push(n)
+  }
+  return out
 }
 
 export function EmptyState({ icon: Icon, title, desc, action }: {

@@ -5,7 +5,7 @@ use rusqlite::OptionalExtension;
 use rust_xlsxwriter::Workbook;
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::models::{AccountInput, Dashboard, EditorImportResult, EditorInput, Manuscript, Settings, TaskInput, TaskLog};
 use crate::smtp;
@@ -174,12 +174,68 @@ pub async fn test_account(state: State<'_, AppState>, id: i64) -> Result<String,
         "熊猫投稿 连通性测试",
         "这是一封来自熊猫投稿的连通性测试邮件，收到说明 SMTP 配置正确。",
         "text/plain",
+        None,
     )
     .await
     {
         Ok(_) => Ok(format!("连接成功：测试邮件已发送到 {}", account.email)),
         Err(err) => {
             let (_, msg) = smtp::classify_error(&err);
+            Err(msg)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn send_test_email(
+    state: State<'_, AppState>,
+    account_id: i64,
+    manuscript_id: Option<i64>,
+    attachment: Option<crate::models::AttachmentInput>,
+    recipient: String,
+    sender_name: String,
+    subject: String,
+    body: String,
+    content_type: String,
+) -> Result<String, String> {
+    let account = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::load_account(&conn, account_id)?.ok_or("账号不存在")?
+    };
+    // 未指定收件人时发给自己，测试邮件绝不发给编辑。
+    let to = if recipient.trim().is_empty() {
+        account.email.clone()
+    } else {
+        recipient.trim().to_string()
+    };
+    // 附件：优先用前端传入的字节（新计划还没入库）；没传时若有稿件 id，则读数据库里已保存的附件。
+    let attachment_data: Option<(String, Vec<u8>)> = if let Some(att) = attachment {
+        Some((att.name, att.data))
+    } else if let Some(mid) = manuscript_id {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::load_manuscript_attachment(&conn, mid).unwrap_or(None)
+    } else {
+        None
+    };
+    crate::smtp::parse_mailbox(&to).map_err(|_| "收件人地址格式不对".to_string())?;
+    match crate::smtp::send_email(
+        &account,
+        &to,
+        if sender_name.trim().is_empty() { &account.sender_name } else { &sender_name },
+        &subject,
+        &body,
+        &content_type,
+        attachment_data.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
+    )
+    .await
+    {
+        Ok(_) => Ok(if attachment_data.is_some() {
+            format!("测试邮件已发送到 {}（含附件）", to)
+        } else {
+            format!("测试邮件已发送到 {}", to)
+        }),
+        Err(err) => {
+            let (_, msg) = crate::smtp::classify_error(&err);
             Err(msg)
         }
     }
@@ -211,20 +267,40 @@ fn validate_account(input: &AccountInput) -> Result<(), String> {
 
 // ---------- Editors ----------
 
-fn validate_editor(input: &crate::models::EditorInput) -> Result<(), String> {
+fn normalize_editor_input(input: &crate::models::EditorInput) -> crate::models::EditorInput {
+    let (style, work_type) = crate::models::split_editor_tags(&input.style, &input.work_type);
+    crate::models::EditorInput {
+        platform: input.platform.clone(),
+        name: input.name.clone(),
+        email: input.email.clone(),
+        style,
+        work_type,
+    }
+}
+
+fn validate_editor(input: &crate::models::EditorInput) -> Result<crate::models::EditorInput, String> {
+    let input = normalize_editor_input(input);
     if input.email.trim().is_empty() || !input.email.contains('@') {
         return Err("请填写有效的收稿邮箱".into());
     }
-    if !input.directions.iter().any(|d| !d.trim().is_empty()) {
-        return Err("请至少选一个收稿方向".into());
+    if !input.style.iter().any(|d| !d.trim().is_empty())
+        && !input.work_type.iter().any(|d| !d.trim().is_empty())
+    {
+        return Err("请至少填一个风格或作品类型".into());
     }
-    Ok(())
+    Ok(input)
 }
 
 #[tauri::command]
 pub fn list_editors(state: State<'_, AppState>) -> Result<Vec<crate::models::Editor>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    store::load_editors(&conn)
+    let mut editors = store::load_editors(&conn)?;
+    for editor in &mut editors {
+        let (style, work_type) = crate::models::split_editor_tags(&editor.style, &editor.work_type);
+        editor.style = style;
+        editor.work_type = work_type;
+    }
+    Ok(editors)
 }
 
 #[tauri::command]
@@ -232,17 +308,19 @@ pub fn add_editor(
     state: State<'_, AppState>,
     input: crate::models::EditorInput,
 ) -> Result<i64, String> {
-    validate_editor(&input)?;
+    let input = validate_editor(&input)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let directions = json!(input.directions).to_string();
+    let style = json!(input.style).to_string();
+    let work_type = json!(input.work_type).to_string();
     conn.execute(
-        "INSERT INTO editors (platform, name, email, directions)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO editors (platform, name, email, style, work_type)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![
             input.platform.trim(),
             input.name.trim(),
             input.email.trim().to_lowercase(),
-            directions
+            style,
+            work_type
         ],
     )
     .map_err(|e| {
@@ -261,18 +339,20 @@ pub fn update_editor(
     id: i64,
     input: crate::models::EditorInput,
 ) -> Result<(), String> {
-    validate_editor(&input)?;
+    let input = validate_editor(&input)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let directions = json!(input.directions).to_string();
+    let style = json!(input.style).to_string();
+    let work_type = json!(input.work_type).to_string();
     conn.execute(
-        "UPDATE editors SET platform = ?1, name = ?2, email = ?3, directions = ?4,
+        "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = ?4, work_type = ?5,
                 updated_at = datetime('now','localtime')
-         WHERE id = ?5",
+         WHERE id = ?6",
         rusqlite::params![
             input.platform.trim(),
             input.name.trim(),
             input.email.trim().to_lowercase(),
-            directions,
+            style,
+            work_type,
             id
         ],
     )
@@ -295,6 +375,17 @@ pub fn delete_editor(state: State<'_, AppState>, id: i64) -> Result<(), String> 
 }
 
 #[tauri::command]
+pub fn toggle_editor(state: State<'_, AppState>, id: i64, enabled: bool) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE editors SET enabled = ?1, updated_at = datetime('now','localtime') WHERE id = ?2",
+        rusqlite::params![enabled as i64, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn export_editors(app: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let editors = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -310,7 +401,7 @@ pub fn export_editors(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
-    let headers = ["平台", "名称", "邮箱", "收稿方向"];
+    let headers = ["平台", "名称", "邮箱", "风格", "作品类型", "状态"];
     for (col, h) in headers.iter().enumerate() {
         sheet
             .write_string(0, col as u16, *h)
@@ -328,7 +419,13 @@ pub fn export_editors(app: AppHandle, state: State<'_, AppState>) -> Result<Stri
             .write_string(row, 2, &editor.email)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 3, &editor.directions.join("、"))
+            .write_string(row, 3, &editor.style.join("、"))
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 4, &editor.work_type.join("、"))
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 5, if editor.enabled { "使用中" } else { "已暂停" })
             .map_err(|e| e.to_string())?;
     }
     workbook.save(&path).map_err(|e| e.to_string())?;
@@ -343,7 +440,7 @@ pub fn import_editors(
 ) -> Result<EditorImportResult, String> {
     let rows = parse_editor_import(&data, &file_name)?;
     if rows.is_empty() {
-        return Err("文件里没有可导入的行。请用列：平台、名称、邮箱、收稿方向。".into());
+        return Err("文件里没有可导入的行。请用列：平台、名称、邮箱、风格、作品类型。".into());
     }
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut added = 0i64;
@@ -364,26 +461,27 @@ pub fn import_editors(
 }
 
 fn upsert_editor(conn: &rusqlite::Connection, input: &EditorInput) -> Result<&'static str, String> {
-    validate_editor(input)?;
+    let input = validate_editor(input)?;
     let email = input.email.trim().to_lowercase();
-    let directions = json!(input.directions.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).collect::<Vec<_>>()).to_string();
+    let style = json!(input.style.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).collect::<Vec<_>>()).to_string();
+    let work_type = json!(input.work_type.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).collect::<Vec<_>>()).to_string();
     let existing: Option<i64> = conn
         .query_row("SELECT id FROM editors WHERE email = ?1", [&email], |r| r.get(0))
         .optional()
         .map_err(|e| e.to_string())?;
     if let Some(id) = existing {
         conn.execute(
-            "UPDATE editors SET platform = ?1, name = ?2, email = ?3, directions = ?4,
+            "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = ?4, work_type = ?5,
                     updated_at = datetime('now','localtime')
-             WHERE id = ?5",
-            rusqlite::params![input.platform.trim(), input.name.trim(), email, directions, id],
+             WHERE id = ?6",
+            rusqlite::params![input.platform.trim(), input.name.trim(), email, style, work_type, id],
         )
         .map_err(|e| e.to_string())?;
         Ok("updated")
     } else {
         conn.execute(
-            "INSERT INTO editors (platform, name, email, directions) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![input.platform.trim(), input.name.trim(), email, directions],
+            "INSERT INTO editors (platform, name, email, style, work_type) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![input.platform.trim(), input.name.trim(), email, style, work_type],
         )
         .map_err(|e| e.to_string())?;
         Ok("added")
@@ -493,7 +591,7 @@ fn rows_to_editors(table: Vec<Vec<String>>) -> Vec<(usize, EditorInput)> {
         .skip(start)
         .filter_map(|(i, row)| {
             let input = editor_from_row(&row, &map);
-            if input.email.is_empty() && input.directions.is_empty() && input.name.is_empty() && input.platform.is_empty() {
+            if input.email.is_empty() && input.style.is_empty() && input.work_type.is_empty() && input.name.is_empty() && input.platform.is_empty() {
                 return None;
             }
             Some((i + 1, input))
@@ -506,7 +604,8 @@ struct EditorColumns {
     platform: Option<usize>,
     name: Option<usize>,
     email: Option<usize>,
-    directions: Option<usize>,
+    style: Option<usize>,
+    work_type: Option<usize>,
 }
 
 fn detect_editor_columns(first: &[String]) -> (usize, EditorColumns) {
@@ -516,22 +615,25 @@ fn detect_editor_columns(first: &[String]) -> (usize, EditorColumns) {
             "平台" | "platform" | "站点" | "刊物" => map.platform = Some(i),
             "名称" | "name" | "编辑" | "昵称" => map.name = Some(i),
             "邮箱" | "email" | "邮件" | "收稿邮箱" => map.email = Some(i),
-            "收稿方向" | "方向" | "类型" | "标签" | "directions" | "tags" => map.directions = Some(i),
+            "风格" | "style" => map.style = Some(i),
+            "作品类型" | "类型" | "题材" | "work_type" | "收稿方向" | "方向" | "收稿类别" | "类别" | "标签" | "tags" => map.work_type = Some(i),
             _ => {}
         }
     }
-    if map.email.is_some() || map.directions.is_some() {
+    if map.email.is_some() || map.style.is_some() || map.work_type.is_some() {
         return (1, map);
     }
     let fallback = match first.len() {
         1 => EditorColumns { email: Some(0), ..EditorColumns::default() },
-        2 => EditorColumns { email: Some(0), directions: Some(1), ..EditorColumns::default() },
-        3 => EditorColumns { name: Some(0), email: Some(1), directions: Some(2), ..EditorColumns::default() },
+        2 => EditorColumns { email: Some(0), work_type: Some(1), ..EditorColumns::default() },
+        3 => EditorColumns { name: Some(0), email: Some(1), work_type: Some(2), ..EditorColumns::default() },
+        4 => EditorColumns { platform: Some(0), name: Some(1), email: Some(2), work_type: Some(3), ..EditorColumns::default() },
         _ => EditorColumns {
             platform: Some(0),
             name: Some(1),
             email: Some(2),
-            directions: Some(3),
+            style: Some(3),
+            work_type: Some(4),
         },
     };
     (0, fallback)
@@ -564,11 +666,12 @@ fn editor_from_row(row: &[String], map: &EditorColumns) -> EditorInput {
         platform: cell_at(row, map.platform),
         name,
         email,
-        directions: split_directions(&cell_at(row, map.directions)),
+        style: split_tags(&cell_at(row, map.style)),
+        work_type: split_tags(&cell_at(row, map.work_type)),
     }
 }
 
-fn split_directions(raw: &str) -> Vec<String> {
+fn split_tags(raw: &str) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for part in raw.split(['、', '，', ',', ';', '；', '/', '|', '\n']) {
@@ -581,8 +684,109 @@ fn split_directions(raw: &str) -> Vec<String> {
     out
 }
 
-// ---------- Manuscripts ----------
+// ---------- 重新发送单条投递 ----------
 
+/// 把某条已投递的邮件重新发给同一收件人：复用原稿件内容与附件，选一个已启用且未限流的账号发送。
+#[tauri::command]
+pub async fn resend_delivery(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    delivery_id: i64,
+) -> Result<(), String> {
+    let (delivery, manuscript, account) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let delivery = store::load_delivery(&conn, delivery_id)?.ok_or("投递记录不存在")?;
+        let manuscript = match delivery.manuscript_id {
+            Some(mid) => store::load_manuscript(&conn, mid)?.ok_or("原稿件已删除，无法重发")?,
+            None => return Err("这条投递没有关联稿件，无法重发".into()),
+        };
+        let account = store::load_account(&conn, delivery.account_id.unwrap_or(0))?
+            .ok_or("原发件账号已删除，无法重发")?;
+        (delivery, manuscript, account)
+    };
+
+    if !account.enabled {
+        return Err(format!("发件账号 {} 已禁用，请先启用", account.email));
+    }
+    if account.limited {
+        return Err(format!("发件账号 {} 正在限流中，请稍后再试", account.email));
+    }
+
+    let settings = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::load_settings(&conn).unwrap_or_default()
+    };
+    let attachment = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::load_manuscript_attachment(&conn, manuscript.id).unwrap_or(None)
+    };
+
+    let (editor_name, recipient_email) = smtp::parse_recipient(&delivery.recipient);
+    let subject_src = if manuscript.subject.trim().is_empty() {
+        manuscript.title.as_str()
+    } else {
+        manuscript.subject.as_str()
+    };
+    let subject = smtp::apply_placeholders(subject_src, &editor_name, &recipient_email, &manuscript.title);
+    let body = smtp::apply_placeholders(
+        &smtp::mutate_body(&manuscript.body, settings.anti_spam_mutation),
+        &editor_name,
+        &recipient_email,
+        &manuscript.title,
+    );
+    let sender_name = if manuscript.sender_name.trim().is_empty() {
+        account.sender_name.clone()
+    } else {
+        manuscript.sender_name.clone()
+    };
+
+    let message_id = smtp::send_email(
+        &account,
+        &recipient_email,
+        &sender_name,
+        &subject,
+        &body,
+        &manuscript.content_type,
+        attachment.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
+    )
+    .await
+    .map_err(|err| {
+        let (_, msg) = smtp::classify_error(&err);
+        msg
+    })?;
+
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let _ = store::record_account_send(&conn, account.id);
+        let _ = store::insert_delivery(
+            &conn,
+            delivery.task_id.unwrap_or(0),
+            account.id,
+            manuscript.id,
+            &recipient_email,
+            &subject,
+            &message_id,
+        );
+    }
+    let log = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::insert_send_log(
+            &conn,
+            delivery.task_id,
+            Some(account.id),
+            "success",
+            "send",
+            "重新发送成功",
+            &delivery.recipient,
+        )
+    };
+    if let Ok(log) = log {
+        let _ = app.emit("log", &log);
+    }
+    Ok(())
+}
+
+// ---------- Manuscripts ----------
 #[tauri::command]
 pub fn list_manuscripts(state: State<'_, AppState>) -> Result<Vec<Manuscript>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -609,10 +813,11 @@ pub fn add_manuscript(
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let recipients = json!(input.recipients).to_string();
     let genres = json!(input.genres).to_string();
+    let excluded_types = json!(input.excluded_types).to_string();
     conn.execute(
         "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
-            word_count, category, reader_category, reader_emotion, style, genres, subject, file_name)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, subject, file_name, file_data)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             input.title.trim(),
             input.body,
@@ -625,8 +830,10 @@ pub fn add_manuscript(
             input.reader_emotion.trim(),
             input.style.trim(),
             genres,
+            excluded_types,
             input.subject.trim(),
             input.file_name.trim(),
+            input.file_data,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -642,10 +849,13 @@ pub fn update_manuscript(
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let recipients = json!(input.recipients).to_string();
     let genres = json!(input.genres).to_string();
+    let excluded_types = json!(input.excluded_types).to_string();
     conn.execute(
         "UPDATE manuscripts SET title = ?1, body = ?2, content_type = ?3, recipients = ?4,
                 sender_name = ?5, word_count = ?6, category = ?7, reader_category = ?8,
-                reader_emotion = ?9, style = ?10, genres = ?11, subject = ?12, file_name = ?13,
+                reader_emotion = ?9, style = ?10, genres = ?11, excluded_types = ?16,
+                subject = ?12, file_name = ?13,
+                file_data = COALESCE(?15, file_data),
                 updated_at = datetime('now','localtime')
          WHERE id = ?14",
         rusqlite::params![
@@ -662,7 +872,9 @@ pub fn update_manuscript(
             genres,
             input.subject.trim(),
             input.file_name.trim(),
-            id
+            id,
+            input.file_data,
+            excluded_types,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -779,8 +991,20 @@ pub fn create_task(app: AppHandle, state: State<'_, AppState>, input: TaskInput)
     let id = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let accounts = store::load_accounts(&conn)?;
-        if !accounts.iter().any(|a| a.enabled) {
-            return Err("请先添加并启用至少一个发件邮箱".into());
+        let selected: Vec<&crate::models::Account> = if input.account_ids.is_empty() {
+            accounts.iter().filter(|a| a.enabled).collect()
+        } else {
+            accounts
+                .iter()
+                .filter(|a| input.account_ids.contains(&a.id) && a.enabled)
+                .collect()
+        };
+        if selected.is_empty() {
+            return Err(if input.account_ids.is_empty() {
+                "请先添加并启用至少一个发件邮箱".into()
+            } else {
+                "所选邮箱不存在或未启用，请重新勾选参与发送的邮箱".into()
+            });
         }
         let manuscripts = store::load_manuscripts(&conn, &input.manuscript_ids)?;
         if manuscripts.len() != input.manuscript_ids.len() {
@@ -791,13 +1015,14 @@ pub fn create_task(app: AppHandle, state: State<'_, AppState>, input: TaskInput)
             return Err("所选稿件都没有收件人，请先在稿件中填写编辑部邮箱".into());
         }
         conn.execute(
-            "INSERT INTO tasks (name, manuscript_ids, status, schedule_type, scheduled_at,
+            "INSERT INTO tasks (name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
                     interval_min, interval_max, batch_size_min, batch_size_max,
                     batch_pause_min, batch_pause_max, retry_max)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             rusqlite::params![
                 input.name.trim(),
                 json!(input.manuscript_ids).to_string(),
+                json!(input.account_ids).to_string(),
                 status,
                 input.schedule_type,
                 input.scheduled_at,
@@ -852,7 +1077,10 @@ pub fn start_task(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result
         if task.status == "paused" {
             return Err("任务已暂停，请点击「继续」".into());
         }
-        store::reset_task_progress(&conn, id)?;
+        // 已完成的重新发送要清零进度从头投递；已停止且发过部分的任务保留进度，继续投递剩余收件人（跳过已投递的）。
+        if task.sent == 0 || task.status == "completed" {
+            store::reset_task_progress(&conn, id)?;
+        }
     }
     scheduler::spawn_task_worker(
         app.clone(),
@@ -866,7 +1094,7 @@ pub fn start_task(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result
 #[tauri::command]
 pub fn pause_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    let handle = registry.get(&id).ok_or("任务未在运行")?;
+    let handle = registry.get(&id).ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
     handle.pause();
     Ok(())
 }
@@ -874,16 +1102,26 @@ pub fn pause_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn resume_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    let handle = registry.get(&id).ok_or("任务未在运行")?;
+    let handle = registry.get(&id).ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
     handle.resume();
     Ok(())
 }
 
 #[tauri::command]
 pub fn stop_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    if let Some(handle) = registry.get(&id) {
-        handle.stop();
+    {
+        let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+        if let Some(handle) = registry.get(&id) {
+            handle.stop();
+            return Ok(());
+        }
+    }
+    // 没有活动 worker（例如应用重启后遗留的假运行状态）：清掉状态而不是静默无操作。
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    if let Some(task) = store::load_task(&conn, id)? {
+        if matches!(task.status.as_str(), "running" | "paused") {
+            store::set_task_status(&conn, id, "stopped")?;
+        }
     }
     Ok(())
 }
@@ -926,9 +1164,11 @@ pub fn export_logs(
     state: State<'_, AppState>,
     task_id: Option<i64>,
 ) -> Result<String, String> {
-    let logs = {
+    let (logs, accounts) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        store::load_logs(&conn, task_id, 100000, 0)?
+        let logs = store::load_logs(&conn, task_id, 100000, 0)?;
+        let accounts = store::load_accounts(&conn).unwrap_or_default();
+        (logs, accounts)
     };
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -940,7 +1180,7 @@ pub fn export_logs(
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
-    let headers = ["ID", "任务", "账号", "级别", "类别", "消息", "时间"];
+    let headers = ["ID", "任务", "账号", "编辑邮箱", "级别", "类别", "消息", "时间"];
     for (col, h) in headers.iter().enumerate() {
         sheet
             .write_string(0, col as u16, *h)
@@ -955,19 +1195,29 @@ pub fn export_logs(
             .write_string(row, 1, &log.task_id.map(|v| v.to_string()).unwrap_or_default())
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 2, &log.account_id.map(|v| v.to_string()).unwrap_or_default())
+            .write_string(
+                row,
+                2,
+                &log
+                    .account_id
+                    .and_then(|id| accounts.iter().find(|a| a.id == id).map(|a| a.email.clone()))
+                    .unwrap_or_default(),
+            )
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 3, &log.level)
+            .write_string(row, 3, &log.recipient.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 4, &log.category)
+            .write_string(row, 4, &log.level)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 5, &log.message)
+            .write_string(row, 5, &log.category)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 6, &log.created_at)
+            .write_string(row, 6, &log.message)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 7, &log.created_at)
             .map_err(|e| e.to_string())?;
     }
     workbook.save(&path).map_err(|e| e.to_string())?;

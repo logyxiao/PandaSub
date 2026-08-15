@@ -3,19 +3,18 @@ import { FileUp, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, onTask } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, RuntimeTrack } from '../components/ui'
-import { formatTime, isValidEmail, parseRecipient, statusLabel, taskTone, toDbTime } from '../format'
+import { formatTime, fromDbTime, isValidEmail, parseRecipient, statusLabel, taskTone, toDbTime } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
 import { PlanEditor } from './PlanEditor'
-import { countChars, emptyManuscript, latestTask, toInput } from './planShared'
+import { SendDetailModal } from './SendDetail'
+import { categoryFromWords, countChars, defaultBody, defaultSubject, emptyManuscript, latestTask, toInput } from './planShared'
 
 const emptyTask: TaskInput = {
-  name: '', manuscript_ids: [], schedule_type: 'immediate', scheduled_at: null,
-  interval_min: 5, interval_max: 20, batch_size_min: 6, batch_size_max: 8,
+  name: '', manuscript_ids: [], account_ids: [], schedule_type: 'immediate', scheduled_at: null,
+  interval_min: 300, interval_max: 300, batch_size_min: 6, batch_size_max: 8,
   batch_pause_min: 180, batch_pause_max: 300, retry_max: 3,
 }
-
-type Pace = 'steady' | 'balanced' | 'fast'
 
 export function PlansView() {
   const [manuscripts, setManuscripts] = useState<Manuscript[]>([])
@@ -28,10 +27,10 @@ export function PlansView() {
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<Manuscript | null>(null)
   const [showEditor, setShowEditor] = useState(false)
+  const [detail, setDetail] = useState<Manuscript | null>(null)
   const [form, setForm] = useState<ManuscriptInput>(emptyManuscript)
   const [taskForm, setTaskForm] = useState<TaskInput>(emptyTask)
   const [scheduledInput, setScheduledInput] = useState('')
-  const [pace, setPace] = useState<Pace>('balanced')
   const [saving, setSaving] = useState(false)
   const toast = useToast()
   const confirm = useConfirm()
@@ -49,9 +48,19 @@ export function PlansView() {
   }
   useEffect(() => { void load() }, [])
   useEffect(() => {
+    let cancelled = false
     let un: (() => void) | undefined
-    onTask((task) => setTasks((prev) => [task, ...prev.filter((x) => x.id !== task.id)])).then((u) => { un = u })
-    return () => un?.()
+    onTask((task) => {
+      if (cancelled) return
+      setTasks((prev) => [task, ...prev.filter((x) => x.id !== task.id)])
+    }).then((u) => {
+      if (cancelled) u()
+      else un = u
+    })
+    return () => {
+      cancelled = true
+      un?.()
+    }
   }, [])
   useEffect(() => {
     setChrome(showEditor)
@@ -60,25 +69,12 @@ export function PlansView() {
 
   const enabledAccounts = accounts.filter((a) => a.enabled)
 
-  const applyPace = (next: Pace, base: Settings) => {
-    setPace(next)
-    const map = {
-      steady: { interval_min: 15, interval_max: 40, batch_size_min: 4, batch_size_max: 6, batch_pause_min: 300, batch_pause_max: 480 },
-      balanced: {
-        interval_min: base.default_interval_min, interval_max: base.default_interval_max,
-        batch_size_min: base.default_batch_size_min, batch_size_max: base.default_batch_size_max,
-        batch_pause_min: base.default_batch_pause_min, batch_pause_max: base.default_batch_pause_max,
-      },
-      fast: { interval_min: 3, interval_max: 8, batch_size_min: 8, batch_size_max: 12, batch_pause_min: 90, batch_pause_max: 150 },
-    }[next]
-    setTaskForm((f) => ({ ...f, ...map }))
-  }
-
   const openAdd = () => {
     setEditing(null)
     setForm(emptyManuscript)
     setTaskForm({
       ...emptyTask,
+      account_ids: enabledAccounts.map((a) => a.id),
       ...(settings ? {
         interval_min: settings.default_interval_min, interval_max: settings.default_interval_max,
         batch_size_min: settings.default_batch_size_min, batch_size_max: settings.default_batch_size_max,
@@ -86,7 +82,6 @@ export function PlansView() {
         retry_max: settings.default_retry_max,
       } : {}),
     })
-    setPace('balanced')
     setScheduledInput('')
     setShowEditor(true)
   }
@@ -98,6 +93,7 @@ export function PlansView() {
     setTaskForm({
       name: task?.name || m.title,
       manuscript_ids: [m.id],
+      account_ids: task?.account_ids ?? [],
       schedule_type: task?.schedule_type ?? 'immediate',
       scheduled_at: task?.scheduled_at ?? null,
       interval_min: task?.interval_min ?? settings?.default_interval_min ?? 5,
@@ -108,8 +104,7 @@ export function PlansView() {
       batch_pause_max: task?.batch_pause_max ?? settings?.default_batch_pause_max ?? 300,
       retry_max: task?.retry_max ?? settings?.default_retry_max ?? 3,
     })
-    setPace('balanced')
-    setScheduledInput('')
+    setScheduledInput(task?.scheduled_at ? fromDbTime(task.scheduled_at) : '')
     setShowEditor(true)
   }
 
@@ -135,20 +130,25 @@ export function PlansView() {
     finally { setSaving(false) }
   }
 
-  const saveAndSend = async (skipSent: boolean) => {
+  const saveAndSend = async () => {
     if (!enabledAccounts.length) { toast('请先添加并启用发件邮箱', 'warning'); return }
+    const selectedAccounts = taskForm.account_ids.length
+      ? enabledAccounts.filter((a) => taskForm.account_ids.includes(a.id))
+      : enabledAccounts
+    if (!selectedAccounts.length) { toast('请至少勾选一个参与发送的邮箱', 'warning'); return }
     const current = editing ? latestTask(editing.id, tasks) : undefined
     if (current && ['running', 'paused'].includes(current.status)) {
       toast('这个计划正在发送，请先停止再重新发送', 'warning')
       return
     }
     const sent = new Set(deliveries.map((d) => parseRecipient(d.recipient).email.toLowerCase()))
+    // 默认跳过已投过的编辑。
     const sending = form.recipients.filter((r) => {
       if (!isValidEmail(r)) return false
-      if (skipSent && sent.has(parseRecipient(r).email.toLowerCase())) return false
+      if (sent.has(parseRecipient(r).email.toLowerCase())) return false
       return true
     })
-    if (!sending.length) { toast(skipSent ? '去掉已投过的之后，没有可发的邮箱了' : '请至少添加一个编辑部邮箱', 'warning'); return }
+    if (!sending.length) { toast('去掉已投过的之后，没有可发的编辑了', 'warning'); return }
     if (taskForm.schedule_type === 'scheduled') {
       if (!scheduledInput) { toast('请选择发送时间', 'warning'); return }
       if (new Date(scheduledInput).getTime() <= Date.now()) { toast('定时时间必须晚于现在', 'warning'); return }
@@ -177,24 +177,19 @@ export function PlansView() {
     if (!file) return
     const ext = file.name.split('.').pop()?.toLowerCase()
     try {
-      let body = ''
-      let contentType = 'text/plain'
-      if (ext === 'docx') {
-        const bytes = Array.from(new Uint8Array(await file.arrayBuffer()))
-        body = await api.extractDocx(bytes)
-      } else {
-        body = await file.text()
-        contentType = ext === 'html' || ext === 'htm' ? 'text/html' : 'text/plain'
-      }
-      setForm((f) => ({
-        ...f,
-        title: f.title || file.name.replace(/\.[^.]+$/, ''),
-        body,
-        content_type: contentType,
-        file_name: file.name,
-        word_count: f.word_count || countChars(body),
-      }))
-      toast('已读入作品文件', 'success')
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const text = ext === 'docx'
+        ? await api.extractDocx(Array.from(bytes))
+        : new TextDecoder('utf-8').decode(bytes)
+      setForm((f) => {
+        const title = f.title.trim() || file.name.replace(/\.[^.]+$/, '')
+        const word_count = countChars(text)
+        const category = categoryFromWords(word_count)
+        // 保留文件内容，保存后会作为附件随邮件发送。
+        const next = { ...f, title, file_name: file.name, word_count, category, content_type: 'text/plain' as const, file_data: Array.from(bytes) }
+        return { ...next, subject: defaultSubject(next), body: defaultBody(next) }
+      })
+      toast('已读入作品，主题和正文已填好，文件将作为附件发送', 'success')
     } catch (e) { toast(String(e), 'error') }
   }
 
@@ -208,7 +203,8 @@ export function PlansView() {
   }
 
   const startAgain = async (task: Task) => {
-    if (task.sent > 0 || task.status === 'completed') {
+    // 已完成的重新发送、循环任务重新循环，都会从头投递，需要确认；停止后继续发送是跳过已投、无副作用，直接继续。
+    if (task.status === 'completed' || (task.schedule_type === 'loop' && task.sent > 0)) {
       const ok = await confirm({
         title: '重新发送？',
         message: '会从第一封重新投递。已经发出去的邮件不会撤回。',
@@ -217,6 +213,15 @@ export function PlansView() {
       if (!ok) return
     }
     await control(task.id, 'start')
+  }
+
+  const openDetail = async (m: Manuscript) => {
+    setDetail(m)
+    // 打开详情时刷新一次投递记录和编辑库，保证发送状态是最新的。
+    try {
+      const [d, e] = await Promise.all([api.listDeliveries(), api.listEditors()])
+      setDeliveries(d); setEditors(e)
+    } catch { /* 忽略，使用已有数据 */ }
   }
 
   const remove = async (m: Manuscript) => {
@@ -234,23 +239,21 @@ export function PlansView() {
     return (
       <PlanEditor
         editing={editing}
-        manuscripts={manuscripts}
         editors={editors}
+        onReloadEditors={async () => { setEditors(await api.listEditors()) }}
+        onReloadDeliveries={async () => { setDeliveries(await api.listDeliveries()) }}
         deliveries={deliveries}
         enabledAccounts={enabledAccounts}
-        settings={settings}
         form={form}
         setForm={setForm}
         taskForm={taskForm}
         setTaskForm={setTaskForm}
         scheduledInput={scheduledInput}
         setScheduledInput={setScheduledInput}
-        pace={pace}
-        applyPace={applyPace}
         saving={saving}
         onClose={() => setShowEditor(false)}
         onSaveDraft={() => void saveDraft()}
-        onSaveAndSend={(skip) => void saveAndSend(skip)}
+        onSaveAndSend={() => void saveAndSend()}
         onImportFile={(file) => void importFile(file)}
       />
     )
@@ -259,7 +262,7 @@ export function PlansView() {
   return (
     <>
       <div className="toolbar">
-        <p className="hint">一篇作品、一封邮件、一份收件名单，就是一个投稿计划。收件人可从编辑库按作品类型筛入。</p>
+        <p className="hint">一篇作品、一封邮件，收件人按作品类型匹配，每个平台只出一位编辑。</p>
         <div className="toolbar-actions">
           <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
           <Button variant="primary" onClick={openAdd}><Plus size={16} />新建计划</Button>
@@ -273,11 +276,10 @@ export function PlansView() {
       {!loading && !manuscripts.length ? (
         <div className="panel">
           <EmptyState icon={FileUp} title="还没有投稿计划"
-            desc="把作品、邮件正文和编辑部邮箱写在一起，保存后就能发送。"
+            desc="写好作品和邮件，收件人按作品类型匹配，每个平台只出一位。"
             action={<Button variant="primary" onClick={openAdd}><Plus size={16} />新建计划</Button>} />
         </div>
-      ) : (
-        <div className="panel">
+      ) : (        <div className="panel">
           <div className="table-wrap">
             <table>
               <thead><tr><th>计划</th><th>收件人</th><th>进度</th><th>状态</th><th>更新</th><th aria-label="操作" /></tr></thead>
@@ -308,12 +310,16 @@ export function PlansView() {
                         <div className="row-actions">
                           {task && ['stopped', 'completed', 'scheduled'].includes(task.status) && (
                             <Button size="sm" variant="primary" onClick={() => void startAgain(task)}>
-                              {task.status === 'scheduled' ? '立即开始' : task.sent > 0 || task.status === 'completed' ? '重新发送' : '开始'}
+                              {task.status === 'scheduled' ? '立即开始'
+                                : task.status === 'completed' ? '重新发送'
+                                : task.schedule_type === 'loop' ? (task.sent > 0 ? '重新循环' : '开始')
+                                : task.sent > 0 ? '继续发送' : '开始'}
                             </Button>
                           )}
                           {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
                           {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
                           {task && ['running', 'paused'].includes(task.status) && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
+                          <Button size="sm" onClick={() => void openDetail(m)}>发送详情</Button>
                           <Button size="sm" onClick={() => openEdit(m)}>编辑</Button>
                           {!(task && ['running', 'paused'].includes(task.status)) && (
                             <IconButton title="删除" className="danger" onClick={() => void remove(m)}><Trash2 size={15} /></IconButton>
@@ -327,6 +333,21 @@ export function PlansView() {
             </table>
           </div>
         </div>
+      )}
+
+      {detail && (
+        <SendDetailModal
+          manuscript={detail}
+          deliveries={deliveries}
+          editors={editors}
+          enabledAccounts={enabledAccounts}
+          locked={(() => {
+            const t = latestTask(detail.id, tasks)
+            return Boolean(t && ['running', 'paused'].includes(t.status))
+          })()}
+          onChanged={() => void load()}
+          onClose={() => setDetail(null)}
+        />
       )}
     </>
   )

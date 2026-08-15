@@ -14,6 +14,8 @@ export const api = {
   deleteAccount: (id: number) => invoke('delete_account', { id }),
   toggleAccount: (id: number, enabled: boolean) => invoke('toggle_account', { id, enabled }),
   testAccount: (id: number) => invoke<string>('test_account', { id }),
+  sendTestEmail: (accountId: number, manuscriptId: number | null, attachment: { name: string; data: number[] } | null, recipient: string, senderName: string, subject: string, body: string, contentType: string) =>
+    invoke<string>('send_test_email', { accountId, manuscriptId, attachment, recipient, senderName, subject, body, contentType }),
 
   listManuscripts: () => invoke<Manuscript[]>('list_manuscripts'),
   addManuscript: (input: ManuscriptInput) => invoke<number>('add_manuscript', { input }),
@@ -41,11 +43,13 @@ export const api = {
   scanReplies: () => invoke<number>('scan_replies'),
   extractDocx: (data: number[]) => invoke<string>('extract_docx_text', { data }),
   listDeliveries: () => invoke<Delivery[]>('list_deliveries'),
+  resendDelivery: (deliveryId: number) => invoke('resend_delivery', { deliveryId }),
 
   listEditors: () => invoke<Editor[]>('list_editors'),
   addEditor: (input: EditorInput) => invoke<number>('add_editor', { input }),
   updateEditor: (id: number, input: EditorInput) => invoke('update_editor', { id, input }),
   deleteEditor: (id: number) => invoke('delete_editor', { id }),
+  toggleEditor: (id: number, enabled: boolean) => invoke('toggle_editor', { id, enabled }),
   exportEditors: () => invoke<string>('export_editors'),
   importEditors: (data: number[], fileName: string) => invoke<EditorImportResult>('import_editors', { data, fileName }),
 }

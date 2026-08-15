@@ -5,7 +5,7 @@ import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
 import { formatTime, logCategoryLabel, type Tone } from '../format'
 import { useNav } from '../nav'
-import type { Task, TaskLog } from '../types'
+import type { Account, Task, TaskLog } from '../types'
 
 const levelMeta: Record<string, { label: string; tone: Tone }> = {
   info: { label: '信息', tone: 'info' },
@@ -17,8 +17,10 @@ const levelMeta: Record<string, { label: string; tone: Tone }> = {
 export function LogsView() {
   const [logs, setLogs] = useState<TaskLog[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
   const [taskFilter, setTaskFilter] = useState<number | ''>('')
   const [levelFilter, setLevelFilter] = useState<string>('')
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
   const [notice, setNotice] = useState('')
   const toast = useToast()
   const confirm = useConfirm()
@@ -26,25 +28,50 @@ export function LogsView() {
 
   const load = useCallback(async () => {
     try {
-      const [l, t] = await Promise.all([api.listLogs(taskFilter || undefined), api.listTasks()])
-      setLogs(l); setTasks(t); setNotice('')
+      const [l, t, a] = await Promise.all([api.listLogs(taskFilter || undefined), api.listTasks(), api.listAccounts()])
+      setLogs(l); setTasks(t); setAccounts(a); setNotice('')
     } catch (e) { setNotice(String(e)) }
   }, [taskFilter])
   useEffect(() => { void load() }, [load])
 
   useEffect(() => {
+    let cancelled = false
     let un: (() => void) | undefined
     onLog((log) => {
+      if (cancelled) return
       if (taskFilter && log.task_id !== taskFilter) return
-      setLogs((prev) => [log, ...prev].slice(0, 300))
-    }).then((u) => { un = u })
-    return () => un?.()
+      setLogs((prev) => (prev.some((x) => x.id === log.id) ? prev : [log, ...prev].slice(0, 300)))
+    }).then((u) => {
+      if (cancelled) u()
+      else un = u
+    })
+    return () => {
+      cancelled = true
+      un?.()
+    }
   }, [taskFilter])
 
   const filtered = levelFilter ? logs.filter((l) => l.level === levelFilter) : logs
   const taskName = (id: number | null) => {
     if (!id) return '—'
     return tasks.find((t) => t.id === id)?.name ?? `#${id}`
+  }
+  const accountEmail = (id: number | null) =>
+    id ? accounts.find((a) => a.id === id)?.email ?? '—' : '—'
+
+  const toggleMsg = (id: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  // 详情默认只展示前 6 个字，点击可展开/收起完整消息。
+  const shortMessage = (msg: string) => {
+    const chars = Array.from(msg)
+    return chars.length > 6 ? `${chars.slice(0, 6).join('')}…` : msg
   }
 
   const exportLogs = async () => {
@@ -98,17 +125,22 @@ export function LogsView() {
         <div className="panel">
           <div className="table-wrap">
             <table>
-              <thead><tr><th>时间</th><th>结果</th><th>计划</th><th>类型</th><th>详情</th></tr></thead>
+              <thead><tr><th>时间</th><th>结果</th><th>计划</th><th>发件邮箱</th><th>编辑邮箱</th><th>类型</th><th>详情</th></tr></thead>
               <tbody>
                 {filtered.map((log) => {
                   const meta = levelMeta[log.level] ?? levelMeta.info
+                  const full = expanded.has(log.id)
                   return (
                     <tr key={log.id}>
                       <td className="mono">{formatTime(log.created_at)}</td>
                       <td><Badge tone={meta.tone} dot>{meta.label}</Badge></td>
                       <td>{taskName(log.task_id)}</td>
+                      <td className="mono">{accountEmail(log.account_id)}</td>
+                      <td className="mono">{log.recipient || '—'}</td>
                       <td>{logCategoryLabel[log.category] ?? log.category}</td>
-                      <td className="log-msg">{log.message}</td>
+                      <td className="log-msg" title={log.message} onClick={() => toggleMsg(log.id)}>
+                        {full ? log.message : shortMessage(log.message)}
+                      </td>
                     </tr>
                   )
                 })}

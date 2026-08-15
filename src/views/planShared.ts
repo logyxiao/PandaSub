@@ -4,8 +4,62 @@ import type { Delivery, Editor, Manuscript, ManuscriptInput, Task } from '../typ
 export const GENRES = ['古风', '现代', '都市', '校园', '玄幻', '仙侠', '科幻', '悬疑', '恐怖', '民间', '脑洞', '重生', '穿越', '甜宠', '虐恋', '社会', '性转', '女主', '男主']
 export const CATEGORIES = ['短篇（8000字以下）', '短篇（8000-12000字）', '中篇（1.2-5万字）', '长篇（5万字以上）', '微小说']
 export const READERS = ['女频', '男频', '不限']
-export const EMOTIONS = ['纯爽', '甜宠', '虐恋', '治愈', '悬疑', '轻松', '其他']
-export const STYLES = ['网文', '文学', '小品', '剧本', '小程序文', '其他']
+export const STYLES = ['小程序', '知乎风', '番茄风'] as const
+export type PlanStyle = (typeof STYLES)[number]
+
+export function isPlanStyle(value: string): value is PlanStyle {
+  return (STYLES as readonly string[]).includes(value)
+}
+
+export function normalizeEditorTags<T extends Pick<Editor, 'style' | 'work_type'>>(editor: T): T {
+  const style: string[] = []
+  const work_type: string[] = []
+  const seenStyle = new Set<string>()
+  const seenType = new Set<string>()
+  for (const raw of [...(editor.style ?? []), ...(editor.work_type ?? [])]) {
+    const tag = raw.trim()
+    if (!tag) continue
+    if (isPlanStyle(tag)) {
+      if (!seenStyle.has(tag)) { seenStyle.add(tag); style.push(tag) }
+    } else if (!seenType.has(tag)) {
+      seenType.add(tag)
+      work_type.push(tag)
+    }
+  }
+  return { ...editor, style, work_type }
+}
+
+// 自动投稿节奏（参考工具实测）：按本计划累计发送量分档控制下一封的等待时间。
+export const TIER_STEPS = [
+  { upTo: 11, seconds: 180, label: '前 11 封 3 分钟' },
+  { upTo: 19, seconds: 30, label: '12–19 封 30 秒' },
+  { upTo: 51, seconds: 60, label: '20–51 封 1 分钟' },
+  { upTo: Infinity, seconds: 120, label: '52 封起 2 分钟' },
+] as const
+
+export function tierSecondsAt(nextSend: number) {
+  if (nextSend <= 11) return 180
+  if (nextSend <= 19) return 30
+  if (nextSend <= 51) return 60
+  return 120
+}
+
+export function estimateAutoMinutes(count: number, startSent = 0) {
+  let sent = startSent
+  let total = 0
+  for (let i = 0; i < count; i++) {
+    total += tierSecondsAt(sent + 1)
+    sent += 1
+  }
+  return Math.max(1, Math.round(total / 60))
+}
+
+export const SCHEDULE_OPTIONS = [
+  { value: 'immediate', label: '立即发送', description: '保存后马上开始投这一份名单' },
+  { value: 'scheduled', label: '定时发送', description: '到选定时间再开始' },
+  { value: 'loop', label: '循环本计划', description: '这份名单投完后再投一遍，需手动停止。不是等上一个计划结束' },
+] as const
+
 
 export const TEMPLATES = [
   {
@@ -31,11 +85,48 @@ export const TEMPLATES = [
 export const emptyManuscript: ManuscriptInput = {
   title: '', body: '', content_type: 'text/plain', recipients: [], sender_name: '',
   word_count: 0, category: '', reader_category: '', reader_emotion: '', style: '',
-  genres: [], subject: '', file_name: '',
+  genres: [], excluded_types: [], subject: '', file_name: '',
 }
 
 export function countChars(text: string) {
   return text.replace(/<[^>]+>/g, '').replace(/\s+/g, '').length
+}
+
+export function categoryFromWords(count: number) {
+  if (count <= 0) return ''
+  if (count < 1500) return '微小说'
+  if (count < 8000) return '短篇（8000字以下）'
+  if (count <= 12000) return '短篇（8000-12000字）'
+  if (count < 50000) return '中篇（1.2-5万字）'
+  return '长篇（5万字以上）'
+}
+
+export function categoryLabel(category: string) {
+  if (category.startsWith('短篇')) return '短篇'
+  if (category.startsWith('中篇')) return '中篇'
+  if (category.startsWith('长篇')) return '长篇'
+  return category
+}
+
+export function defaultSubject(input: Pick<ManuscriptInput, 'title' | 'word_count' | 'reader_category' | 'genres'>) {
+  return [
+    input.title.trim(),
+    input.word_count > 0 ? `${input.word_count}字` : '',
+    input.reader_category.trim(),
+    input.genres.join('、'),
+  ].filter(Boolean).join('+')
+}
+
+export function defaultBody(input: Pick<ManuscriptInput, 'title' | 'category' | 'genres'>) {
+  const title = input.title.trim() || '未命名作品'
+  return [
+    '尊敬的编辑大大：',
+    '',
+    '辛苦审阅，期待您的意见！',
+    `书名：《${title}》`,
+    `分类：${categoryLabel(input.category) || '未选'}`,
+    `类型：${input.genres.join('、') || '未选'}`,
+  ].join('\n')
 }
 
 export function latestTask(id: number, tasks: Task[]) {
@@ -47,7 +138,8 @@ export function toInput(m: Manuscript): ManuscriptInput {
     title: m.title, body: m.body, content_type: m.content_type, recipients: m.recipients,
     sender_name: m.sender_name, word_count: m.word_count, category: m.category,
     reader_category: m.reader_category, reader_emotion: m.reader_emotion, style: m.style,
-    genres: m.genres ?? [], subject: m.subject, file_name: m.file_name,
+    genres: m.genres ?? [], excluded_types: m.excluded_types ?? [], subject: m.subject,
+    file_name: m.file_name, has_file: m.has_file,
   }
 }
 
@@ -74,9 +166,72 @@ export function editorRecipient(editor: Editor) {
   return name ? `${name} <${editor.email}>` : editor.email
 }
 
-export function editorMatchesGenres(editor: Editor, genres: string[]) {
-  if (!genres.length || !editor.directions.length) return false
-  return editor.directions.some((d) => genres.includes(d))
+export function editorWorkTypeOptions(editors: Editor[]) {
+  const map = new Map<string, number>()
+  for (const editor of editors) {
+    if (editor.enabled === false) continue
+    for (const tag of normalizeEditorTags(editor).work_type) {
+      map.set(tag, (map.get(tag) ?? 0) + 1)
+    }
+  }
+  return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
+}
+
+export function editorMatchesPlan(editor: Editor, style: string, genres: string[]) {
+  const tags = normalizeEditorTags(editor)
+  if (style && tags.style.includes(style)) return true
+  if (genres.some((g) => tags.work_type.includes(g))) return true
+  return false
+}
+
+export function editorPlatformKey(editor: Pick<Editor, 'platform' | 'email'>) {
+  return editor.platform.trim() || `__${editor.email.trim().toLowerCase()}`
+}
+
+export function pickOneEditorPerPlatform(
+  editors: Editor[],
+  style: string,
+  genres: string[],
+  sentMap: Map<string, number>,
+  preferred: Record<string, string> = {},
+  excludedWorkTypes: Iterable<string> = [],
+) {
+  const excluded = new Set([...excludedWorkTypes].map((t) => t.trim()).filter(Boolean))
+  const matched = editors
+    .filter((e) => e.enabled !== false)
+    .map(normalizeEditorTags)
+    .filter((e) => editorMatchesPlan(e, style, genres))
+    .filter((e) => !e.work_type.some((tag) => excluded.has(tag)))
+  const groups = new Map<string, Editor[]>()
+  for (const editor of matched) {
+    const key = editorPlatformKey(editor)
+    const list = groups.get(key) ?? []
+    list.push(editor)
+    groups.set(key, list)
+  }
+  const picked: Editor[] = []
+  for (const [key, list] of groups) {
+    const prefer = preferred[key]?.toLowerCase()
+    const chosen = list.find((e) => e.email.toLowerCase() === prefer) ?? list.slice().sort((a, b) => {
+      const sentA = sentMap.get(a.email.toLowerCase()) ?? 0
+      const sentB = sentMap.get(b.email.toLowerCase()) ?? 0
+      if ((sentA === 0) !== (sentB === 0)) return sentA === 0 ? -1 : 1
+      const overlapA = matchCount(a, style, genres)
+      const overlapB = matchCount(b, style, genres)
+      if (overlapA !== overlapB) return overlapB - overlapA
+      return b.id - a.id
+    })[0]
+    if (chosen) picked.push(chosen)
+  }
+  return { picked, groups }
+}
+
+function matchCount(editor: Editor, style: string, genres: string[]) {
+  const tags = normalizeEditorTags(editor)
+  let count = 0
+  if (style && tags.style.includes(style)) count += 1
+  count += genres.filter((g) => tags.work_type.includes(g)).length
+  return count
 }
 
 export function estimateMinutes(count: number, intervalMin: number, intervalMax: number, batchMin: number, batchMax: number, pauseMin: number, pauseMax: number) {

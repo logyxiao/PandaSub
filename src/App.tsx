@@ -49,8 +49,8 @@ const groups: Array<{ label?: string; items: NavItem[] }> = [
 const pageCopy: Record<ViewId, { title: string; sub: string }> = {
   dashboard: { title: '工作台', sub: '看今天发了多少、哪些计划在跑、下一步该做什么。' },
   accounts: { title: '邮箱', sub: '添加用来发稿的邮箱。QQ / 163 请填 SMTP 授权码，不是登录密码。' },
-  editors: { title: '编辑', sub: '至少填邮箱和收稿方向。写计划时按作品类型筛选要投的人。' },
-  plans: { title: '投稿计划', sub: '作品、邮件和收件人写在一起。保存后可以直接发送。' },
+  editors: { title: '编辑', sub: '至少填邮箱和风格或作品类型。写计划时按风格和作品类型筛选要投的人。' },
+  plans: { title: '投稿计划', sub: '写好作品和邮件，收件人按风格、作品类型从编辑库筛出。保存后可以直接发送。' },
   logs: { title: '记录', sub: '每封邮件的发送结果。失败时可以按计划筛选排查。' },
   replies: { title: '回复', sub: '检查收件箱，区分编辑人工回复、网站自动回复和退信。' },
   settings: { title: '设置', sub: '默认发送节奏、限流等待，以及备份。改完请点保存。' },
@@ -73,9 +73,14 @@ export default function App() {
     }
     refresh()
     const timer = window.setInterval(refresh, 6000)
+    let cancelled = false
     let un: (() => void) | undefined
-    onTask(() => refresh()).then((u) => { un = u })
+    onTask(() => { if (!cancelled) refresh() }).then((u) => {
+      if (cancelled) u()
+      else un = u
+    })
     return () => {
+      cancelled = true
       window.clearInterval(timer)
       un?.()
     }

@@ -40,8 +40,10 @@ CREATE TABLE IF NOT EXISTS manuscripts (
   reader_emotion TEXT NOT NULL DEFAULT '',
   style TEXT NOT NULL DEFAULT '',
   genres TEXT NOT NULL DEFAULT '[]',
+  excluded_types TEXT NOT NULL DEFAULT '[]',
   subject TEXT NOT NULL DEFAULT '',
   file_name TEXT NOT NULL DEFAULT '',
+  file_data BLOB,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -50,6 +52,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
   manuscript_ids TEXT NOT NULL DEFAULT '[]',
+  account_ids TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT 'stopped',
   schedule_type TEXT NOT NULL DEFAULT 'immediate',
   scheduled_at TEXT,
@@ -74,6 +77,7 @@ CREATE TABLE IF NOT EXISTS task_logs (
   level TEXT NOT NULL DEFAULT 'info',
   category TEXT NOT NULL DEFAULT 'info',
   message TEXT NOT NULL,
+  recipient TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -117,7 +121,9 @@ CREATE TABLE IF NOT EXISTS editors (
   platform TEXT NOT NULL DEFAULT '',
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
-  directions TEXT NOT NULL DEFAULT '[]',
+  style TEXT NOT NULL DEFAULT '[]',
+  work_type TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -132,6 +138,13 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     connection.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     add_account_imap_columns(&connection)?;
     add_manuscript_plan_columns(&connection)?;
+    add_editor_enabled_column(&connection)?;
+    add_editor_tag_columns(&connection)?;
+    migrate_editor_directions(&connection)?;
+    normalize_editor_style_values(&connection)?;
+    add_task_account_columns(&connection)?;
+    add_task_log_recipient_column(&connection)?;
+    add_manuscript_file_column(&connection)?;
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
@@ -235,6 +248,7 @@ fn add_manuscript_plan_columns(conn: &Connection) -> Result<(), String> {
         ("reader_emotion", "reader_emotion TEXT NOT NULL DEFAULT ''"),
         ("style", "style TEXT NOT NULL DEFAULT ''"),
         ("genres", "genres TEXT NOT NULL DEFAULT '[]'"),
+        ("excluded_types", "excluded_types TEXT NOT NULL DEFAULT '[]'"),
         ("subject", "subject TEXT NOT NULL DEFAULT ''"),
         ("file_name", "file_name TEXT NOT NULL DEFAULT ''"),
     ] {
@@ -246,3 +260,174 @@ fn add_manuscript_plan_columns(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn add_editor_enabled_column(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "editors", "enabled") {
+        conn.execute(
+            "ALTER TABLE editors ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn add_editor_tag_columns(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    for (name, decl) in [
+        ("style", "style TEXT NOT NULL DEFAULT '[]'"),
+        ("work_type", "work_type TEXT NOT NULL DEFAULT '[]'"),
+    ] {
+        if table_lacks_column(conn, "editors", name) {
+            conn.execute(&format!("ALTER TABLE editors ADD COLUMN {decl}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_editor_directions(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 || table_lacks_column(conn, "editors", "directions") {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE editors SET work_type = directions
+         WHERE (work_type IS NULL OR work_type = '' OR work_type = '[]')
+           AND directions IS NOT NULL AND TRIM(directions) != '' AND directions != '[]'",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 || table_lacks_column(conn, "editors", "style") {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare("SELECT id, style, work_type FROM editors")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+    for (id, raw_style, raw_work) in rows {
+        let style: Vec<String> = serde_json::from_str(&raw_style).unwrap_or_default();
+        let work_type: Vec<String> = serde_json::from_str(&raw_work).unwrap_or_default();
+        let (next_style, next_work) = crate::models::split_editor_tags(&style, &work_type);
+        if next_style == style && next_work == work_type {
+            continue;
+        }
+        conn.execute(
+            "UPDATE editors SET style = ?1, work_type = ?2 WHERE id = ?3",
+            rusqlite::params![
+                serde_json::json!(next_style).to_string(),
+                serde_json::json!(next_work).to_string(),
+                id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+
+fn add_manuscript_file_column(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'manuscripts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "manuscripts", "file_data") {
+        conn.execute("ALTER TABLE manuscripts ADD COLUMN file_data BLOB", [])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn add_task_log_recipient_column(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'task_logs'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "task_logs", "recipient") {
+        conn.execute(
+            "ALTER TABLE task_logs ADD COLUMN recipient TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn add_task_account_columns(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'tasks'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "tasks", "account_ids") {
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN account_ids TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

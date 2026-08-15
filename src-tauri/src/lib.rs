@@ -72,6 +72,33 @@ pub fn run() {
 
             build_tray(app)?;
 
+            // 任务 worker 不跨进程存活：重启后数据库里还标着 running / paused 的任务
+            // 其实已不在运行，直接标记为 stopped，避免界面出现可点「暂停」却没有 worker 的假任务。
+            {
+                let conn = db.lock().unwrap();
+                let stale: Vec<i64> = {
+                    let mut stmt = conn
+                        .prepare("SELECT id FROM tasks WHERE status IN ('running', 'paused')")
+                        .map_err(std::io::Error::other)?;
+                    let rows = stmt
+                        .query_map([], |r| r.get::<_, i64>(0))
+                        .map_err(std::io::Error::other)?;
+                    rows.collect::<Result<Vec<_>, _>>()
+                        .map_err(std::io::Error::other)?
+                };
+                for id in stale {
+                    let _ = store::set_task_status(&conn, id, "stopped");
+                    let _ = store::insert_log(
+                        &conn,
+                        Some(id),
+                        None,
+                        "warning",
+                        "task",
+                        "应用重启，原运行中的任务已自动停止",
+                    );
+                }
+            }
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -107,6 +134,8 @@ pub fn run() {
             commands::delete_account,
             commands::toggle_account,
             commands::test_account,
+            commands::send_test_email,
+            commands::resend_delivery,
             commands::list_manuscripts,
             commands::get_manuscript,
             commands::add_manuscript,
@@ -137,6 +166,7 @@ pub fn run() {
             commands::add_editor,
             commands::update_editor,
             commands::delete_editor,
+            commands::toggle_editor,
             commands::export_editors,
             commands::import_editors,
         ])
