@@ -63,10 +63,6 @@ pub fn parse_recipient(raw: &str) -> (String, String) {
     (name.to_string(), email.to_string())
 }
 
-pub fn apply_placeholders(text: &str, editor_name: &str, email: &str, title: &str) -> String {
-    apply_placeholders_full(text, editor_name, email, title, "", "", "")
-}
-
 pub fn apply_placeholders_full(
     text: &str,
     editor_name: &str,

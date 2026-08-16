@@ -553,25 +553,6 @@ pub fn task_delivery_count(conn: &Connection, task_id: i64) -> Result<i64, Strin
     )
     .map_err(|e| e.to_string())
 }
-pub fn delivered_emails_since(
-    conn: &Connection,
-    task_id: i64,
-    started_at: &str,
-) -> Result<std::collections::HashSet<String>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT recipient FROM deliveries WHERE task_id = ?1 AND sent_at >= ?2",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![task_id, started_at], |r| {
-            let raw: String = r.get(0)?;
-            Ok(raw.to_lowercase())
-        })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<std::collections::HashSet<_>, _>>()
-        .map_err(|e| e.to_string())
-}
 
 /// 按 id 读取一条投递记录，用于「重新发送」。
 pub fn load_delivery(conn: &Connection, id: i64) -> Result<Option<Delivery>, String> {
