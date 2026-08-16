@@ -4,7 +4,7 @@
 
 Panda Submission (NovelSub) is a local desktop submission tool for fiction writers. It brings sender accounts, editor contacts, manuscripts, submission plans, delivery logs, and editor replies into one workspace.
 
-Data is stored locally in SQLite, while submission tasks run in the Tauri background process.
+**Completely free and open source**: [https://github.com/logyxiao/PandaSub](https://github.com/logyxiao/PandaSub). Data is stored locally in SQLite, while submission tasks run in the Tauri background process.
 
 <p align="center">
   <img src="docs/preview.png" alt="Panda Submission preview" width="880" />
@@ -19,7 +19,7 @@ Data is stored locally in SQLite, while submission tasks run in the Tauri backgr
 - **Editor library**: Manage editor addresses by platform, style, work type, and status; import or export Excel/CSV files.
 - **Submission plans**: Edit manuscript metadata, message subject, body, recipients, and schedule in one workflow.
 - **Per-plan account selection**: Choose exactly which enabled sender accounts participate in each submission plan.
-- **Automatic pacing**: Submission intervals change automatically based on the number of messages already sent by the current plan.
+- **Automatic pacing**: After each message, wait a random 2–4 minutes (peaking around 3 minutes) before sending the next one—no manual frequency setting.
 - **Scheduling modes**: Send immediately, at a specified time, or repeatedly.
 - **Delivery safeguards**: Hourly and daily account limits, rate-limit cooldowns, retries, pause, resume, and stop controls.
 - **Delivery logs**: Track each message, filter by plan or result, and export to Excel.
@@ -28,14 +28,7 @@ Data is stored locally in SQLite, while submission tasks run in the Tauri backgr
 
 ## Automatic Submission Pace
 
-The application adjusts the delay before the next message according to the current plan's cumulative send count:
-
-| Cumulative messages | Delay before next message |
-| --- | --- |
-| First 11 | 3 minutes |
-| 12–19 | 30 seconds |
-| 20–51 | 1 minute |
-| 52 and later | 2 minutes |
+After each message is sent, the app waits a random **2–4 minutes** before the next one. Delays follow a triangular distribution that peaks around **3 minutes**, so the cadence feels closer to manual sending than a fixed timer.
 
 Messages are sent sequentially. Account-level hourly and daily limits and cooldown rules still apply.
 
@@ -127,6 +120,20 @@ NovelSub/
 │   └── tauri.conf.json     # Desktop application configuration
 └── README.md
 ```
+
+## Support the Author
+
+PandaSub is completely free and open source. All features are available at no cost. If the app helps you, you are welcome to buy the author a coffee—sponsorship is voluntary and never unlocks or locks any feature.
+
+<p align="center">
+  <img src="docs/donate/wechat.png" alt="WeChat reward QR code" width="220" />
+  &nbsp;&nbsp;&nbsp;
+  <img src="docs/donate/alipay.jpeg" alt="Alipay QR code" width="220" />
+</p>
+
+<p align="center">WeChat · Alipay</p>
+
+Repository: [https://github.com/logyxiao/PandaSub](https://github.com/logyxiao/PandaSub)
 
 ## Local Data
 

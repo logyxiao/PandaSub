@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { DatabaseBackup, Inbox, Power, RefreshCw, Save, Search, Send, ShieldCheck } from 'lucide-react'
+import { Coffee, DatabaseBackup, Inbox, Power, RefreshCw, Save, Search, Send, ShieldCheck } from 'lucide-react'
 import { api } from '../api'
+import { SupportAuthor } from '../components/SupportAuthor'
 import { useToast } from '../components/feedback'
 import { Button, Switch } from '../components/ui'
 import type { Settings } from '../types'
@@ -18,6 +19,7 @@ const sections = [
   { id: 'system', label: '开关机', icon: Power },
   { id: 'data', label: '备份', icon: DatabaseBackup },
   { id: 'update', label: '更新', icon: RefreshCw },
+  { id: 'support', label: '支持作者', icon: Coffee },
 ] as const
 
 type SectionId = typeof sections[number]['id']
@@ -167,6 +169,20 @@ export function SettingsView() {
               <div className="settings-actions">
                 {version && <p className="version">当前版本 v{version}</p>}
                 <Button variant="ghost" onClick={() => void checkUpdate()}><Search size={15} />检查更新</Button>
+              </div>
+            </div>
+          )}
+
+          {section === 'support' && (
+            <div className="panel settings-section">
+              <div className="panel-heading">
+                <div>
+                  <h2>支持作者</h2>
+                  <p>熊猫投稿完全开源免费。赞助完全自愿，不会解锁或锁定任何功能。</p>
+                </div>
+              </div>
+              <div className="pad">
+                <SupportAuthor compact />
               </div>
             </div>
           )}

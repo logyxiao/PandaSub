@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  BarChart3, ChevronLeft, ChevronRight, FileText, Inbox, LayoutDashboard, ListChecks, Mail, Settings, Users,
+  BarChart3, ChevronLeft, ChevronRight, FileText, Inbox, Info, LayoutDashboard, ListChecks, Mail, Settings, Users,
 } from 'lucide-react'
 import logo from './assets/logo.png'
 import './App.css'
@@ -14,6 +14,7 @@ import { LogsView } from './views/Logs'
 import { RepliesView } from './views/Replies'
 import { StatsView } from './views/Stats'
 import { SettingsView } from './views/Settings'
+import { AboutView } from './views/About'
 import { EditorsView } from './views/Editors'
 
 interface NavItem { id: ViewId; label: string; icon: typeof LayoutDashboard }
@@ -44,6 +45,7 @@ const groups: Array<{ label?: string; items: NavItem[] }> = [
     label: '系统',
     items: [
       { id: 'settings', label: '设置', icon: Settings },
+      { id: 'about', label: '关于', icon: Info },
     ],
   },
 ]
@@ -57,6 +59,7 @@ const pageCopy: Record<ViewId, { title: string; sub: string }> = {
   replies: { title: '回复', sub: '检查收件箱，区分编辑人工回复、网站自动回复和退信。' },
   stats: { title: '统计', sub: '按日、周、月查看投递、回复与过稿情况。' },
   settings: { title: '设置', sub: '发送节奏、内容保护，以及备份。改完请点保存。' },
+  about: { title: '关于', sub: '项目说明、版本信息，以及自愿赞助支持作者。' },
 }
 
 export default function App() {
@@ -160,6 +163,7 @@ export default function App() {
                 {active === 'accounts' && <AccountsView />}
                 {active === 'editors' && <EditorsView />}
                 {active === 'settings' && <SettingsView />}
+                {active === 'about' && <AboutView />}
               </div>
             </main>
           </div>
