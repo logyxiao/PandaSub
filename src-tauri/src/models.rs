@@ -63,6 +63,9 @@ pub struct Manuscript {
     pub account_ids: Vec<i64>,
     #[serde(default)]
     pub subject: String,
+    /// 多套邮件标题/正文。发送时从中随机选用一套。
+    #[serde(default)]
+    pub mail_templates: Vec<MailTemplate>,
     #[serde(default)]
     pub file_name: String,
     /// 是否存有附件文件内容（列表查询用，不携带实际字节）。
@@ -106,11 +109,26 @@ pub struct ManuscriptInput {
     pub account_ids: Vec<i64>,
     #[serde(default)]
     pub subject: String,
+    /// 多套邮件标题/正文。发送时从中随机选用一套。
+    #[serde(default)]
+    pub mail_templates: Vec<MailTemplate>,
     #[serde(default)]
     pub file_name: String,
     /// 上传的附件文件内容（Word / 文本）。None 表示无附件；更新时 None 保留原附件。
     #[serde(default)]
     pub file_data: Option<Vec<u8>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct MailTemplate {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub body: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

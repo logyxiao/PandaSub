@@ -9,7 +9,7 @@ import { useNav } from '../nav'
 import type { Account, Delivery, Editor, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
 import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
-import { categoryFromWords, countChars, defaultBody, defaultSubject, emptyManuscript, latestTask, toInput } from './planShared'
+import { categoryFromWords, countChars, createEmptyManuscript, latestTask, syncMailFromTemplates, toInput } from './planShared'
 
 const emptyTask: TaskInput = {
   name: '', manuscript_ids: [], account_ids: [], schedule_type: 'immediate', scheduled_at: null,
@@ -30,7 +30,7 @@ export function PlansView() {
   const [accountFor, setAccountFor] = useState<Manuscript | null>(null)
   const [draftIds, setDraftIds] = useState<number[]>([])
   const [detail, setDetail] = useState<Manuscript | null>(null)
-  const [form, setForm] = useState<ManuscriptInput>(emptyManuscript)
+  const [form, setForm] = useState<ManuscriptInput>(() => createEmptyManuscript())
   const [taskForm, setTaskForm] = useState<TaskInput>(emptyTask)
   const [scheduledInput, setScheduledInput] = useState('')
   const [saving, setSaving] = useState(false)
@@ -73,7 +73,7 @@ export function PlansView() {
 
   const openAdd = () => {
     setEditing(null)
-    setForm(emptyManuscript)
+    setForm(createEmptyManuscript())
     setTaskForm({
       ...emptyTask,
       account_ids: enabledAccounts.map((a) => a.id),
@@ -101,8 +101,14 @@ export function PlansView() {
 
   const persistManuscript = async (payload: ManuscriptInput) => {
     if (!payload.title.trim()) { toast('请填写作品名称', 'warning'); return null }
-    if (!payload.body.trim()) { toast('请填写邮件正文', 'warning'); return null }
-    const next = { ...payload, word_count: payload.word_count || countChars(payload.body) }
+    const next = syncMailFromTemplates({
+      ...payload,
+      word_count: payload.word_count || countChars(payload.body),
+    })
+    if (!next.mail_templates.some((item) => item.body.trim())) {
+      toast('请至少填写一套邮件正文', 'warning')
+      return null
+    }
     if (editing) {
       await api.updateManuscript(editing.id, next)
       return editing.id
@@ -155,7 +161,10 @@ export function PlansView() {
         scheduled_at: taskForm.schedule_type === 'scheduled' ? toDbTime(scheduledInput) : null,
       })
       if (sending.length !== form.recipients.length && taskForm.schedule_type !== 'scheduled') {
-        await api.updateManuscript(id, { ...form, word_count: form.word_count || countChars(form.body) })
+        await api.updateManuscript(id, syncMailFromTemplates({
+          ...form,
+          word_count: form.word_count || countChars(form.body),
+        }))
       }
       setShowEditor(false)
       await load()
@@ -177,10 +186,9 @@ export function PlansView() {
         const word_count = countChars(text)
         const category = categoryFromWords(word_count)
         // 保留文件内容，保存后会作为附件随邮件发送。
-        const next = { ...f, title, file_name: file.name, word_count, category, content_type: 'text/plain' as const, file_data: Array.from(bytes) }
-        return { ...next, subject: defaultSubject(next), body: defaultBody(next) }
+        return { ...f, title, file_name: file.name, word_count, category, content_type: 'text/plain' as const, file_data: Array.from(bytes) }
       })
-      toast('已读入作品，主题和正文已填好，文件将作为附件发送', 'success')
+      toast('已读入作品，文件将作为附件发送', 'success')
     } catch (e) { toast(String(e), 'error') }
   }
 

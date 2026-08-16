@@ -55,6 +55,13 @@ export interface EditorImportResult {
   errors: string[]
 }
 
+export interface MailTemplate {
+  id: string
+  name: string
+  subject: string
+  body: string
+}
+
 export interface Manuscript {
   id: number
   title: string
@@ -70,6 +77,7 @@ export interface Manuscript {
   excluded_types?: string[]
   account_ids: number[]
   subject: string
+  mail_templates?: MailTemplate[]
   file_name: string
   has_file?: boolean
   created_at: string
@@ -90,6 +98,7 @@ export interface ManuscriptInput {
   excluded_types?: string[]
   account_ids: number[]
   subject: string
+  mail_templates: MailTemplate[]
   file_name: string
   file_data?: number[] | null
   has_file?: boolean

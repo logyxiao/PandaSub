@@ -54,7 +54,7 @@ const pageCopy: Record<ViewId, { title: string; sub: string }> = {
   dashboard: { title: '工作台', sub: '看今天发了多少、哪些计划在跑、下一步该做什么。' },
   accounts: { title: '邮箱', sub: '添加用来发稿的邮箱。QQ / 163 请填 SMTP 授权码，不是登录密码。' },
   editors: { title: '编辑', sub: '内置投稿邮箱可直接用。按作品类型筛选要投的人。' },
-  plans: { title: '投稿计划', sub: '写好作品和邮件，收件人按作品类型从编辑库筛出。保存后可以直接发送。' },
+  plans: { title: '投稿计划', sub: '写好作品和邮件，按篇幅和作品类型从编辑库筛出收件人。保存后可以直接发送。' },
   logs: { title: '记录', sub: '每封邮件的发送结果。失败时可以按计划筛选排查。' },
   replies: { title: '回复', sub: '检查收件箱，区分编辑人工回复、网站自动回复和退信。' },
   stats: { title: '统计', sub: '按日、周、月查看投递、回复与过稿情况。' },

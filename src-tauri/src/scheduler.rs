@@ -416,18 +416,11 @@ async fn run_task_worker(
         } else {
             target.manuscript.sender_name.clone()
         };
-        let (editor_name, recipient_email) = smtp::parse_recipient(&target.recipient);
-        let subject_src = if target.manuscript.subject.trim().is_empty() {
-            target.manuscript.title.as_str()
-        } else {
-            target.manuscript.subject.as_str()
-        };
-        let subject = smtp::apply_placeholders(subject_src, &editor_name, &recipient_email, &target.manuscript.title);
-        let body = smtp::apply_placeholders(
-            &smtp::mutate_body(&target.manuscript.body, settings.anti_spam_mutation),
-            &editor_name,
-            &recipient_email,
-            &target.manuscript.title,
+        let (_editor_name, recipient_email) = smtp::parse_recipient(&target.recipient);
+        let (subject, body) = smtp::resolve_outgoing_mail(
+            &target.manuscript,
+            &target.recipient,
+            settings.anti_spam_mutation,
         );
         let outcome = send_with_retry(
             &app,

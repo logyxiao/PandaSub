@@ -3,9 +3,10 @@ use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::transport::smtp::Error as SmtpError;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+use rand::seq::IndexedRandom;
 use rand::Rng;
 
-use crate::models::Account;
+use crate::models::{Account, MailTemplate, Manuscript};
 
 #[derive(Debug)]
 pub enum SendError {
@@ -63,10 +64,106 @@ pub fn parse_recipient(raw: &str) -> (String, String) {
 }
 
 pub fn apply_placeholders(text: &str, editor_name: &str, email: &str, title: &str) -> String {
+    apply_placeholders_full(text, editor_name, email, title, "", "", "")
+}
+
+pub fn apply_placeholders_full(
+    text: &str,
+    editor_name: &str,
+    email: &str,
+    title: &str,
+    word_count: &str,
+    length: &str,
+    genres: &str,
+) -> String {
+    let work = if title.trim().is_empty() { "未命名作品" } else { title };
     text.replace("{{编辑昵称}}", editor_name)
         .replace("{{收件人}}", editor_name)
         .replace("{{邮箱}}", email)
-        .replace("{{作品名}}", title)
+        .replace("{{作品名}}", work)
+        .replace("{{字数}}", word_count)
+        .replace("{{篇幅}}", length)
+        .replace("{{类型}}", genres)
+}
+
+fn plan_tag_values(manuscript: &Manuscript) -> (String, String, String) {
+    let mut lengths = Vec::new();
+    let mut genres = Vec::new();
+    for raw in &manuscript.genres {
+        let tag = raw.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if tag == "短篇" || tag == "中短篇" {
+            if !lengths.iter().any(|item| *item == tag) {
+                lengths.push(tag);
+            }
+        } else if !genres.iter().any(|item| *item == tag) {
+            genres.push(tag);
+        }
+    }
+    let length = if lengths.is_empty() {
+        manuscript.category.trim().to_string()
+    } else {
+        lengths.join("、")
+    };
+    let words = if manuscript.word_count > 0 {
+        format!("{}字", manuscript.word_count)
+    } else {
+        "未填".into()
+    };
+    let genre = if genres.is_empty() { "未选".into() } else { genres.join("、") };
+    let length = if length.is_empty() { "未选".into() } else { length };
+    (words, length, genre)
+}
+
+pub fn pick_mail_template(manuscript: &Manuscript) -> (String, String) {
+    let usable: Vec<&MailTemplate> = manuscript
+        .mail_templates
+        .iter()
+        .filter(|item| !item.body.trim().is_empty() || !item.subject.trim().is_empty())
+        .collect();
+    if let Some(item) = usable.choose(&mut rand::rng()) {
+        let subject = if item.subject.trim().is_empty() {
+            manuscript.title.clone()
+        } else {
+            item.subject.clone()
+        };
+        return (subject, item.body.clone());
+    }
+    let subject = if manuscript.subject.trim().is_empty() {
+        manuscript.title.clone()
+    } else {
+        manuscript.subject.clone()
+    };
+    (subject, manuscript.body.clone())
+}
+
+/// 从模板中随机取一套，填入占位符；可选做防风控空白微改。
+pub fn resolve_outgoing_mail(manuscript: &Manuscript, recipient: &str, mutate: bool) -> (String, String) {
+    let (editor_name, recipient_email) = parse_recipient(recipient);
+    let (subject_src, body_src) = pick_mail_template(manuscript);
+    let (words, length, genres) = plan_tag_values(manuscript);
+    let subject = apply_placeholders_full(
+        &subject_src,
+        &editor_name,
+        &recipient_email,
+        &manuscript.title,
+        &words,
+        &length,
+        &genres,
+    );
+    let body_raw = mutate_body(&body_src, mutate);
+    let body = apply_placeholders_full(
+        &body_raw,
+        &editor_name,
+        &recipient_email,
+        &manuscript.title,
+        &words,
+        &length,
+        &genres,
+    );
+    (subject, body)
 }
 
 pub fn make_message_id() -> String {

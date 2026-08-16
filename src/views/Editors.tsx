@@ -9,7 +9,7 @@ import { Button, EmptyState, IconButton, PagedList, Select } from '../components
 import { isValidEmail } from '../format'
 import { useNav } from '../nav'
 import type { Editor, EditorInput } from '../types'
-import { GENRES, LENGTH_TAGS, SOURCES, normalizeEditorTags } from './planShared'
+import { GENRES, LENGTH_TAGS, SOURCES, editorMatchesPlan, normalizeEditorTags } from './planShared'
 
 const UNASSIGNED = '未填平台'
 
@@ -34,6 +34,8 @@ export interface EditorsListProps {
   emptyText?: string
   emptyAction?: ReactNode
   actions?: ReactNode
+  initialWorkTypes?: string[]
+  initialExcludedWorkTypes?: string[]
 }
 
 /** 编辑库列表（搜索、平台/作品类型筛选、分页、标签气泡），可作为页面或插件式嵌入投稿向导。 */
@@ -41,7 +43,7 @@ export function EditorsList({
   items: externalItems, reloadSignal = 0, selectable = false,
   selectedIds, onToggleSelect, onEdit, onDelete, onTotalChange, onPlatformsChange, pageSize,
   emptyText = '首次打开会载入内置投稿邮箱。也可以自己添加，或导入 Excel / CSV。',
-  emptyAction, actions,
+  emptyAction, actions, initialWorkTypes, initialExcludedWorkTypes,
 }: EditorsListProps) {
   const [items, setItems] = useState<Editor[]>([])
   const [loading, setLoading] = useState(!externalItems)
@@ -49,8 +51,8 @@ export function EditorsList({
   const [query, setQuery] = useState('')
   const [platform, setPlatform] = useState('')
   const [source, setSource] = useState('')
-  const [workTypes, setWorkTypes] = useState<string[]>([])
-  const [excludedWorkTypes, setExcludedWorkTypes] = useState<string[]>([])
+  const [workTypes, setWorkTypes] = useState<string[]>(() => initialWorkTypes ?? [])
+  const [excludedWorkTypes, setExcludedWorkTypes] = useState<string[]>(() => initialExcludedWorkTypes ?? [])
   const [more, setMore] = useState<{ id: number; top: number; left: number; width: number } | null>(null)
 
   const list = useMemo(() => (externalItems ?? items).map(normalizeEditorTags), [externalItems, items])
@@ -63,7 +65,6 @@ export function EditorsList({
   }
   useEffect(() => { if (!externalItems) void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!externalItems && reloadSignal > 0) void load() }, [externalItems, reloadSignal])
-  useEffect(() => { onTotalChange?.(list.length) }, [list.length, onTotalChange])
 
   const platforms = useMemo(
     () => [...new Set(list.map((e) => e.platform.trim()).filter(Boolean))].sort(),
@@ -86,11 +87,10 @@ export function EditorsList({
 
   const visible = useMemo(() => basePool.filter((e) => {
     if (source && e.source !== source) return false
-    if (workTypes.length && !workTypes.some((tag) => (e.work_type ?? []).includes(tag))) return false
-    if (excludedWorkTypes.length && excludedWorkTypes.some((tag) => (e.work_type ?? []).includes(tag))) return false
-    return true
+    return editorMatchesPlan(e, workTypes, excludedWorkTypes)
   }), [basePool, source, workTypes, excludedWorkTypes])
 
+  useEffect(() => { onTotalChange?.(visible.length) }, [visible.length, onTotalChange])
   useEffect(() => { setMore(null) }, [platform, query, source, workTypes, excludedWorkTypes, list])
 
   const toggleWorkType = (tag: string) => {

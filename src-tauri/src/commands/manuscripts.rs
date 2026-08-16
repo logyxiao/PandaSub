@@ -40,19 +40,8 @@ pub async fn resend_delivery(
         store::load_manuscript_attachment(&conn, manuscript.id).unwrap_or(None)
     };
 
-    let (editor_name, recipient_email) = smtp::parse_recipient(&delivery.recipient);
-    let subject_src = if manuscript.subject.trim().is_empty() {
-        manuscript.title.as_str()
-    } else {
-        manuscript.subject.as_str()
-    };
-    let subject = smtp::apply_placeholders(subject_src, &editor_name, &recipient_email, &manuscript.title);
-    let body = smtp::apply_placeholders(
-        &smtp::mutate_body(&manuscript.body, settings.anti_spam_mutation),
-        &editor_name,
-        &recipient_email,
-        &manuscript.title,
-    );
+    let (_editor_name, recipient_email) = smtp::parse_recipient(&delivery.recipient);
+    let (subject, body) = smtp::resolve_outgoing_mail(&manuscript, &delivery.recipient, settings.anti_spam_mutation);
     let sender_name = if manuscript.sender_name.trim().is_empty() {
         account.sender_name.clone()
     } else {
@@ -149,19 +138,8 @@ pub async fn send_manual_delivery(
         store::load_manuscript_attachment(&conn, manuscript.id).unwrap_or(None)
     };
 
-    let (editor_name, recipient_email) = smtp::parse_recipient(&recipient);
-    let subject_src = if manuscript.subject.trim().is_empty() {
-        manuscript.title.as_str()
-    } else {
-        manuscript.subject.as_str()
-    };
-    let subject = smtp::apply_placeholders(subject_src, &editor_name, &recipient_email, &manuscript.title);
-    let body = smtp::apply_placeholders(
-        &smtp::mutate_body(&manuscript.body, settings.anti_spam_mutation),
-        &editor_name,
-        &recipient_email,
-        &manuscript.title,
-    );
+    let (_editor_name, recipient_email) = smtp::parse_recipient(&recipient);
+    let (subject, body) = smtp::resolve_outgoing_mail(&manuscript, &recipient, settings.anti_spam_mutation);
     let sender_name = if manuscript.sender_name.trim().is_empty() {
         account.sender_name.clone()
     } else {
@@ -235,20 +213,33 @@ pub fn add_manuscript(
     if input.title.trim().is_empty() {
         return Err("作品名称不能为空".into());
     }
-    if input.body.trim().is_empty() {
-        return Err("邮件正文不能为空".into());
+    if input.body.trim().is_empty()
+        && !input.mail_templates.iter().any(|item| !item.body.trim().is_empty())
+    {
+        return Err("请至少填写一套邮件正文".into());
     }
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let recipients = json!(input.recipients).to_string();
     let genres = json!(input.genres).to_string();
     let excluded_types = json!(input.excluded_types).to_string();
+    let mail_templates = json!(input.mail_templates).to_string();
+    let body = if input.body.trim().is_empty() {
+        input
+            .mail_templates
+            .iter()
+            .find(|item| !item.body.trim().is_empty())
+            .map(|item| item.body.clone())
+            .unwrap_or_default()
+    } else {
+        input.body.clone()
+    };
     conn.execute(
         "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
-            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, subject, file_name, file_data)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, subject, file_name, file_data, mail_templates)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         rusqlite::params![
             input.title.trim(),
-            input.body,
+            body,
             input.content_type,
             recipients,
             input.sender_name.trim(),
@@ -263,6 +254,7 @@ pub fn add_manuscript(
             input.subject.trim(),
             input.file_name.trim(),
             input.file_data,
+            mail_templates,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -279,12 +271,14 @@ pub fn update_manuscript(
     let recipients = json!(input.recipients).to_string();
     let genres = json!(input.genres).to_string();
     let excluded_types = json!(input.excluded_types).to_string();
+    let mail_templates = json!(input.mail_templates).to_string();
     conn.execute(
         "UPDATE manuscripts SET title = ?1, body = ?2, content_type = ?3, recipients = ?4,
                 sender_name = ?5, word_count = ?6, category = ?7, reader_category = ?8,
                 reader_emotion = ?9, style = ?10, genres = ?11, excluded_types = ?16, account_ids = ?17,
                 subject = ?12, file_name = ?13,
                 file_data = COALESCE(?15, file_data),
+                mail_templates = ?18,
                 updated_at = datetime('now','localtime')
          WHERE id = ?14",
         rusqlite::params![
@@ -305,6 +299,7 @@ pub fn update_manuscript(
             input.file_data,
             excluded_types,
             json!(input.account_ids).to_string(),
+            mail_templates,
         ],
     )
     .map_err(|e| e.to_string())?;

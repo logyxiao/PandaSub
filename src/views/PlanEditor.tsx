@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Clock3, FileUp, Plus, Send } from 'lucide-react'
+import { ArrowLeft, Check, Clock3, FileUp, Plus, Send, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/feedback'
-import { Button, Select } from '../components/ui'
+import { Button } from '../components/ui'
 import { isValidEmail, parseRecipient, providerName } from '../format'
-import type { Account, Delivery, Editor, EditorInput, Manuscript, ManuscriptInput, TaskInput } from '../types'
+import type { Account, Delivery, Editor, EditorInput, MailTemplate, Manuscript, ManuscriptInput, TaskInput } from '../types'
 import {
-  CATEGORIES, GENRES, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
-  fillPlaceholders, normalizeEditorTags, categoryFromWords, defaultBody, defaultSubject, pickOneEditorPerPlatform, sentCountByEmail,
+  GENRES, LENGTH_TAGS, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
+  fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
+  defaultMailTemplates, pickOneEditorPerPlatform, sentCountByEmail,
 } from './planShared'
 import { EditorsList } from './Editors'
 
@@ -42,16 +43,17 @@ export function PlanEditor({
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
   const [orphans, setOrphans] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
-  const [mailDirty, setMailDirty] = useState(() => Boolean(editing && (form.subject.trim() || form.body.trim())))
+  const [listCount, setListCount] = useState<number | null>(null)
+  const [activeTplId, setActiveTplId] = useState(() => form.mail_templates[0]?.id ?? 't1')
   const [showEditorForm, setShowEditorForm] = useState(false)
   const [editorForm, setEditorForm] = useState<EditorInput>(emptyEditor)
   const [customWorkType, setCustomWorkType] = useState('')
   const [savingEditor, setSavingEditor] = useState(false)
   const [testing, setTesting] = useState(false)
   const initRef = useRef(false)
+  const lastAutoPick = useRef<string | null>(null)
 
   const sentMap = useMemo(() => sentCountByEmail(deliveries), [deliveries])
-  const liveCount = form.word_count
   const platforms = useMemo(
     () => [...new Set(editors.map((e) => e.platform.trim()).filter(Boolean))].sort(),
     [editors],
@@ -60,14 +62,19 @@ export function PlanEditor({
     () => editorWorkTypeOptions(editors),
     [editors],
   )
+  const lengthChips = useMemo(
+    () => LENGTH_TAGS.map((tag) => [tag, workTypeOptions.find(([item]) => item === tag)?.[1] ?? 0] as const),
+    [workTypeOptions],
+  )
   const genreChips = useMemo(() => {
-    const fromEditors = workTypeOptions.map(([tag]) => tag)
-    const extra = form.genres.filter((g) => !fromEditors.includes(g))
+    const fromEditors = workTypeOptions.filter(([tag]) => !isLengthTag(tag))
+    const extra = splitPlanTags(form.genres).genres.filter((g) => !fromEditors.some(([tag]) => tag === g))
     return [
-      ...workTypeOptions,
+      ...fromEditors,
       ...extra.map((tag) => [tag, 0] as const),
     ]
   }, [workTypeOptions, form.genres])
+  const excluded = form.excluded_types ?? []
 
   // 初始选中：编辑已有计划 → 恢复保存的收件人；新建 → 进入第二步时自动匹配（见 goToStep2）。
   useEffect(() => {
@@ -107,7 +114,14 @@ export function PlanEditor({
     return enabledAccounts.filter((account) => taskForm.account_ids.includes(account.id))
   }, [enabledAccounts, taskForm.account_ids])
   const minutes = estimateAutoMinutes(sendCount)
-  const ready = Boolean(form.title.trim() && form.body.trim() && sendCount > 0 && selectedAccounts.length)
+  const mailTemplates = form.mail_templates?.length ? form.mail_templates : defaultMailTemplates()
+  const activeTpl = mailTemplates.find((item) => item.id === activeTplId) ?? mailTemplates[0]
+  const ready = Boolean(
+    form.title.trim()
+    && mailTemplates.some((item) => item.body.trim())
+    && sendCount > 0
+    && selectedAccounts.length,
+  )
 
   // 勾选变化写回 form.recipients
   useEffect(() => {
@@ -128,20 +142,16 @@ export function PlanEditor({
   }, [taskForm.account_ids, setForm])
 
   useEffect(() => {
-    const category = categoryFromWords(form.word_count)
-    if (!category || category === form.category) return
-    setForm((f) => (f.category === category ? f : { ...f, category }))
-  }, [form.word_count, form.category, setForm])
-
-  useEffect(() => {
-    if (mailDirty) return
+    const suggested = lengthTagsFromWords(form.word_count)
+    if (!suggested.length) return
     setForm((f) => {
-      const subject = defaultSubject(f)
-      const body = defaultBody(f)
-      if (f.subject === subject && f.body === body) return f
-      return { ...f, subject, body }
+      const { genres } = splitPlanTags(f.genres)
+      const next = [...suggested, ...genres]
+      const category = suggested.join('、')
+      if (f.category === category && f.genres.length === next.length && f.genres.every((tag, i) => tag === next[i])) return f
+      return { ...f, genres: next, category }
     })
-  }, [form.title, form.word_count, form.category, form.genres, mailDirty, setForm])
+  }, [form.word_count, setForm])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -163,11 +173,34 @@ export function PlanEditor({
     })
   }
 
-  // 新建且尚未手动勾选时，进入第二步自动按作品类型匹配出候选编辑（每个平台一位），用户可自行增删。
+  const togglePlanTag = (tag: string) => {
+    setForm((f) => {
+      const excludedTypes = (f.excluded_types ?? []).filter((item) => item !== tag)
+      const genres = f.genres.includes(tag) ? f.genres.filter((item) => item !== tag) : [...f.genres, tag]
+      const { lengths } = splitPlanTags(genres)
+      return { ...f, genres, excluded_types: excludedTypes, category: lengths.join('、') }
+    })
+  }
+  const excludePlanTag = (tag: string) => {
+    setForm((f) => ({
+      ...f,
+      genres: f.genres.filter((item) => item !== tag),
+      excluded_types: (f.excluded_types ?? []).includes(tag)
+        ? (f.excluded_types ?? []).filter((item) => item !== tag)
+        : [...(f.excluded_types ?? []), tag],
+    }))
+  }
+
+  // 新建时进入第二步按篇幅 + 作品类型匹配（每个平台一位），用户可自行增删。
+  // 第一步筛选变了才重算；同筛选下再进第二步，保留用户勾选。
   const goToStep2 = () => {
-    if (!editing && selectedIds.size === 0) {
-      const { picked: auto } = pickOneEditorPerPlatform(editors, form.genres, sentMap)
-      if (auto.length) setSelectedIds(new Set(auto.map((e) => e.id)))
+    if (!editing) {
+      const key = `${form.genres.join('\0')}::${excluded.join('\0')}`
+      if (lastAutoPick.current !== key) {
+        lastAutoPick.current = key
+        const { picked: auto } = pickOneEditorPerPlatform(editors, form.genres, sentMap, {}, excluded)
+        setSelectedIds(new Set(auto.map((e) => e.id)))
+      }
     }
     setStep(2)
   }
@@ -216,16 +249,55 @@ export function PlanEditor({
     finally { setSavingEditor(false) }
   }
 
+  const writeTemplates = (next: MailTemplate[], currentId = activeTplId) => {
+    const current = next.find((item) => item.id === currentId) ?? next[0]
+    setForm((f) => ({
+      ...f,
+      mail_templates: next,
+      subject: current?.subject ?? '',
+      body: current?.body ?? '',
+    }))
+  }
+
+  const updateActiveTpl = (patch: Partial<MailTemplate>) => {
+    if (!activeTpl) return
+    writeTemplates(mailTemplates.map((item) => item.id === activeTpl.id ? { ...item, ...patch } : item))
+  }
+
+  const addTemplate = () => {
+    const item: MailTemplate = {
+      id: `tpl-${Date.now()}`,
+      name: `模板 ${mailTemplates.length + 1}`,
+      subject: '投稿：《{{作品名}}》',
+      body: '尊敬的{{编辑昵称}}：\n\n现将作品《{{作品名}}》投至贵处，请审阅。谢谢。',
+    }
+    writeTemplates([...mailTemplates, item], item.id)
+    setActiveTplId(item.id)
+  }
+
+  const removeTemplate = () => {
+    if (!activeTpl || mailTemplates.length <= 1) {
+      toast('至少保留一套模板', 'warning')
+      return
+    }
+    const index = mailTemplates.findIndex((item) => item.id === activeTpl.id)
+    const next = mailTemplates.filter((item) => item.id !== activeTpl.id)
+    const fallback = next[Math.max(0, index - 1)] ?? next[0]
+    writeTemplates(next, fallback.id)
+    setActiveTplId(fallback.id)
+  }
+
   const testSend = async () => {
-    if (!form.title.trim() || !form.body.trim()) { toast('请先填作品名称和邮件正文', 'warning'); return }
+    if (!form.title.trim() || !activeTpl?.body.trim()) { toast('请先填作品名称和当前模板正文', 'warning'); return }
     const account = selectedAccounts[0]
     if (!account) { toast('还没有勾选参与发送的邮箱，请先勾选一个', 'warning'); return }
     // 测试邮件只发到发件邮箱自己，绝不发给编辑。有勾选编辑时按第一位编辑填充占位符，方便预览实际效果。
     const first = selectedEditors[0]
+    const extras = { wordCount: form.word_count, genres: form.genres, category: form.category }
     setTesting(true)
     try {
-      const subject = fillPlaceholders(form.subject.trim() || form.title, first ? editorRecipient(first) : '', form.title)
-      const body = fillPlaceholders(form.body, first ? editorRecipient(first) : '', form.title)
+      const subject = fillPlaceholders(activeTpl.subject.trim() || form.title, first ? editorRecipient(first) : '', form.title, extras)
+      const body = fillPlaceholders(activeTpl.body, first ? editorRecipient(first) : '', form.title, extras)
       // 测试邮件也带上附件：新导入的文件直接用字节；编辑已有计划时按稿件 id 从数据库读已保存的附件。
       const attachment = form.file_data?.length
         ? { name: form.file_name, data: form.file_data }
@@ -241,7 +313,7 @@ export function PlanEditor({
 
   const blockers = [
     !form.title.trim() && '作品名称',
-    !form.body.trim() && '邮件正文',
+    !mailTemplates.some((item) => item.body.trim()) && '邮件正文',
     sendCount === 0 && '待发送的收件人',
     !selectedAccounts.length && '参与发送的邮箱',
   ].filter(Boolean) as string[]
@@ -271,7 +343,7 @@ export function PlanEditor({
           {steps.map((s) => (
             <button key={s.n} type="button" role="tab" aria-selected={step === s.n}
               className={`plan-step ${step === s.n ? 'on' : ''} ${step > s.n ? 'done' : ''}`}
-              onClick={() => setStep(s.n)}>
+              onClick={() => (s.n === 2 ? goToStep2() : setStep(s.n))}>
               <i>{s.n}</i>{s.label}
             </button>
           ))}
@@ -283,65 +355,115 @@ export function PlanEditor({
 
       <div className="plan-step-body">
         {step === 1 && (
-          <section className="plan-sheet plan-step-1">
-            <div className="plan-work-card">
-              <div className="plan-file-title">
-                <div
-                  className={`plan-drop ${dragging ? 'is-over' : ''} ${form.file_name ? 'has-file' : ''}`}
-                  onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
-                  onDragLeave={() => setDragging(false)}
-                  onDrop={(e) => { e.preventDefault(); setDragging(false); setMailDirty(false); void onImportFile(e.dataTransfer.files[0] ?? null) }}
-                >
-                  <input ref={fileRef} type="file" accept=".docx,.txt,.md,.html,.htm" hidden
-                    onChange={(e) => { setMailDirty(false); void onImportFile(e.target.files?.[0] ?? null); e.target.value = '' }} />
-                  <Button variant="ghost" onClick={() => fileRef.current?.click()}><FileUp size={15} />选择文件</Button>
-                  <b>{form.file_name || '未选文件'}</b>
-                  {(form.file_data || form.has_file) && <small className="file-attach-hint">✓ 发送时会作为附件附带</small>}
+          <section className="plan-step-1">
+            <div className="plan-step-1-split">
+              <div className="plan-work-card plan-step-1-left">
+                <div className="plan-file-title">
+                  <div
+                    className={`plan-drop ${dragging ? 'is-over' : ''} ${form.file_name ? 'has-file' : ''}`}
+                    onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+                    onDragLeave={() => setDragging(false)}
+                    onDrop={(e) => { e.preventDefault(); setDragging(false); void onImportFile(e.dataTransfer.files[0] ?? null) }}
+                  >
+                    <input ref={fileRef} type="file" accept=".docx,.txt,.md,.html,.htm" hidden
+                      onChange={(e) => { void onImportFile(e.target.files?.[0] ?? null); e.target.value = '' }} />
+                    <Button variant="ghost" onClick={() => fileRef.current?.click()}><FileUp size={15} />选择文件</Button>
+                    <b>{form.file_name || '未选文件'}</b>
+                    {(form.file_data || form.has_file) && <small className="file-attach-hint">✓ 发送时会作为附件附带</small>}
+                  </div>
                 </div>
-                <input className="plan-title-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="作品名称" />
-              </div>
+                <div className="plan-title-row">
+                  <input className="plan-title-input" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="作品名称" />
+                  <label className="plan-word-count">字数
+                    <input type="number" min={0} value={form.word_count || ''}
+                      onChange={(e) => setForm({ ...form, word_count: Number(e.target.value) || 0 })} />
+                  </label>
+                </div>
 
-              <div className="plan-meta">
-                <label>字数
-                  <input type="number" min={0} value={form.word_count || ''}
-                    onChange={(e) => setForm({ ...form, word_count: Number(e.target.value) || 0 })} />
-                </label>
-                <label>篇幅
-                  <Select value={form.category} onChange={(value) => setForm({ ...form, category: value })} ariaLabel="选择作品篇幅"
-                    options={[{ value: '', label: '未选' }, ...CATEGORIES.map((x) => ({ value: x, label: x }))]} />
-                </label>
-              </div>
-
-              <div className="plan-genre-row">
-                <span>作品类型（按编辑库筛选，可多选）</span>
-                {genreChips.length ? (
+                <div className="plan-genre-row">
+                  <span>篇幅（按编辑库短篇 / 中短篇筛选，可多选）</span>
                   <div className="field-filter-chips">
-                    {genreChips.map(([tag, count]) => (
-                      <button type="button" key={tag} className={`field-chip ${form.genres.includes(tag) ? 'on' : ''}`}
-                        onClick={() => setForm((f) => ({
-                          ...f,
-                          genres: f.genres.includes(tag) ? f.genres.filter((x) => x !== tag) : [...f.genres, tag],
-                        }))}>
+                    {lengthChips.map(([tag, count]) => (
+                      <button type="button" key={tag}
+                        className={`field-chip ${form.genres.includes(tag) ? 'on' : ''} ${excluded.includes(tag) ? 'is-excluded' : ''}`}
+                        onClick={() => togglePlanTag(tag)}
+                        onContextMenu={(ev) => { ev.preventDefault(); excludePlanTag(tag) }}>
                         {tag}{count > 0 && <small>{count}</small>}
                       </button>
                     ))}
                   </div>
-                ) : (
-                  <p className="field-filter-empty">
-                    {editors.length
-                      ? '编辑库里还没有作品类型。去编辑页补上后再筛。'
-                      : '还没有编辑，先去编辑页存收稿人。'}
-                  </p>
-                )}
+                </div>
+
+                <div className="plan-genre-row is-grow">
+                  <span>作品类型（按编辑库筛选，可多选，右键排除）</span>
+                  {genreChips.length ? (
+                    <div className="field-filter-chips">
+                      {genreChips.map(([tag, count]) => (
+                        <button type="button" key={tag} title="左键筛选，右键排除"
+                          className={`field-chip ${form.genres.includes(tag) ? 'on' : ''} ${excluded.includes(tag) ? 'is-excluded' : ''}`}
+                          onClick={() => togglePlanTag(tag)}
+                          onContextMenu={(ev) => { ev.preventDefault(); excludePlanTag(tag) }}>
+                          {tag}{count > 0 && <small>{count}</small>}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="field-filter-empty">
+                      {editors.length
+                        ? '编辑库里还没有作品类型。去编辑页补上后再筛。'
+                        : '还没有编辑，先去编辑页存收稿人。'}
+                    </p>
+                  )}
+                </div>
               </div>
 
-              <div className="plan-mail">
-                <input value={form.subject} onChange={(e) => { setMailDirty(true); setForm({ ...form, subject: e.target.value }) }}
-                  placeholder="标题+字数+作品类型" />
-                <textarea className="plan-body" rows={5} value={form.body}
-                  onChange={(e) => { setMailDirty(true); setForm({ ...form, body: e.target.value }) }}
-                  placeholder={'尊敬的编辑大大：\n\n辛苦审阅，期待您的意见！'} />
-                {liveCount > 0 && <div className="plan-body-meta">作品 {liveCount} 字</div>}
+              <div className="plan-work-card plan-step-1-right">
+                <div className="plan-tpl-head">
+                  <div>
+                    <strong>邮件模板</strong>
+                    <p>发送时从这 {mailTemplates.length} 套里随机选用。测试发送用当前这套。</p>
+                  </div>
+                  <div className="plan-tpl-head-actions">
+                    <Button size="sm" onClick={addTemplate}><Plus size={14} />新增</Button>
+                    <Button size="sm" variant="danger" disabled={mailTemplates.length <= 1} onClick={removeTemplate}>
+                      <Trash2 size={14} />删除
+                    </Button>
+                  </div>
+                </div>
+                <div className="plan-tpl-tabs" role="tablist" aria-label="邮件模板">
+                  {mailTemplates.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={item.id === activeTpl?.id}
+                      className={`plan-tpl-tab ${item.id === activeTpl?.id ? 'on' : ''}`}
+                      onClick={() => { writeTemplates(mailTemplates, item.id); setActiveTplId(item.id) }}
+                    >
+                      {item.name.trim() || `模板 ${index + 1}`}
+                    </button>
+                  ))}
+                </div>
+                {activeTpl && (
+                  <div className="plan-tpl-editor">
+                    <label className="plan-tpl-name">模板名称
+                      <input value={activeTpl.name} onChange={(e) => updateActiveTpl({ name: e.target.value })} placeholder="例如：常规问候" />
+                    </label>
+                    <input
+                      className="plan-tpl-subject"
+                      value={activeTpl.subject}
+                      onChange={(e) => updateActiveTpl({ subject: e.target.value })}
+                      placeholder="邮件标题，可用 {{作品名}} {{字数}} {{类型}}"
+                    />
+                    <textarea
+                      className="plan-body"
+                      value={activeTpl.body}
+                      onChange={(e) => updateActiveTpl({ body: e.target.value })}
+                      placeholder={'尊敬的{{编辑昵称}}：\n\n现将作品《{{作品名}}》投至贵处，请审阅。'}
+                    />
+                    <p className="plan-tpl-hint">占位符：{'{{作品名}}'} {'{{编辑昵称}}'} {'{{字数}}'} {'{{篇幅}}'} {'{{类型}}'}</p>
+                  </div>
+                )}
               </div>
             </div>
             <div className="step-actions">
@@ -353,16 +475,23 @@ export function PlanEditor({
         {step === 2 && (
           <section className="plan-step-2">
             <div className="step-toolbar">
-              <span className="step-meta">已选 <strong>{selectedIds.size}</strong> / {editors.length} 位编辑</span>
+              <span className="step-meta">
+                已选 <strong>{listCount ?? selectedIds.size}</strong> 位
+                {listCount != null && listCount !== selectedIds.size && <> · 共选 {selectedIds.size} 位</>}
+              </span>
               <Button size="sm" onClick={openAddEditor}><Plus size={14} />添加编辑</Button>
             </div>
             <EditorsList
-              items={editors}
+              key={`plan-${form.genres.join('|')}-${excluded.join('|')}`}
+              items={selectedEditors}
               selectable
               selectedIds={selectedIds}
               onToggleSelect={toggleSelect}
+              onTotalChange={setListCount}
+              initialWorkTypes={form.genres}
+              initialExcludedWorkTypes={excluded}
               pageSize={6}
-              emptyText="还没有编辑，先去编辑页存收稿人，也可以点右上角「添加编辑」。"
+              emptyText="还没有选中的编辑。返回上一步调整篇幅和作品类型，或点右上角添加。"
             />
             {!!orphans.length && (
               <p className="step-orphan">另有 {orphans.length} 位保存过的收件人不在编辑库中，将保留发送。</p>
