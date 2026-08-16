@@ -1,8 +1,8 @@
 name: 构建安装包
 
 # 推送 main 分支 / 打 v 开头 tag / 手动触发时，自动构建 macOS 和 Windows 安装包。
-# 普通推送：安装包作为本次运行的 artifacts 可下载。
-# 打 tag（如 v0.1.0）：额外发布一个 GitHub Release（草稿），安装包挂到 Release 资产。
+# 普通推送：安装包作为本次运行的 artifacts 可下载，版本用 tauri.conf.json。
+# 打 tag（如 v0.1.2）：把 tag 写入应用版本后再构建，并发布 GitHub Release（草稿）。
 on:
   push:
     branches: [main]
@@ -48,6 +48,32 @@ jobs:
 
       - name: 安装前端依赖
         run: npm ci
+
+      - name: 按 Git tag 写入应用版本
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${VERSION#V}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "tag $GITHUB_REF_NAME 不是有效的版本号（期望 v0.1.2 这种形式）"
+            exit 1
+          fi
+          echo "安装包版本: $VERSION"
+          VERSION="$VERSION" node <<'EOF'
+          const fs = require('fs')
+          const version = process.env.VERSION
+          const writeJson = (path) => {
+            const json = JSON.parse(fs.readFileSync(path, 'utf8'))
+            json.version = version
+            fs.writeFileSync(path, JSON.stringify(json, null, 2) + '\n')
+          }
+          writeJson('src-tauri/tauri.conf.json')
+          writeJson('package.json')
+          const cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8')
+            .replace(/^version = ".*"$/m, `version = "${version}"`)
+          fs.writeFileSync('src-tauri/Cargo.toml', cargo)
+          EOF
 
       - name: 配置签名环境（可选，未配置 APPLE_CERTIFICATE 时不注入）
         env:
