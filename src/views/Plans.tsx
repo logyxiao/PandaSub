@@ -4,6 +4,7 @@ import { api, onTask } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, RuntimeTrack } from '../components/ui'
+import { Table } from '../components/Table'
 import { formatTime, fromDbTime, isValidEmail, statusLabel, taskTone, toDbTime } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
@@ -323,66 +324,100 @@ export function PlansView() {
             desc="写好作品和邮件，收件人按作品类型匹配，每个平台只出一位。"
             action={<Button variant="primary" onClick={openAdd}><Plus size={16} />新建计划</Button>} />
         </div>
-      ) : (        <div className="panel">
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>计划</th><th>收件人</th><th>进度</th><th>状态</th><th>更新</th><th aria-label="操作" /></tr></thead>
-              <tbody>
-                {manuscripts.map((m) => {
+      ) : (
+        <div className="panel">
+          <Table
+            rowKey="id"
+            dataSource={manuscripts}
+            pagination={{ pageSize: 10, hideOnSinglePage: true }}
+            empty="还没有投稿计划"
+            columns={[
+              {
+                key: 'title',
+                title: '计划',
+                render: (_value, m) => (
+                  <>
+                    <b>{m.title}</b>
+                    <small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || '未填写分类'}</small>
+                  </>
+                ),
+              },
+              {
+                key: 'recipients',
+                title: '收件人',
+                width: 88,
+                render: (_value, m) => {
+                  const n = m.recipients.filter((r) => isValidEmail(r)).length
+                  return n ? `${n} 家` : <span className="warn-text">未设置</span>
+                },
+              },
+              {
+                key: 'progress',
+                title: '进度',
+                width: 160,
+                render: (_value, m) => {
                   const task = latestTask(m.id, tasks)
                   const n = m.recipients.filter((r) => isValidEmail(r)).length
                   const progress = planSendProgress(m, deliveries)
+                  return task
+                    ? <RuntimeTrack sent={progress.sent} total={progress.total || n} status={task.status}
+                        meta={task.schedule_type === 'loop' ? `已成功 ${progress.sent} 封` : `${progress.sent} / ${progress.total || n || '—'}`} />
+                    : <span className="hint">草稿</span>
+                },
+              },
+              {
+                key: 'status',
+                title: '状态',
+                width: 92,
+                render: (_value, m) => {
+                  const task = latestTask(m.id, tasks)
+                  return task
+                    ? <Badge tone={taskTone[task.status]} dot>{statusLabel(task.status)}</Badge>
+                    : <Badge tone="neutral">草稿</Badge>
+                },
+              },
+              {
+                key: 'updated',
+                title: '更新',
+                width: 120,
+                render: (_value, m) => formatTime(m.updated_at),
+              },
+              {
+                key: 'actions',
+                title: '',
+                width: 220,
+                render: (_value, m) => {
+                  const task = latestTask(m.id, tasks)
                   return (
-                    <tr key={m.id}>
-                      <td>
-                        <b>{m.title}</b>
-                        <small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || '未填写分类'}</small>
-                      </td>
-                      <td>{n ? `${n} 家` : <span className="warn-text">未设置</span>}</td>
-                      <td style={{ minWidth: 140 }}>
-                        {task
-                          ? <RuntimeTrack sent={progress.sent} total={progress.total || n} status={task.status}
-                              meta={task.schedule_type === 'loop' ? `已成功 ${progress.sent} 封` : `${progress.sent} / ${progress.total || n || '—'}`} />
-                          : <span className="hint">草稿</span>}
-                      </td>
-                      <td>
-                        {task
-                          ? <Badge tone={taskTone[task.status]} dot>{statusLabel(task.status)}</Badge>
-                          : <Badge tone="neutral">草稿</Badge>}
-                      </td>
-                      <td>{formatTime(m.updated_at)}</td>
-                      <td>
-                        <div className="row-actions plan-row-actions">
-                          <div className="plan-row-actions-text">
-                            {task && ['stopped', 'completed', 'scheduled'].includes(task.status) && (
-                              <Button size="sm" variant="primary" onClick={() => void startAgain(task)}>
-                                {task.status === 'scheduled' ? '立即开始'
-                                  : task.status === 'completed' ? '重新发送'
-                                  : task.schedule_type === 'loop' ? (task.sent > 0 ? '重新循环' : '开始')
-                                  : task.sent > 0 ? '继续' : '开始'}
-                              </Button>
-                            )}
-                            {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
-                            {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
-                            {task && ['running', 'paused'].includes(task.status) && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
-                            <Button size="sm" onClick={() => void openDetail(m)}>记录</Button>
-                            <Button size="sm" onClick={() => openEdit(m)}>编辑</Button>
-                          </div>
-                          <div className="plan-row-actions-icons">
-                            <IconButton title="复制计划" onClick={() => openCopy(m)}><Copy size={15} /></IconButton>
-                            <IconButton title="配置投稿邮箱" onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
-                            {!(task && ['running', 'paused'].includes(task.status)) && (
-                              <IconButton title="删除" className="danger" onClick={() => void remove(m)}><Trash2 size={15} /></IconButton>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
+                    <div className="row-actions plan-row-actions">
+                      <div className="plan-row-actions-text">
+                        {task && ['stopped', 'completed', 'scheduled'].includes(task.status) && (
+                          <Button size="sm" variant="primary" onClick={() => void startAgain(task)}>
+                            {task.status === 'scheduled' ? '立即开始'
+                              : task.status === 'completed' ? '重新发送'
+                              : task.schedule_type === 'loop' ? (task.sent > 0 ? '重新循环' : '开始')
+                              : task.sent > 0 ? '继续' : '开始'}
+                          </Button>
+                        )}
+                        {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
+                        {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
+                        {task && ['running', 'paused'].includes(task.status) && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
+                        <Button size="sm" onClick={() => void openDetail(m)}>记录</Button>
+                        <Button size="sm" onClick={() => openEdit(m)}>编辑</Button>
+                      </div>
+                      <div className="plan-row-actions-icons">
+                        <IconButton title="复制计划" onClick={() => openCopy(m)}><Copy size={15} /></IconButton>
+                        <IconButton title="配置投稿邮箱" onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
+                        {!(task && ['running', 'paused'].includes(task.status)) && (
+                          <IconButton title="删除" className="danger" onClick={() => void remove(m)}><Trash2 size={15} /></IconButton>
+                        )}
+                      </div>
+                    </div>
                   )
-                })}
-              </tbody>
-            </table>
-          </div>
+                },
+              },
+            ]}
+          />
         </div>
       )}
 

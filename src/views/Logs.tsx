@@ -3,7 +3,8 @@ import { Download, FileText, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { api, onLog } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
-import { formatTime, logCategoryLabel, type Tone } from '../format'
+import { Table } from '../components/Table'
+import { logCategoryLabel, type Tone } from '../format'
 import { useNav } from '../nav'
 import type { Account, Task, TaskLog } from '../types'
 
@@ -12,6 +13,15 @@ const levelMeta: Record<string, { label: string; tone: Tone }> = {
   success: { label: '成功', tone: 'success' },
   warning: { label: '警告', tone: 'warning' },
   error: { label: '失败', tone: 'danger' },
+}
+
+function logTimeParts(value: string) {
+  const date = new Date(`${value.replace(' ', 'T')}`)
+  if (Number.isNaN(date.getTime())) return { day: '—', clock: '' }
+  return {
+    day: date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }),
+    clock: date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+  }
 }
 
 export function LogsView() {
@@ -80,12 +90,6 @@ export function LogsView() {
     })
   }
 
-  // 详情默认只展示前 6 个字，点击可展开/收起完整消息。
-  const shortMessage = (msg: string) => {
-    const chars = Array.from(msg)
-    return chars.length > 6 ? `${chars.slice(0, 6).join('')}…` : msg
-  }
-
   const exportLogs = async () => {
     try {
       const path = await api.exportLogs(taskFilter || undefined)
@@ -144,30 +148,84 @@ export function LogsView() {
         </div>
       ) : (
         <div className="panel">
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>时间</th><th>结果</th><th>计划</th><th>发件邮箱</th><th>编辑邮箱</th><th>类型</th><th>详情</th></tr></thead>
-              <tbody>
-                {filtered.map((log) => {
-                  const meta = levelMeta[log.level] ?? levelMeta.info
-                  const full = expanded.has(log.id)
+          <Table
+            className="logs-table"
+            rowKey="id"
+            dataSource={filtered}
+            resetKey={`${emailQuery}\0${taskFilter}\0${levelFilter}`}
+            pagination={{ pageSize: 20 }}
+            columns={[
+              {
+                key: 'time',
+                title: '时间',
+                width: 88,
+                render: (_value, log) => {
+                  const { day, clock } = logTimeParts(log.created_at)
                   return (
-                    <tr key={log.id}>
-                      <td className="mono">{formatTime(log.created_at)}</td>
-                      <td><Badge tone={meta.tone} dot>{meta.label}</Badge></td>
-                      <td>{taskName(log.task_id)}</td>
-                      <td className="mono">{accountEmail(log.account_id)}</td>
-                      <td className="mono">{log.recipient || '—'}</td>
-                      <td>{logCategoryLabel[log.category] ?? log.category}</td>
-                      <td className="log-msg" title={log.message} onClick={() => toggleMsg(log.id)}>
-                        {full ? log.message : shortMessage(log.message)}
-                      </td>
-                    </tr>
+                    <>
+                      <b>{day}</b>
+                      <small>{clock || '—'}</small>
+                    </>
                   )
-                })}
-              </tbody>
-            </table>
-          </div>
+                },
+              },
+              {
+                key: 'level',
+                title: '结果',
+                width: 76,
+                render: (_value, log) => {
+                  const meta = levelMeta[log.level] ?? levelMeta.info
+                  return <Badge tone={meta.tone} dot>{meta.label}</Badge>
+                },
+              },
+              {
+                key: 'task',
+                title: '计划',
+                width: 168,
+                ellipsis: true,
+                render: (_value, log) => taskName(log.task_id),
+              },
+              {
+                key: 'mail',
+                title: '邮箱',
+                width: 220,
+                render: (_value, log) => {
+                  const from = accountEmail(log.account_id)
+                  const to = (log.recipient ?? '').trim() || '—'
+                  return (
+                    <>
+                      <b title={from}>{from}</b>
+                      <small title={to}>{to}</small>
+                    </>
+                  )
+                },
+              },
+              {
+                key: 'category',
+                title: '类型',
+                width: 64,
+                render: (_value, log) => (
+                  <span className="log-cat">{logCategoryLabel[log.category] ?? log.category}</span>
+                ),
+              },
+              {
+                key: 'message',
+                title: '详情',
+                className: 'log-msg-cell',
+                render: (_value, log) => {
+                  const open = expanded.has(log.id)
+                  return (
+                    <span
+                      className={`log-msg ${open ? 'is-open' : ''}`}
+                      title={open ? '点击收起' : log.message}
+                      onClick={() => toggleMsg(log.id)}>
+                      {log.message}
+                    </span>
+                  )
+                },
+              },
+            ]}
+          />
         </div>
       )}
     </>

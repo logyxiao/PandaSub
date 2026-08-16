@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Inbox, Plus, RotateCcw, Search, X } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
+import { Table } from '../components/Table'
 import { useConfirm, useToast } from '../components/feedback'
-import { Badge, Button, EmptyState, IconButton, Pager } from '../components/ui'
+import { Badge, Button, EmptyState, IconButton } from '../components/ui'
 import { formatTime, parseRecipient } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, Manuscript } from '../types'
-import { EditorTagsPop, moreRect } from './Editors'
-import { editorRecipient, editorRowTags, normalizeEditorTags, toInput } from './planShared'
+import { EditorIdentity, EditorTagsPop, EditorTypeChips, moreRect } from './Editors'
+import { editorRecipient, normalizeEditorTags, toInput } from './planShared'
 
 interface DetailRow {
   order: number
@@ -39,8 +40,6 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   const [recipients, setRecipients] = useState<string[]>(manuscript.recipients)
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'sent' | 'unsent'>('all')
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
   const [showPicker, setShowPicker] = useState(false)
   const [pickQuery, setPickQuery] = useState('')
   const [resending, setResending] = useState<string | null>(null)
@@ -91,9 +90,6 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   }, [rows, query, filter])
 
   const sentCount = rows.filter((r) => r.sent).length
-  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
-  const safePage = Math.min(page, pageCount)
-  const visible = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
 
   // 添加编辑：编辑库中还没进这个计划的编辑。
   const existingEmails = useMemo(
@@ -113,7 +109,9 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     })
   }, [candidates, pickQuery])
 
-  useEffect(() => { setPage(1); setMore(null) }, [query, pageSize, filter])
+  const pickerRows = useMemo(() => filteredCandidates.map(normalizeEditorTags), [filteredCandidates])
+
+  useEffect(() => { setMore(null) }, [query, filter, pickQuery])
 
   const mutateRecipients = async (next: string[], okMsg: string) => {
     if (next.length === recipients.length) return
@@ -204,44 +202,69 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
               <Search size={14} />
               <input value={pickQuery} onChange={(e) => setPickQuery(e.target.value)} placeholder="搜索姓名、平台、邮箱或备注" />
             </label>
-            <span className="hint">{filteredCandidates.length} 位可选</span>
+            <span className="hint">{pickerRows.length} 位可选</span>
           </div>
-          {filteredCandidates.length ? (
-            <div className="send-detail-picker-list editor-groups">
-              {filteredCandidates.map((raw) => {
-                const e = normalizeEditorTags(raw)
-                return (
-                  <EditorDataRow
-                    key={e.id}
-                    name={e.name}
-                    platform={e.platform}
-                    email={e.email}
-                    notes={e.notes ?? ''}
-                    workTypes={e.work_type ?? []}
-                    moreKey={`pick-${e.id}`}
-                    more={more}
-                    onMore={setMore}
-                    actions={<Button size="sm" onClick={() => addEditor(e)}>添加</Button>}
+          <Table
+            rowKey="id"
+            dataSource={pickerRows}
+            resetKey={pickQuery}
+            pagination={{ pageSize: 6, pageSizeOptions: [6, 10, 20], hideOnSinglePage: true }}
+            empty={editors.length
+              ? '编辑库中没有可添加的编辑（或都已在这个计划里）。'
+              : <>编辑库还是空的，去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 页添加吧。</>}
+            columns={[
+              {
+                key: 'editor',
+                title: '编辑',
+                width: 220,
+                render: (_value, e) => (
+                  <div className="editor-row-main">
+                    <EditorIdentity name={e.name} platform={e.platform} email={e.email} />
+                  </div>
+                ),
+              },
+              {
+                key: 'notes',
+                title: '备注',
+                ellipsis: { rows: 2 },
+                render: (_value, e) => {
+                  const note = (e.notes ?? '').trim()
+                  return note || <span className="hint">无备注</span>
+                },
+              },
+              {
+                key: 'work_type',
+                title: '作品类型',
+                width: 160,
+                render: (_value, e) => (
+                  <EditorTypeChips
+                    workTypes={e.work_type}
+                    open={more?.key === `pick-${e.id}`}
+                    onToggle={(el, tags) => {
+                      const next = moreRect(el)
+                      setMore(more?.key === `pick-${e.id}` ? null : { key: `pick-${e.id}`, ...next, workTypes: tags })
+                    }}
                   />
-                )
-              })}
-            </div>
-          ) : (
-            <p className="hint">
-              {editors.length
-                ? '编辑库中没有可添加的编辑（或都已在这个计划里）。'
-                : <>编辑库还是空的，去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 页添加吧。</>}
-            </p>
-          )}
+                ),
+              },
+              {
+                key: 'actions',
+                title: '',
+                width: 72,
+                render: (_value, e) => (
+                  <div className="row-actions">
+                    <Button size="sm" onClick={() => addEditor(e)}>添加</Button>
+                  </div>
+                ),
+              },
+            ]}
+          />
         </div>
       )}
 
       {!rows.length ? (
         <EmptyState icon={Inbox} title="这个计划还没有收件人"
           desc="点击右上角「添加编辑」从编辑库选人，这里会按发送顺序列出每一位。" />
-      ) : !filtered.length ? (
-        <EmptyState icon={Search} title="没有匹配的收件人"
-          desc={filter === 'sent' ? '还没有发送成功的记录。' : filter === 'unsent' ? '没有未发送的收件人。' : '换个关键词试试。'} />
       ) : (
         <>
           <div className="send-detail-filter" role="group" aria-label="发送状态筛选">
@@ -251,28 +274,63 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
             ))}
           </div>
           <div className="panel send-detail-list">
-            <div className="editor-groups">
-              {visible.map((r) => (
-                <EditorDataRow
-                  key={`${r.order}-${r.email}`}
-                  name={r.name}
-                  platform={r.platform}
-                  email={r.email}
-                  notes={r.notes}
-                  workTypes={r.work_type}
-                  moreKey={`row-${r.email}`}
-                  more={more}
-                  onMore={setMore}
-                  extra={(
+            <Table
+              rowKey={(r) => `${r.order}-${r.email}`}
+              dataSource={filtered}
+              resetKey={`${query}\0${filter}`}
+              pagination={{ pageSize: 10, pageSizeOptions: [10, 20, 50] }}
+              empty={filter === 'sent' ? '还没有发送成功的记录。' : filter === 'unsent' ? '没有未发送的收件人。' : '没有匹配的收件人'}
+              columns={[
+                {
+                  key: 'editor',
+                  title: '编辑',
+                  width: 220,
+                  render: (_value, r) => (
+                    <div className="editor-row-main">
+                      <EditorIdentity name={r.name} platform={r.platform} email={r.email} />
+                    </div>
+                  ),
+                },
+                {
+                  key: 'notes',
+                  title: '备注',
+                  ellipsis: { rows: 2 },
+                  render: (_value, r) => r.notes.trim() || <span className="hint">无备注</span>,
+                },
+                {
+                  key: 'work_type',
+                  title: '作品类型',
+                  width: 160,
+                  render: (_value, r) => (
+                    <EditorTypeChips
+                      workTypes={r.work_type}
+                      open={more?.key === `row-${r.email}`}
+                      onToggle={(el, tags) => {
+                        const next = moreRect(el)
+                        setMore(more?.key === `row-${r.email}` ? null : { key: `row-${r.email}`, ...next, workTypes: tags })
+                      }}
+                    />
+                  ),
+                },
+                {
+                  key: 'status',
+                  title: '状态',
+                  width: 92,
+                  render: (_value, r) => (
                     <div className="editor-row-status">
                       {r.sent
                         ? <Badge tone="success" dot>已发送{r.sentCount > 1 ? ` ×${r.sentCount}` : ''}</Badge>
                         : <Badge tone="neutral">未发送</Badge>}
                       <small>{r.lastSentAt ? formatTime(r.lastSentAt) : '—'}</small>
                     </div>
-                  )}
-                  actions={(
-                    <>
+                  ),
+                },
+                {
+                  key: 'actions',
+                  title: '',
+                  width: 140,
+                  render: (_value, r) => (
+                    <div className="row-actions">
                       {!r.sent && (
                         <Button size="sm" disabled={locked || resending !== null} onClick={() => void manualSend(r)}>
                           {resending === r.email.toLowerCase() ? '发送中…' : '手动发送'}
@@ -288,14 +346,12 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
                         disabled={locked} onClick={() => removeRecipient(r.email)}>
                         <X size={14} />
                       </IconButton>
-                    </>
-                  )}
-                />
-              ))}
-            </div>
+                    </div>
+                  ),
+                },
+              ]}
+            />
           </div>
-          <Pager page={safePage} pageCount={pageCount} pageSize={pageSize} total={filtered.length}
-            onPage={setPage} onPageSize={(n) => setPageSize(n)} />
         </>
       )}
       {more && (
@@ -309,60 +365,5 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
         />
       )}
     </Modal>
-  )
-}
-
-function EditorDataRow({ name, platform, email, notes, workTypes, moreKey, more, onMore, extra, actions }: {
-  name: string
-  platform: string
-  email: string
-  notes: string
-  workTypes: string[]
-  moreKey: string
-  more: { key: string; top: number; left: number; width: number; workTypes: string[] } | null
-  onMore: (next: { key: string; top: number; left: number; width: number; workTypes: string[] } | null) => void
-                  extra?: ReactNode
-  actions: ReactNode
-}) {
-  const tags = editorRowTags(workTypes)
-  const shown = tags.slice(0, 2)
-  const rest = tags.slice(shown.length)
-  const note = notes.trim()
-  return (
-    <div className={`editor-row is-send${extra ? ' has-status' : ''}`}>
-      <div className="editor-row-main">
-        <b>
-          <span className="editor-row-name">{name.trim() || '佚名'}</span>
-          <span className="editor-row-sep">｜</span>
-          <span className="editor-row-plat">{platform.trim() || '未填平台'}</span>
-        </b>
-        <small>{email}</small>
-      </div>
-      <div className="editor-row-note" title={note || undefined}>
-        {note || <span className="hint">无备注</span>}
-      </div>
-      <div className="editor-row-tags">
-        {tags.length ? (
-          <>
-            {shown.map((d, i) => (
-              <span key={`${i}-${d}`} className="chip on tone">{d}</span>
-            ))}
-            {rest.length > 0 && (
-              <button type="button" className="editor-chip-more"
-                onClick={(ev) => {
-                  const next = moreRect(ev.currentTarget)
-                  onMore(more?.key === moreKey ? null : { key: moreKey, ...next, workTypes: tags })
-                }}>
-                +{rest.length}
-              </button>
-            )}
-          </>
-        ) : (
-          <span className="hint">未设标签</span>
-        )}
-      </div>
-      {extra}
-      <div className="row-actions">{actions}</div>
-    </div>
   )
 }

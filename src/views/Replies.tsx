@@ -1,12 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Inbox, RefreshCw, Search } from 'lucide-react'
 import { api, onReply } from '../api'
+import { Table } from '../components/Table'
 import { useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
 import { Modal } from '../components/Modal'
-import { formatTime, replyKindLabel, replyKindTone } from '../format'
+import { formatTime, parseRecipient, replyKindLabel, replyKindTone } from '../format'
 import { useNav } from '../nav'
 import type { Reply } from '../types'
+
+function replyBodyPreview(reply: Reply) {
+  return (reply.body || reply.snippet || '').replace(/\s+/g, ' ').trim() || '（无正文）'
+}
+
+function replyDelivery(reply: Reply) {
+  return {
+    email: parseRecipient(reply.recipient).email || reply.recipient.trim() || '—',
+    plan: reply.task_name.trim() || '未关联计划',
+  }
+}
 
 export function RepliesView() {
   const [items, setItems] = useState<Reply[]>([])
@@ -15,6 +27,7 @@ export function RepliesView() {
   const [notice, setNotice] = useState('')
   const [scanning, setScanning] = useState(false)
   const [preview, setPreview] = useState<Reply | null>(null)
+  const [reclassifying, setReclassifying] = useState(false)
   const toast = useToast()
   const { go } = useNav()
 
@@ -53,7 +66,6 @@ export function RepliesView() {
     finally { setScanning(false) }
   }
 
-  const [reclassifying, setReclassifying] = useState(false)
   const reclassify = async () => {
     setReclassifying(true)
     try {
@@ -67,9 +79,14 @@ export function RepliesView() {
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return items
-    return items.filter((r) =>
-      (r.from_email ?? '').toLowerCase().includes(q)
-      || (r.recipient ?? '').toLowerCase().includes(q))
+    return items.filter((r) => {
+      const { email, plan } = replyDelivery(r)
+      return replyBodyPreview(r).toLowerCase().includes(q)
+        || email.toLowerCase().includes(q)
+        || plan.toLowerCase().includes(q)
+        || (r.subject ?? '').toLowerCase().includes(q)
+        || (r.from_email ?? '').toLowerCase().includes(q)
+    })
   }, [items, query])
 
   return (
@@ -78,7 +95,7 @@ export function RepliesView() {
         <div className="filters">
           <label className="plan-search editor-search">
             <Search size={14} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索发件邮箱" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索回复内容或邮箱" />
           </label>
           <Select value={kind} onChange={setKind} ariaLabel="按类型筛选" className="filter-select"
             options={[
@@ -100,8 +117,7 @@ export function RepliesView() {
       </div>
       {notice && <div className="notice notice-error">{notice}</div>}
       <p className="hint" style={{ marginBottom: 14 }}>
-        主题包含「自动回复 / 自動回覆」判为自动回复，其余按人工回复；退信按投递失败标记识别。
-        请确认发件邮箱已开启 IMAP，授权码与 SMTP 相同。
+        主题包含「自动回复 / 自動回覆 / AutoReply」判为自动回复，其余按人工回复；退信按投递失败标记识别。
       </p>
 
       {!items.length ? (
@@ -110,40 +126,71 @@ export function RepliesView() {
             desc="发出投稿后，后台会定期检查收件箱，并把回复分成人工、自动或退信。"
             action={<Button variant="ghost" onClick={() => go('accounts')}>去检查邮箱 IMAP 设置</Button>} />
         </div>
-      ) : !visible.length ? (
-        <div className="panel">
-          <EmptyState icon={Search} title="没有匹配的回复"
-            desc="换个发件邮箱关键词，或调整类型筛选试试。" />
-        </div>
       ) : (
         <div className="panel">
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr><th>类型</th><th>过稿</th><th>来自</th><th>主题</th><th>对应投递</th><th>判定</th><th>时间</th><th aria-label="操作" /></tr>
-              </thead>
-              <tbody>
-                {visible.map((r) => (
-                  <tr key={r.id}>
-                    <td><Badge tone={replyKindTone[r.kind] ?? 'neutral'} dot>{replyKindLabel[r.kind] ?? r.kind}</Badge></td>
-                    <td>{r.kind === 'human' && r.accepted
-                      ? <Badge tone="success" dot>过稿</Badge>
-                      : '—'}</td>
-                    <td><b>{r.from_email || '—'}</b></td>
-                    <td className="log-msg">{r.subject || '（无主题）'}<small>{r.snippet}</small></td>
-                    <td>{r.recipient || '—'}{r.task_name ? <small>{r.task_name}</small> : null}</td>
-                    <td><small>{r.reason}</small></td>
-                    <td className="mono">{formatTime(r.received_at)}</td>
-                    <td>
-                      <div className="row-actions">
-                        <Button size="sm" onClick={() => setPreview(r)}>查看</Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Table
+            rowKey="id"
+            dataSource={visible}
+            resetKey={`${kind}\0${query}`}
+            pagination={{ pageSize: 10 }}
+            empty="没有匹配的回复，换个内容或邮箱关键词试试。"
+            columns={[
+              {
+                key: 'kind',
+                title: '类型',
+                width: 92,
+                render: (_value, r) => (
+                  <Badge tone={replyKindTone[r.kind] ?? 'neutral'} dot>{replyKindLabel[r.kind] ?? r.kind}</Badge>
+                ),
+              },
+              {
+                key: 'accepted',
+                title: '过稿',
+                width: 52,
+                align: 'center',
+                render: (_value, r) => (
+                  r.kind === 'human' && r.accepted ? <span className="reply-accepted-mark">过稿</span> : null
+                ),
+              },
+              {
+                key: 'body',
+                title: '回复内容',
+                ellipsis: { rows: 4 },
+                render: (_value, r) => replyBodyPreview(r),
+              },
+              {
+                key: 'delivery',
+                title: '对应投递',
+                width: 220,
+                render: (_value, r) => {
+                  const { email, plan } = replyDelivery(r)
+                  return (
+                    <>
+                      <b title={email}>{email}</b>
+                      <small title={plan}>{plan}</small>
+                    </>
+                  )
+                },
+              },
+              {
+                key: 'time',
+                title: '时间',
+                width: 120,
+                className: 'mono',
+                render: (_value, r) => formatTime(r.received_at),
+              },
+              {
+                key: 'actions',
+                title: '',
+                width: 76,
+                render: (_value, r) => (
+                  <div className="row-actions">
+                    <Button size="sm" onClick={() => setPreview(r)}>查看</Button>
+                  </div>
+                ),
+              },
+            ]}
+          />
         </div>
       )}
 
@@ -156,7 +203,6 @@ export function RepliesView() {
               {preview.accepted ? ' · 过稿' : ''}
               {preview.recipient ? ` → 原收件人 ${preview.recipient}` : ''}
             </p>
-            <p className="hint">{preview.reason}</p>
             <pre>{preview.body || preview.snippet || '（无正文）'}</pre>
           </div>
         </Modal>

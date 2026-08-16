@@ -50,26 +50,12 @@ const groups: Array<{ label?: string; items: NavItem[] }> = [
   },
 ]
 
-const pageCopy: Record<ViewId, { title: string; sub: string }> = {
-  dashboard: { title: '工作台', sub: '看今天发了多少、哪些计划在跑、下一步该做什么。' },
-  accounts: { title: '邮箱', sub: '添加用来发稿的邮箱。QQ / 163 请填 SMTP 授权码，不是登录密码。' },
-  editors: { title: '编辑', sub: '内置投稿邮箱可直接用。按作品类型筛选要投的人。' },
-  plans: { title: '投稿计划', sub: '写好作品和邮件，按篇幅和作品类型从编辑库筛出收件人。保存后可以直接发送。' },
-  logs: { title: '记录', sub: '每封邮件的发送结果。失败时可以按计划筛选排查。' },
-  replies: { title: '回复', sub: '检查收件箱，区分编辑人工回复、网站自动回复和退信。' },
-  stats: { title: '统计', sub: '按日、周、月查看投递、回复与过稿情况。' },
-  settings: { title: '设置', sub: '发送节奏、内容保护，以及备份。改完请点保存。' },
-  about: { title: '关于', sub: '项目说明、版本信息，以及自愿赞助支持作者。' },
-}
-
 export default function App() {
   const [active, setActive] = useState<ViewId>('dashboard')
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('novelsub.sidebar') === '1')
   const [hideChrome, setHideChrome] = useState(false)
   const [running, setRunning] = useState(0)
   const [engineError, setEngineError] = useState(false)
-
-  const current = pageCopy[active]
 
   useEffect(() => {
     const refresh = () => {
@@ -146,14 +132,6 @@ export default function App() {
             </aside>
 
             <main className="main">
-              {!hideChrome && active !== 'editors' && (
-                <header className="page-head">
-                  <div>
-                    <h1 className="page-title">{current.title}</h1>
-                    <p className="page-sub">{current.sub}</p>
-                  </div>
-                </header>
-              )}
               <div className={`page-body ${hideChrome ? 'is-flush' : ''}`}>
                 {active === 'dashboard' && <DashboardView />}
                 {active === 'plans' && <PlansView />}

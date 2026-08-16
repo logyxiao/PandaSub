@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -192,35 +192,6 @@ export function Switch({ checked, onChange, label, disabled }: {
       <span className="switch-track"><i /></span>
       {label && <span className="switch-label">{label}</span>}
     </label>
-  )
-}
-
-export function PagedList<T>({ items, renderItem, keyOf, empty, pageSize = 8, listClassName = '', resetKey }: {
-  items: T[]
-  renderItem: (item: T, index: number) => ReactNode
-  keyOf?: (item: T) => string | number
-  empty?: ReactNode
-  pageSize?: number
-  listClassName?: string
-  /** 筛选条件变化时回到第一页；增删改当前页保持 */
-  resetKey?: string | number
-}) {
-  const [page, setPage] = useState(1)
-  const pageCount = Math.max(1, Math.ceil(items.length / pageSize))
-  useEffect(() => { setPage(1) }, [resetKey])
-  useEffect(() => { setPage((p) => Math.min(p, pageCount)) }, [pageCount])
-  const start = (page - 1) * pageSize
-  return (
-    <div className="paged-list">
-      <div className={listClassName}>
-        {items.slice(start, start + pageSize).map((item, i) => (
-          <Fragment key={keyOf ? keyOf(item) : start + i}>{renderItem(item, start + i)}</Fragment>
-        ))}
-      </div>
-      {items.length
-        ? <Pager page={page} pageCount={pageCount} pageSize={pageSize} total={items.length} onPage={setPage} />
-        : empty}
-    </div>
   )
 }
 

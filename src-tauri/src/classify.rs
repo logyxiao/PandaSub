@@ -45,7 +45,7 @@ pub fn classify(mail: &IncomingMail) -> Classification {
         .collect::<Vec<_>>();
 
     // 退信优先识别（投递失败通知），其余邮件只看主题：
-    // 主题包含「自动回复 / 自動回覆」即判自动回复，否则一律按人工回复。
+    // 主题包含「自动回复 / 自動回覆 / AutoReply」即判自动回复，否则一律按人工回复。
     if is_bounce(&from, &subject, &body_l, &content_type, &headers) {
         return Classification {
             kind: ReplyKind::Bounce,
@@ -53,10 +53,10 @@ pub fn classify(mail: &IncomingMail) -> Classification {
         };
     }
 
-    if subject.contains("自动回复") || subject.contains("自動回覆") {
+    if let Some(reason) = auto_reply_reason(&subject) {
         return Classification {
             kind: ReplyKind::Auto,
-            reason: "主题包含「自动回复」，判定为自动回复".into(),
+            reason: reason.into(),
         };
     }
 
@@ -64,6 +64,16 @@ pub fn classify(mail: &IncomingMail) -> Classification {
         kind: ReplyKind::Human,
         reason: "主题不含自动回复标记，按人工回复处理".into(),
     }
+}
+
+fn auto_reply_reason(subject: &str) -> Option<&'static str> {
+    if subject.contains("自动回复") || subject.contains("自動回覆") {
+        return Some("主题包含「自动回复」，判定为自动回复");
+    }
+    if subject.contains("autoreply") || subject.contains("auto-reply") {
+        return Some("主题包含 AutoReply，判定为自动回复");
+    }
+    None
 }
 
 /// 人工回复正文是否包含「过稿」信号：审核通过、初审、过稿、录用等。
@@ -170,6 +180,14 @@ mod tests {
     #[test]
     fn traditional_chinese_auto_subject_is_auto() {
         let m = mail("noreply@site.com", "自動回覆：稿件收到", "系統自動發送，請勿回覆。");
+        assert_eq!(classify(&m).kind, ReplyKind::Auto);
+    }
+
+    #[test]
+    fn english_autoreply_subject_is_auto() {
+        let m = mail("noreply@site.com", "AutoReply: 稿件已收到", "This is an automatic reply.");
+        assert_eq!(classify(&m).kind, ReplyKind::Auto);
+        let m = mail("noreply@site.com", "Re: Auto-Reply 已收到您的来信", "请勿回复。");
         assert_eq!(classify(&m).kind, ReplyKind::Auto);
     }
 

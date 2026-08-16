@@ -5,7 +5,8 @@ import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
-import { Button, EmptyState, IconButton, PagedList, Select } from '../components/ui'
+import { Button, EmptyState, IconButton, Select } from '../components/ui'
+import { Table, type TableColumn } from '../components/Table'
 import { isValidEmail } from '../format'
 import { useNav } from '../nav'
 import type { Editor, EditorInput } from '../types'
@@ -156,6 +157,107 @@ export function EditorsList({
       })
     : []
 
+  const editorColumns = useMemo<TableColumn<Editor>[]>(() => {
+    const cols: TableColumn<Editor>[] = []
+    if (selectable) {
+      cols.push({
+        key: 'check',
+        title: '',
+        width: 40,
+        align: 'center',
+        render: (_value, e) => {
+          const checked = selectedIds?.has(e.id) ?? false
+          return (
+            <label className="editor-row-check">
+              <input type="checkbox" checked={checked}
+                onChange={(ev) => onToggleSelect?.(e, ev.target.checked)}
+                aria-label={`${checked ? '取消选择' : '选择'} ${e.name.trim() || e.email}`} />
+            </label>
+          )
+        },
+      })
+    }
+    cols.push(
+      {
+        key: 'editor',
+        title: '编辑',
+        width: 220,
+        render: (_value, e) => (
+          <div className={`editor-row-main ${onEdit ? 'is-hit' : ''}`}
+            role={onEdit ? 'button' : undefined}
+            tabIndex={onEdit ? 0 : undefined}
+            title={onEdit ? '修改这份编辑资料' : undefined}
+            onClick={onEdit ? () => onEdit(e) : undefined}
+            onKeyDown={onEdit ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onEdit(e) } } : undefined}>
+            <EditorIdentity name={e.name} platform={e.platform} email={e.email} />
+          </div>
+        ),
+      },
+      {
+        key: 'notes',
+        title: '备注',
+        ellipsis: { rows: 2 },
+        render: (_value, e) => {
+          const note = (e.notes ?? '').trim()
+          return (
+            <div className={onEdit ? 'is-hit' : undefined}
+              role={onEdit ? 'button' : undefined}
+              tabIndex={onEdit ? 0 : undefined}
+              title={note ? (onEdit ? `${note}\n点击修改` : note) : (onEdit ? '点击补充备注' : undefined)}
+              onClick={onEdit ? () => onEdit(e) : undefined}
+              onKeyDown={onEdit ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onEdit(e) } } : undefined}>
+              {note || <span className="hint">无备注</span>}
+            </div>
+          )
+        },
+      },
+      {
+        key: 'work_type',
+        title: '作品类型',
+        width: 168,
+        render: (_value, e) => (
+          <EditorTypeChips
+            workTypes={e.work_type}
+            open={more?.id === e.id}
+            onToggle={(el) => {
+              const next = moreRect(el)
+              setMore((m) => (m?.id === e.id ? null : { id: e.id, ...next }))
+            }}
+          />
+        ),
+      },
+      {
+        key: 'actions',
+        title: '',
+        width: platformPeersOf ? 200 : 112,
+        render: (_value, e) => (
+          <div className="row-actions">
+            {platformPeersOf && (() => {
+              const peers = platformPeersOf(e)
+              const count = peers.length
+              if (count <= 1) {
+                return <span className="editor-peer-count is-solo">同平台 1</span>
+              }
+              return (
+                <button type="button" className={`editor-peer-count ${peerPick?.id === e.id ? 'on' : ''}`}
+                  title="更换同平台编辑"
+                  onClick={(ev) => {
+                    const next = moreRect(ev.currentTarget, 260, 220)
+                    setPeerPick((m) => (m?.id === e.id ? null : { id: e.id, ...next }))
+                  }}>
+                  同平台 {count}<ChevronDown size={12} />
+                </button>
+              )
+            })()}
+            {onEdit && <Button size="sm" onClick={() => onEdit(e)}>编辑</Button>}
+            {onDelete && <IconButton title="删除" className="danger" onClick={() => onDelete(e)}><Trash2 size={15} /></IconButton>}
+          </div>
+        ),
+      },
+    )
+    return cols
+  }, [selectable, selectedIds, onToggleSelect, onEdit, onDelete, platformPeersOf, peerPick, more])
+
   return (
     <>
       <div className="editor-toolbar">
@@ -202,95 +304,16 @@ export function EditorsList({
         </div>
       ) : (
         <div className="panel">
-          <PagedList
-            items={visible}
-            pageSize={pageSize}
-            keyOf={(e) => e.id}
+          <Table
+            rowKey="id"
+            dataSource={visible}
             resetKey={`${query}\0${platform}\0${source}\0${workTypes.join('\0')}\0${excludedWorkTypes.join('\0')}`}
-            listClassName="editor-groups"
-            renderItem={(e) => {
-              const tags = editorRowTags(e.work_type)
-              const shown = tags.slice(0, 2)
-              const rest = tags.slice(shown.length)
-              const note = (e.notes ?? '').trim()
-              const checked = selectedIds?.has(e.id) ?? false
-              return (
-                <div className={`editor-row ${selectable ? 'is-selectable' : ''}`}>
-                  {selectable && (
-                    <label className="editor-row-check">
-                      <input type="checkbox" checked={checked}
-                        onChange={(ev) => onToggleSelect?.(e, ev.target.checked)}
-                        aria-label={`${checked ? '取消选择' : '选择'} ${e.name.trim() || e.email}`} />
-                    </label>
-                  )}
-                  <div className={`editor-row-main ${onEdit ? 'is-hit' : ''}`}
-                    role={onEdit ? 'button' : undefined}
-                    tabIndex={onEdit ? 0 : undefined}
-                    title={onEdit ? '修改这份编辑资料' : undefined}
-                    onClick={onEdit ? () => onEdit(e) : undefined}
-                    onKeyDown={onEdit ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onEdit(e) } } : undefined}>
-                    <b>
-                      <span className="editor-row-name">{e.name.trim() || '佚名'}</span>
-                      <span className="editor-row-sep">｜</span>
-                      <span className="editor-row-plat">{e.platform.trim() || UNASSIGNED}</span>
-                    </b>
-                    <small>{e.email}</small>
-                  </div>
-                  <div className={`editor-row-note ${onEdit ? 'is-hit' : ''}`}
-                    role={onEdit ? 'button' : undefined}
-                    tabIndex={onEdit ? 0 : undefined}
-                    title={note ? (onEdit ? `${note}\n点击修改` : note) : (onEdit ? '点击补充备注' : undefined)}
-                    onClick={onEdit ? () => onEdit(e) : undefined}
-                    onKeyDown={onEdit ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onEdit(e) } } : undefined}>
-                    {note || <span className="hint">无备注</span>}
-                  </div>
-                  <div className="editor-row-tags">
-                    {tags.length ? (
-                      <>
-                        {shown.map((d, i) => (
-                          <span key={`${i}-${d}`} className="chip on tone">{d}</span>
-                        ))}
-                        {rest.length > 0 && (
-                          <button type="button" className="editor-chip-more"
-                            onClick={(ev) => {
-                              const next = moreRect(ev.currentTarget)
-                              setMore((m) => (m?.id === e.id ? null : { id: e.id, ...next }))
-                            }}>
-                            +{rest.length}
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <span className="hint">未设标签</span>
-                    )}
-                  </div>
-                  <div className="row-actions">
-                    {platformPeersOf && (() => {
-                      const peers = platformPeersOf(e)
-                      const count = peers.length
-                      if (count <= 1) {
-                        return <span className="editor-peer-count is-solo">同平台 1</span>
-                      }
-                      return (
-                        <button type="button" className={`editor-peer-count ${peerPick?.id === e.id ? 'on' : ''}`}
-                          title="更换同平台编辑"
-                          onClick={(ev) => {
-                            const next = moreRect(ev.currentTarget, 260, 220)
-                            setPeerPick((m) => (m?.id === e.id ? null : { id: e.id, ...next }))
-                          }}>
-                          同平台 {count}<ChevronDown size={12} />
-                        </button>
-                      )
-                    })()}
-                    {onEdit && <Button size="sm" onClick={() => onEdit(e)}>编辑</Button>}
-                    {onDelete && <IconButton title="删除" className="danger" onClick={() => onDelete(e)}><Trash2 size={15} /></IconButton>}
-                  </div>
-                </div>
-              )
+            pagination={{
+              pageSize: pageSize ?? 10,
+              pageSizeOptions: [...new Set([pageSize ?? 10, 10, 20, 50])].sort((a, b) => a - b),
             }}
-            empty={!visible.length && (
-              <p className="editor-groups-empty">{loading ? '读取中…' : '没有符合筛选的编辑'}</p>
-            )}
+            empty={loading ? '读取中…' : '没有符合筛选的编辑'}
+            columns={editorColumns}
           />
         </div>
       )}
@@ -319,6 +342,48 @@ export function EditorsList({
         />
       )}
     </>
+  )
+}
+
+export function EditorIdentity({ name, platform, email, fallbackPlatform = UNASSIGNED }: {
+  name: string
+  platform: string
+  email: string
+  fallbackPlatform?: string
+}) {
+  return (
+    <>
+      <b>
+        <span className="editor-row-name">{name.trim() || '佚名'}</span>
+        <span className="editor-row-sep">｜</span>
+        <span className="editor-row-plat">{platform.trim() || fallbackPlatform}</span>
+      </b>
+      <small>{email}</small>
+    </>
+  )
+}
+
+export function EditorTypeChips({ workTypes, open, onToggle }: {
+  workTypes: string[]
+  open?: boolean
+  onToggle?: (el: HTMLElement, tags: string[]) => void
+}) {
+  const tags = editorRowTags(workTypes)
+  const shown = tags.slice(0, 2)
+  const rest = tags.slice(shown.length)
+  if (!tags.length) return <span className="hint">未设标签</span>
+  return (
+    <div className="editor-row-tags">
+      {shown.map((d, i) => (
+        <span key={`${i}-${d}`} className="chip on tone">{d}</span>
+      ))}
+      {rest.length > 0 && (
+        <button type="button" className={`editor-chip-more ${open ? 'on' : ''}`}
+          onClick={(ev) => onToggle?.(ev.currentTarget, tags)}>
+          +{rest.length}
+        </button>
+      )}
+    </div>
   )
 }
 

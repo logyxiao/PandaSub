@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BarChart3, RefreshCw } from 'lucide-react'
 import { api } from '../api'
 import { EmptyState, IconButton, Select } from '../components/ui'
+import { Table } from '../components/Table'
 import type { StatsReport } from '../types'
 
 type GroupMode = 'day' | 'week' | 'month'
@@ -124,36 +125,61 @@ export function StatsView() {
               <EmptyState icon={BarChart3} title="该时间段内没有数据"
                 desc="换个日期范围或统计粒度试试。" />
             ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>期间</th>
-                      <th>投递次数</th>
-                      <th className="num">占比</th>
-                      <th>人工回复</th>
-                      <th>失败</th>
-                      <th>过稿</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.groups.map((g) => (
-                      <tr key={g.period}>
-                        <td className="mono">{periodLabel(g.period, group)}</td>
-                        <td className="num">{g.deliveries}</td>
-                        <td className="stats-bar-cell">
-                          <div className="stats-bar">
-                            <i style={{ width: `${Math.round((g.deliveries / maxDeliveries) * 100)}%` }} />
-                          </div>
-                        </td>
-                        <td className="num">{g.human_replies || '—'}</td>
-                        <td className="num">{g.failures || '—'}</td>
-                        <td className="num">{g.accepted || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <Table
+                rowKey="period"
+                dataSource={report.groups}
+                columns={[
+                  {
+                    key: 'period',
+                    title: '期间',
+                    className: 'mono',
+                    render: (_value, g) => periodLabel(g.period, group),
+                  },
+                  {
+                    key: 'deliveries',
+                    title: '投递次数',
+                    width: 100,
+                    align: 'right',
+                    className: 'num',
+                    dataIndex: 'deliveries',
+                  },
+                  {
+                    key: 'share',
+                    title: '占比',
+                    width: 140,
+                    className: 'stats-bar-cell',
+                    render: (_value, g) => (
+                      <div className="stats-bar">
+                        <i style={{ width: `${Math.round((g.deliveries / maxDeliveries) * 100)}%` }} />
+                      </div>
+                    ),
+                  },
+                  {
+                    key: 'human',
+                    title: '人工回复',
+                    width: 88,
+                    align: 'right',
+                    className: 'num',
+                    render: (_value, g) => g.human_replies || '—',
+                  },
+                  {
+                    key: 'fail',
+                    title: '失败',
+                    width: 72,
+                    align: 'right',
+                    className: 'num',
+                    render: (_value, g) => g.failures || '—',
+                  },
+                  {
+                    key: 'accepted',
+                    title: '过稿',
+                    width: 72,
+                    align: 'right',
+                    className: 'num',
+                    render: (_value, g) => g.accepted || '—',
+                  },
+                ]}
+              />
             )}
           </div>
         </>

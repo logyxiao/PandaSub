@@ -5,6 +5,7 @@ import { formatClock, formatTime, statusLabel, taskTone } from '../format'
 import { useNav } from '../nav'
 import { useToast } from '../components/feedback'
 import { Badge, Button, IconButton, RuntimeTrack } from '../components/ui'
+import { Table } from '../components/Table'
 import type { Dashboard, Task, TaskLog } from '../types'
 import { latestTask } from './planShared'
 
@@ -175,45 +176,70 @@ export function DashboardView() {
               <Button variant="ghost" onClick={() => go('plans')}>查看全部</Button>
             </div>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>计划</th><th>进度</th><th>状态</th><th>创建时间</th><th aria-label="操作" /></tr></thead>
-              <tbody>
-                {data.manuscripts.map((m) => {
+          <Table
+            rowKey="id"
+            dataSource={data.manuscripts}
+            empty={loading ? '正在读取…' : '还没有投稿计划。到「投稿计划」里创建。'}
+            columns={[
+              {
+                key: 'title',
+                title: '计划',
+                render: (_value, m) => {
                   const task = latestTask(m.id, data.tasks)
                   return (
-                    <tr key={m.id}>
-                      <td><b>{m.title.trim() || '未命名计划'}</b><small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || (task?.schedule_type === 'loop' ? '循环发送' : task?.schedule_type === 'scheduled' ? '定时发送' : '投稿计划')}</small></td>
-                      <td style={{ minWidth: 140 }}>
-                        {task
-                          ? <RuntimeTrack sent={task.sent} total={task.total} status={task.status}
-                              meta={task.schedule_type === 'loop' ? `已成功 ${task.sent} 封` : `${task.sent} / ${task.total || '—'}`} />
-                          : <span className="hint">草稿</span>}
-                      </td>
-                      <td>
-                        {task
-                          ? <Badge tone={taskTone[task.status]} dot>{statusLabel(task.status)}</Badge>
-                          : <Badge tone="neutral">草稿</Badge>}
-                      </td>
-                      <td>{formatTime(m.updated_at)}</td>
-                      <td>
-                        <div className="row-actions">
-                          {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
-                          {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
-                          {(task?.status === 'running' || task?.status === 'paused') && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
-                        </div>
-                      </td>
-                    </tr>
+                    <>
+                      <b>{m.title.trim() || '未命名计划'}</b>
+                      <small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || (task?.schedule_type === 'loop' ? '循环发送' : task?.schedule_type === 'scheduled' ? '定时发送' : '投稿计划')}</small>
+                    </>
                   )
-                })}
-                {!data.manuscripts.length && (
-                  <tr><td colSpan={5} className="empty">
-                    {loading ? '正在读取…' : '还没有投稿计划。到「投稿计划」里创建。'}
-                  </td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                },
+              },
+              {
+                key: 'progress',
+                title: '进度',
+                width: 160,
+                render: (_value, m) => {
+                  const task = latestTask(m.id, data.tasks)
+                  return task
+                    ? <RuntimeTrack sent={task.sent} total={task.total} status={task.status}
+                        meta={task.schedule_type === 'loop' ? `已成功 ${task.sent} 封` : `${task.sent} / ${task.total || '—'}`} />
+                    : <span className="hint">草稿</span>
+                },
+              },
+              {
+                key: 'status',
+                title: '状态',
+                width: 92,
+                render: (_value, m) => {
+                  const task = latestTask(m.id, data.tasks)
+                  return task
+                    ? <Badge tone={taskTone[task.status]} dot>{statusLabel(task.status)}</Badge>
+                    : <Badge tone="neutral">草稿</Badge>
+                },
+              },
+              {
+                key: 'time',
+                title: '创建时间',
+                width: 120,
+                render: (_value, m) => formatTime(m.updated_at),
+              },
+              {
+                key: 'actions',
+                title: '',
+                width: 168,
+                render: (_value, m) => {
+                  const task = latestTask(m.id, data.tasks)
+                  return (
+                    <div className="row-actions">
+                      {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
+                      {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
+                      {(task?.status === 'running' || task?.status === 'paused') && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
+                    </div>
+                  )
+                },
+              },
+            ]}
+          />
         </div>
 
         <div className="panel">

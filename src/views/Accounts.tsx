@@ -4,6 +4,7 @@ import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton } from '../components/ui'
+import { Table } from '../components/Table'
 import { formatTime, isValidEmail, providerName, type Tone } from '../format'
 import { useNav } from '../nav'
 import type { Account, AccountInput } from '../types'
@@ -175,33 +176,66 @@ export function AccountsView() {
             ))}
           </section>
           <div className="panel">
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>邮箱</th><th>类型</th><th>状态</th><th>上次发送</th><th aria-label="操作" /></tr></thead>
-                <tbody>
-                  {accounts.map((a) => {
+            <Table
+              rowKey="id"
+              dataSource={accounts}
+              pagination={{ pageSize: 10, hideOnSinglePage: true }}
+              rowClassName={(a) => a.enabled ? '' : 'dim'}
+              columns={[
+                {
+                  key: 'email',
+                  title: '邮箱',
+                  render: (_value, a) => (
+                    <>
+                      <b>{a.email}</b>
+                      <small>{a.sender_name || '未设笔名'}</small>
+                    </>
+                  ),
+                },
+                {
+                  key: 'provider',
+                  title: '类型',
+                  width: 160,
+                  render: (_value, a) => (
+                    <>
+                      {providerName[a.provider] ?? a.provider}
+                      <small>{a.smtp_host}:{a.smtp_port}</small>
+                    </>
+                  ),
+                },
+                {
+                  key: 'status',
+                  title: '状态',
+                  width: 92,
+                  render: (_value, a) => {
                     const st = accountState(a)
-                    return (
-                      <tr key={a.id} className={!a.enabled ? 'dim' : ''}>
-                        <td><b>{a.email}</b><small>{a.sender_name || '未设笔名'}</small></td>
-                        <td>{providerName[a.provider] ?? a.provider}<small>{a.smtp_host}:{a.smtp_port}</small></td>
-                        <td><Badge tone={st.tone} dot>{st.label}</Badge></td>
-                        <td>{formatTime(a.last_sent_at)}</td>
-                        <td>
-                          <div className="row-actions">
-                            <Button size="sm" onClick={() => void test(a.id)} disabled={testing === a.id}>{testing === a.id ? '测试中…' : '测试'}</Button>
-                            <Button size="sm" onClick={() => openEdit(a)}>编辑</Button>
-                            <IconButton title={a.enabled ? '停用' : '启用'} onClick={() => void toggle(a)}>{a.enabled ? <Ban size={15} /> : <Check size={15} />}</IconButton>
-                            <IconButton title="删除" className="danger" onClick={() => void remove(a.id)}><Trash2 size={15} /></IconButton>
-                          </div>
-                          {testResult[a.id] && <small className={testResult[a.id].includes('成功') || testResult[a.id].includes('连接') ? 'test-result' : 'testing'}>{testResult[a.id]}</small>}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+                    return <Badge tone={st.tone} dot>{st.label}</Badge>
+                  },
+                },
+                {
+                  key: 'last',
+                  title: '上次发送',
+                  width: 120,
+                  render: (_value, a) => formatTime(a.last_sent_at),
+                },
+                {
+                  key: 'actions',
+                  title: '',
+                  width: 220,
+                  render: (_value, a) => (
+                    <>
+                      <div className="row-actions">
+                        <Button size="sm" onClick={() => void test(a.id)} disabled={testing === a.id}>{testing === a.id ? '测试中…' : '测试'}</Button>
+                        <Button size="sm" onClick={() => openEdit(a)}>编辑</Button>
+                        <IconButton title={a.enabled ? '停用' : '启用'} onClick={() => void toggle(a)}>{a.enabled ? <Ban size={15} /> : <Check size={15} />}</IconButton>
+                        <IconButton title="删除" className="danger" onClick={() => void remove(a.id)}><Trash2 size={15} /></IconButton>
+                      </div>
+                      {testResult[a.id] && <small className={testResult[a.id].includes('成功') || testResult[a.id].includes('连接') ? 'test-result' : 'testing'}>{testResult[a.id]}</small>}
+                    </>
+                  ),
+                },
+              ]}
+            />
           </div>
           {accounts.some((a) => a.enabled) && <p className="after-table-hint">邮箱可用后，可先去 <button type="button" className="text-link" onClick={() => go('editors')}>编辑</button> 里存收稿人，再去 <button type="button" className="text-link" onClick={() => go('plans')}>投稿计划</button> 写作品。</p>}
         </>

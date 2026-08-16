@@ -151,6 +151,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_mail_templates_column(&connection)?;
     add_reply_accepted_column(&connection)?;
     add_reply_accepted_column(&connection)?;
+    reclassify_autoreply_history(&connection)?;
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
@@ -642,7 +643,7 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-16-local";
+const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-16-local-2";
 
 fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
     let current: String = conn
@@ -773,6 +774,56 @@ fn add_reply_accepted_column(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+fn reclassify_autoreply_history(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'replies.autoreply_subjects_reclassified'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done > 0 {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'replies'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists > 0 {
+        let replies = crate::store::load_replies(conn, None, 100_000).unwrap_or_default();
+        for reply in replies {
+            if reply.kind == "bounce" || reply.kind == "auto" {
+                continue;
+            }
+            let result = crate::classify::classify(&crate::classify::IncomingMail {
+                from: reply.from_email.clone(),
+                subject: reply.subject.clone(),
+                body: reply.body.clone(),
+                content_type: String::new(),
+                extra_headers: Vec::new(),
+            });
+            if result.kind == crate::classify::ReplyKind::Auto {
+                crate::store::update_reply_kind(
+                    conn,
+                    reply.id,
+                    result.kind.as_str(),
+                    &result.reason,
+                    false,
+                )?;
+            }
+        }
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('replies.autoreply_subjects_reclassified', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
