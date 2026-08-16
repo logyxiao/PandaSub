@@ -114,7 +114,7 @@ export function DashboardView() {
                 <span className="setup-index">{data.editor_count > 0 ? '✓' : '2'}</span>
                 <span>
                   <b>添加常投编辑</b>
-                  <small>{data.editor_count > 0 ? `已有 ${data.editor_count} 位` : '填邮箱、风格或作品类型即可'}</small>
+                  <small>{data.editor_count > 0 ? `已有 ${data.editor_count} 位` : '填邮箱和作品类型即可'}</small>
                 </span>
               </button>
             </li>

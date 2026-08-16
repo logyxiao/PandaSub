@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json;
 
-use crate::models::{Account, Delivery, Editor, Manuscript, Reply, Settings, Task, TaskLog};
+use crate::models::{Account, Delivery, Editor, EditorInput, Manuscript, Reply, Settings, Task, TaskLog};
 
 const ACCOUNT_COLS: &str = "id, email, password, smtp_host, smtp_port, sender_name, provider, enabled,
                     last_sent_at,
@@ -139,22 +139,67 @@ pub fn load_manuscript_attachment(
     }
 }
 
-const EDITOR_COLS: &str = "id, platform, name, email, style, work_type, created_at, updated_at, enabled";
+const EDITOR_COLS: &str = "id, platform, name, email, work_type, notes, source, created_at, updated_at, enabled";
 
 fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
-    let raw_style: String = r.get(4)?;
-    let raw_work_type: String = r.get(5)?;
+    let raw_work_type: String = r.get(4)?;
+    let source: String = r.get(6)?;
     Ok(Editor {
         id: r.get(0)?,
         platform: r.get(1)?,
         name: r.get(2)?,
         email: r.get(3)?,
-        style: parse_list(&raw_style),
-        work_type: parse_list(&raw_work_type),
-        created_at: r.get(6)?,
-        updated_at: r.get(7)?,
-        enabled: r.get::<_, i64>(8)? != 0,
+        work_type: crate::models::normalize_editor_work_types(&parse_list(&raw_work_type)),
+        notes: r.get(5)?,
+        source: crate::models::normalize_editor_source(&source),
+        created_at: r.get(7)?,
+        updated_at: r.get(8)?,
+        enabled: r.get::<_, i64>(9)? != 0,
     })
+}
+
+pub fn upsert_editor(conn: &Connection, input: &EditorInput, source: &str) -> Result<&'static str, String> {
+    let email = input.email.trim().to_lowercase();
+    let source = crate::models::normalize_editor_source(source);
+    let work_type = serde_json::json!(crate::models::normalize_editor_work_types(&input.work_type)).to_string();
+    let platform = crate::models::canonicalize_editor_platform(&input.platform);
+    let existing: Option<i64> = conn
+        .query_row("SELECT id FROM editors WHERE email = ?1", [&email], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    if let Some(id) = existing {
+        conn.execute(
+            "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = '[]', work_type = ?4,
+                    notes = ?5, source = ?6, updated_at = datetime('now','localtime')
+             WHERE id = ?7",
+            rusqlite::params![
+                platform,
+                input.name.trim(),
+                email,
+                work_type,
+                input.notes.trim(),
+                source,
+                id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok("updated")
+    } else {
+        conn.execute(
+            "INSERT INTO editors (platform, name, email, style, work_type, notes, source)
+             VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?6)",
+            rusqlite::params![
+                platform,
+                input.name.trim(),
+                email,
+                work_type,
+                input.notes.trim(),
+                source
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok("added")
+    }
 }
 
 pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {

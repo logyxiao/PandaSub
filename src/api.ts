@@ -55,8 +55,10 @@ export const api = {
   addEditor: (input: EditorInput) => invoke<number>('add_editor', { input }),
   updateEditor: (id: number, input: EditorInput) => invoke('update_editor', { id, input }),
   deleteEditor: (id: number) => invoke('delete_editor', { id }),
+  clearEditors: () => invoke<number>('clear_editors'),
   exportEditors: (path: string) => invoke<string>('export_editors', { path }),
   importEditors: (data: number[], fileName: string) => invoke<EditorImportResult>('import_editors', { data, fileName }),
+  importDefaultEditors: () => invoke<EditorImportResult>('import_default_editors'),
 }
 
 export function onLog(cb: (log: TaskLog) => void): Promise<UnlistenFn> {

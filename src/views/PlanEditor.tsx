@@ -7,12 +7,14 @@ import { Button, Select } from '../components/ui'
 import { isValidEmail, parseRecipient, providerName } from '../format'
 import type { Account, Delivery, Editor, EditorInput, Manuscript, ManuscriptInput, TaskInput } from '../types'
 import {
-  CATEGORIES, GENRES, STYLES, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
-  fillPlaceholders, isPlanStyle, normalizeEditorTags, categoryFromWords, defaultBody, defaultSubject, pickOneEditorPerPlatform, sentCountByEmail,
+  CATEGORIES, GENRES, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
+  fillPlaceholders, normalizeEditorTags, categoryFromWords, defaultBody, defaultSubject, pickOneEditorPerPlatform, sentCountByEmail,
 } from './planShared'
 import { EditorsList } from './Editors'
 
-const emptyEditor: EditorInput = { platform: '', name: '', email: '', style: [], work_type: [] }
+const emptyEditor: EditorInput = {
+  platform: '', name: '', email: '', work_type: [], notes: '',
+}
 
 export function PlanEditor({
   editing, editors, onReloadEditors, deliveries, enabledAccounts,
@@ -161,10 +163,10 @@ export function PlanEditor({
     })
   }
 
-  // 新建且尚未手动勾选时，进入第二步自动按风格/作品类型匹配出候选编辑（每个平台一位），用户可自行增删。
+  // 新建且尚未手动勾选时，进入第二步自动按作品类型匹配出候选编辑（每个平台一位），用户可自行增删。
   const goToStep2 = () => {
     if (!editing && selectedIds.size === 0) {
-      const { picked: auto } = pickOneEditorPerPlatform(editors, form.style, form.genres, sentMap)
+      const { picked: auto } = pickOneEditorPerPlatform(editors, form.genres, sentMap)
       if (auto.length) setSelectedIds(new Set(auto.map((e) => e.id)))
     }
     setStep(2)
@@ -173,23 +175,22 @@ export function PlanEditor({
   const openAddEditor = () => {
     setEditorForm(normalizeEditorTags({
       ...emptyEditor,
-      style: form.style ? [form.style] : [],
       work_type: [...form.genres],
     }))
     setCustomWorkType('')
     setShowEditorForm(true)
   }
 
-  const toggleEditorTag = (field: 'style' | 'work_type', tag: string) => {
+  const toggleEditorTag = (tag: string) => {
     setEditorForm((f) => ({
       ...f,
-      [field]: f[field].includes(tag) ? f[field].filter((x) => x !== tag) : [...f[field], tag],
+      work_type: f.work_type.includes(tag) ? f.work_type.filter((x) => x !== tag) : [...f.work_type, tag],
     }))
   }
 
   const addCustomEditorWorkType = () => {
     const tag = customWorkType.trim()
-    if (!tag || isPlanStyle(tag)) return
+    if (!tag) return
     if (!editorForm.work_type.includes(tag)) {
       setEditorForm((f) => ({ ...f, work_type: [...f.work_type, tag] }))
     }
@@ -200,10 +201,6 @@ export function PlanEditor({
     const email = editorForm.email.trim().toLowerCase()
     if (!isValidEmail(editorForm.email)) { toast('请填写有效的收稿邮箱', 'warning'); return }
     const payload = normalizeEditorTags({ ...editorForm, email })
-    if (!payload.style.some((d) => d.trim()) && !payload.work_type.some((d) => d.trim())) {
-      toast('请至少填一个风格或作品类型', 'warning')
-      return
-    }
     if (editors.some((e) => e.email.toLowerCase() === email)) {
       toast('这个邮箱已经在编辑库里了', 'warning')
       return
@@ -312,10 +309,6 @@ export function PlanEditor({
                 <label>篇幅
                   <Select value={form.category} onChange={(value) => setForm({ ...form, category: value })} ariaLabel="选择作品篇幅"
                     options={[{ value: '', label: '未选' }, ...CATEGORIES.map((x) => ({ value: x, label: x }))]} />
-                </label>
-                <label>风格
-                  <Select value={form.style} onChange={(value) => setForm({ ...form, style: value })} ariaLabel="选择作品风格"
-                    options={[{ value: '', label: '未选' }, ...STYLES.map((x) => ({ value: x, label: x }))]} />
                 </label>
               </div>
 
@@ -464,19 +457,11 @@ export function PlanEditor({
             <label className="field span2">收稿邮箱（必填）
               <input value={editorForm.email} onChange={(e) => setEditorForm({ ...editorForm, email: e.target.value })} placeholder="editor@example.com" />
             </label>
-            <div className="field span2">风格
-              <div className="chip-picks">
-                {STYLES.map((g) => (
-                  <button type="button" key={g} className={`chip ${editorForm.style.includes(g) ? 'on' : ''}`}
-                    onClick={() => toggleEditorTag('style', g)}>{g}</button>
-                ))}
-              </div>
-            </div>
             <div className="field span2">作品类型
               <div className="chip-picks">
-                {[...new Set([...GENRES, ...editorForm.work_type.filter((tag) => !isPlanStyle(tag))])].map((g) => (
+                {[...new Set([...GENRES, ...editorForm.work_type])].map((g) => (
                   <button type="button" key={g} className={`chip ${editorForm.work_type.includes(g) ? 'on' : ''}`}
-                    onClick={() => toggleEditorTag('work_type', g)}>{g}</button>
+                    onClick={() => toggleEditorTag(g)}>{g}</button>
                 ))}
               </div>
               <div className="editor-custom-tag">

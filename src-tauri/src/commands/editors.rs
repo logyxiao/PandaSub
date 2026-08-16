@@ -1,23 +1,23 @@
 use calamine::Reader;
-use rusqlite::OptionalExtension;
 use rust_xlsxwriter::Workbook;
 use serde_json::json;
 use tauri::State;
 
-use crate::models::{EditorImportResult, EditorInput};
+use crate::models::{
+    EditorImportResult, EditorInput, EDITOR_SOURCE_IMPORT, EDITOR_SOURCE_INITIAL, EDITOR_SOURCE_MANUAL,
+};
 use crate::state::AppState;
 use crate::store;
 
 // ---------- Editors ----------
 
 fn normalize_editor_input(input: &crate::models::EditorInput) -> crate::models::EditorInput {
-    let (style, work_type) = crate::models::split_editor_tags(&input.style, &input.work_type);
     crate::models::EditorInput {
-        platform: input.platform.clone(),
+        platform: crate::models::canonicalize_editor_platform(&input.platform),
         name: input.name.clone(),
         email: input.email.clone(),
-        style,
-        work_type,
+        work_type: crate::models::normalize_editor_work_types(&input.work_type),
+        notes: input.notes.trim().to_string(),
     }
 }
 
@@ -26,24 +26,13 @@ fn validate_editor(input: &crate::models::EditorInput) -> Result<crate::models::
     if input.email.trim().is_empty() || !input.email.contains('@') {
         return Err("请填写有效的收稿邮箱".into());
     }
-    if !input.style.iter().any(|d| !d.trim().is_empty())
-        && !input.work_type.iter().any(|d| !d.trim().is_empty())
-    {
-        return Err("请至少填一个风格或作品类型".into());
-    }
     Ok(input)
 }
 
 #[tauri::command]
 pub fn list_editors(state: State<'_, AppState>) -> Result<Vec<crate::models::Editor>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut editors = store::load_editors(&conn)?;
-    for editor in &mut editors {
-        let (style, work_type) = crate::models::split_editor_tags(&editor.style, &editor.work_type);
-        editor.style = style;
-        editor.work_type = work_type;
-    }
-    Ok(editors)
+    Ok(store::load_editors(&conn)?)
 }
 
 #[tauri::command]
@@ -53,17 +42,17 @@ pub fn add_editor(
 ) -> Result<i64, String> {
     let input = validate_editor(&input)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let style = json!(input.style).to_string();
     let work_type = json!(input.work_type).to_string();
     conn.execute(
-        "INSERT INTO editors (platform, name, email, style, work_type)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO editors (platform, name, email, style, work_type, notes, source)
+         VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?6)",
         rusqlite::params![
             input.platform.trim(),
             input.name.trim(),
             input.email.trim().to_lowercase(),
-            style,
-            work_type
+            work_type,
+            input.notes.trim(),
+            EDITOR_SOURCE_MANUAL
         ],
     )
     .map_err(|e| {
@@ -84,18 +73,18 @@ pub fn update_editor(
 ) -> Result<(), String> {
     let input = validate_editor(&input)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let style = json!(input.style).to_string();
     let work_type = json!(input.work_type).to_string();
     conn.execute(
-        "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = ?4, work_type = ?5,
-                updated_at = datetime('now','localtime')
-         WHERE id = ?6",
+        "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = '[]', work_type = ?4,
+                notes = ?5, source = ?6, updated_at = datetime('now','localtime')
+         WHERE id = ?7",
         rusqlite::params![
             input.platform.trim(),
             input.name.trim(),
             input.email.trim().to_lowercase(),
-            style,
             work_type,
+            input.notes.trim(),
+            EDITOR_SOURCE_MANUAL,
             id
         ],
     )
@@ -118,6 +107,15 @@ pub fn delete_editor(state: State<'_, AppState>, id: i64) -> Result<(), String> 
 }
 
 #[tauri::command]
+pub fn clear_editors(state: State<'_, AppState>) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let deleted = conn
+        .execute("DELETE FROM editors", [])
+        .map_err(|e| e.to_string())?;
+    Ok(deleted as i64)
+}
+
+#[tauri::command]
 pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String, String> {
     let editors = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -135,7 +133,7 @@ pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
-    let headers = ["平台", "名称", "邮箱", "风格", "作品类型"];
+    let headers = ["平台", "名称", "邮箱", "作品类型", "收稿说明", "来源"];
     for (col, h) in headers.iter().enumerate() {
         sheet
             .write_string(0, col as u16, *h)
@@ -153,10 +151,13 @@ pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String
             .write_string(row, 2, &editor.email)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 3, &editor.style.join("、"))
+            .write_string(row, 3, &editor.work_type.join("、"))
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 4, &editor.work_type.join("、"))
+            .write_string(row, 4, &editor.notes)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 5, &editor.source)
             .map_err(|e| e.to_string())?;
     }
     workbook.save(&path).map_err(|e| e.to_string())?;
@@ -171,14 +172,14 @@ pub fn import_editors(
 ) -> Result<EditorImportResult, String> {
     let rows = parse_editor_import(&data, &file_name)?;
     if rows.is_empty() {
-        return Err("文件里没有可导入的行。请用列：平台、名称、邮箱、风格、作品类型。".into());
+        return Err("文件里没有可导入的行。请用列：平台、名称、邮箱、作品类型、收稿说明。".into());
     }
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut added = 0i64;
     let mut updated = 0i64;
     let mut errors = Vec::new();
     for (index, input) in rows {
-        match upsert_editor(&conn, &input) {
+        match upsert_imported_editor(&conn, &input) {
             Ok("updated") => updated += 1,
             Ok(_) => added += 1,
             Err(e) => errors.push(format!("第 {index} 行：{e}")),
@@ -191,55 +192,76 @@ pub fn import_editors(
     })
 }
 
-fn upsert_editor(conn: &rusqlite::Connection, input: &EditorInput) -> Result<&'static str, String> {
-    let input = validate_editor(input)?;
-    let email = input.email.trim().to_lowercase();
-    let style = json!(input.style.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).collect::<Vec<_>>()).to_string();
-    let work_type = json!(input.work_type.iter().map(|d| d.trim()).filter(|d| !d.is_empty()).collect::<Vec<_>>()).to_string();
-    let existing: Option<i64> = conn
-        .query_row("SELECT id FROM editors WHERE email = ?1", [&email], |r| r.get(0))
-        .optional()
-        .map_err(|e| e.to_string())?;
-    if let Some(id) = existing {
-        conn.execute(
-            "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = ?4, work_type = ?5,
-                    updated_at = datetime('now','localtime')
-             WHERE id = ?6",
-            rusqlite::params![input.platform.trim(), input.name.trim(), email, style, work_type, id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok("updated")
-    } else {
-        conn.execute(
-            "INSERT INTO editors (platform, name, email, style, work_type) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![input.platform.trim(), input.name.trim(), email, style, work_type],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok("added")
+#[tauri::command]
+pub fn import_default_editors(state: State<'_, AppState>) -> Result<EditorImportResult, String> {
+    let rows = crate::models::default_editor_inputs()?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut added = 0i64;
+    let mut updated = 0i64;
+    let mut errors = Vec::new();
+    for input in rows {
+        match validate_editor(&input).and_then(|input| store::upsert_editor(&conn, &input, EDITOR_SOURCE_INITIAL)) {
+            Ok("updated") => updated += 1,
+            Ok(_) => added += 1,
+            Err(e) => errors.push(e),
+        }
     }
+    Ok(EditorImportResult {
+        added,
+        updated,
+        errors,
+    })
+}
+
+fn upsert_imported_editor(conn: &rusqlite::Connection, input: &EditorInput) -> Result<&'static str, String> {
+    let input = validate_editor(input)?;
+    store::upsert_editor(conn, &input, EDITOR_SOURCE_IMPORT)
 }
 
 fn parse_editor_import(data: &[u8], file_name: &str) -> Result<Vec<(usize, EditorInput)>, String> {
     let name = file_name.to_lowercase();
-    let table = if name.ends_with(".xlsx") || name.ends_with(".xls") {
-        read_spreadsheet_rows(data)?
-    } else {
-        read_text_rows(data)?
-    };
-    Ok(rows_to_editors(table))
+    if name.ends_with(".xlsx") || name.ends_with(".xls") {
+        let mut out = Vec::new();
+        for (sheet, rows) in read_spreadsheet_sheets(data)? {
+            if skip_import_sheet(&sheet) {
+                continue;
+            }
+            out.extend(rows_to_editors(rows));
+        }
+        return Ok(out);
+    }
+    Ok(rows_to_editors(read_text_rows(data)?))
 }
 
-fn read_spreadsheet_rows(data: &[u8]) -> Result<Vec<Vec<String>>, String> {
+fn skip_import_sheet(name: &str) -> bool {
+    let name = name.trim();
+    matches!(name, "平台统计" | "写稿方向建议" | "题材例文明细")
+        || name.contains("报刊")
+        || name.contains("杂志")
+        || name.contains("长篇")
+        || name.contains("剧本")
+        || name.contains("短剧")
+}
+
+fn read_spreadsheet_sheets(data: &[u8]) -> Result<Vec<(String, Vec<Vec<String>>)>, String> {
     let mut workbook = calamine::open_workbook_auto_from_rs(std::io::Cursor::new(data))
         .map_err(|e| format!("无法读取表格：{e}"))?;
-    let range = workbook
-        .worksheet_range_at(0)
-        .ok_or_else(|| "表格是空的".to_string())?
-        .map_err(|e| e.to_string())?;
-    Ok(range
-        .rows()
-        .map(|row| row.iter().map(spreadsheet_cell).collect())
-        .collect())
+    let names = workbook.sheet_names().to_vec();
+    let mut out = Vec::new();
+    for name in names {
+        let Ok(range) = workbook.worksheet_range(&name) else { continue };
+        let rows: Vec<Vec<String>> = range
+            .rows()
+            .map(|row| row.iter().map(spreadsheet_cell).collect())
+            .collect();
+        if rows.iter().any(|row| row.iter().any(|cell| !cell.is_empty())) {
+            out.push((name, rows));
+        }
+    }
+    if out.is_empty() {
+        return Err("表格是空的".into());
+    }
+    Ok(out)
 }
 
 fn spreadsheet_cell(value: &calamine::Data) -> String {
@@ -322,7 +344,7 @@ fn rows_to_editors(table: Vec<Vec<String>>) -> Vec<(usize, EditorInput)> {
         .skip(start)
         .filter_map(|(i, row)| {
             let input = editor_from_row(&row, &map);
-            if input.email.is_empty() && input.style.is_empty() && input.work_type.is_empty() && input.name.is_empty() && input.platform.is_empty() {
+            if input.email.is_empty() && input.work_type.is_empty() && input.name.is_empty() && input.platform.is_empty() {
                 return None;
             }
             Some((i + 1, input))
@@ -335,23 +357,23 @@ struct EditorColumns {
     platform: Option<usize>,
     name: Option<usize>,
     email: Option<usize>,
-    style: Option<usize>,
     work_type: Option<usize>,
+    notes: Option<usize>,
 }
 
 fn detect_editor_columns(first: &[String]) -> (usize, EditorColumns) {
     let mut map = EditorColumns::default();
     for (i, cell) in first.iter().enumerate() {
         match normalize_header(cell).as_str() {
-            "平台" | "platform" | "站点" | "刊物" => map.platform = Some(i),
-            "名称" | "name" | "编辑" | "昵称" => map.name = Some(i),
-            "邮箱" | "email" | "邮件" | "收稿邮箱" => map.email = Some(i),
-            "风格" | "style" => map.style = Some(i),
-            "作品类型" | "类型" | "题材" | "work_type" | "收稿方向" | "方向" | "收稿类别" | "类别" | "标签" | "tags" => map.work_type = Some(i),
+            "平台" | "platform" | "站点" | "刊物" | "三方" | "报刊" | "杂志" | "杂志名称" => map.platform = Some(i),
+            "名称" | "name" | "编辑" | "昵称" | "副刊" => map.name = Some(i),
+            "邮箱" | "email" | "邮件" | "收稿邮箱" | "投稿邮箱" | "联系方式" => map.email = Some(i),
+            "作品类型" | "类型" | "题材" | "work_type" | "收稿方向" | "方向" | "收稿类别" | "类别" | "标签" | "tags" | "收稿类型" => map.work_type = Some(i),
+            "说明" | "notes" | "收稿说明" | "备注" | "审稿" | "投稿注意" => map.notes = Some(i),
             _ => {}
         }
     }
-    if map.email.is_some() || map.style.is_some() || map.work_type.is_some() {
+    if map.email.is_some() || map.work_type.is_some() {
         return (1, map);
     }
     let fallback = match first.len() {
@@ -363,8 +385,9 @@ fn detect_editor_columns(first: &[String]) -> (usize, EditorColumns) {
             platform: Some(0),
             name: Some(1),
             email: Some(2),
-            style: Some(3),
-            work_type: Some(4),
+            work_type: Some(3),
+            notes: Some(4),
+            ..EditorColumns::default()
         },
     };
     (0, fallback)
@@ -393,13 +416,27 @@ fn editor_from_row(row: &[String], map: &EditorColumns) -> EditorInput {
             email = rest.trim().trim_end_matches('>').trim().to_string();
         }
     }
+    let raw_work = cell_at(row, map.work_type);
+    let mut notes = cell_at(row, map.notes);
+    if notes.is_empty() && raw_work.chars().count() > 16 {
+        notes = raw_work.clone();
+    }
     EditorInput {
         platform: cell_at(row, map.platform),
         name,
-        email,
-        style: split_tags(&cell_at(row, map.style)),
-        work_type: split_tags(&cell_at(row, map.work_type)),
+        email: extract_email(&email),
+        work_type: split_tags(&raw_work),
+        notes,
     }
+}
+
+fn extract_email(raw: &str) -> String {
+    let cleaned = raw.replace("小窗", " ").replace("微信", " ");
+    cleaned
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-' | '@')))
+        .find(|part| part.contains('@') && part.contains('.'))
+        .unwrap_or("")
+        .to_lowercase()
 }
 
 fn split_tags(raw: &str) -> Vec<String> {

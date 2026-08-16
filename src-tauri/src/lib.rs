@@ -171,8 +171,10 @@ pub fn run() {
             commands::add_editor,
             commands::update_editor,
             commands::delete_editor,
+            commands::clear_editors,
             commands::export_editors,
             commands::import_editors,
+            commands::import_default_editors,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

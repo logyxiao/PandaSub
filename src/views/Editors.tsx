@@ -1,18 +1,21 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Download, Plus, RefreshCw, Search, Trash2, Upload, Users } from 'lucide-react'
+import { Database, Download, Plus, RotateCcw, Search, Trash2, Upload, Users } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Button, EmptyState, IconButton, PagedList, Select } from '../components/ui'
-import { formatTime, isValidEmail } from '../format'
+import { isValidEmail } from '../format'
 import { useNav } from '../nav'
 import type { Editor, EditorInput } from '../types'
-import { GENRES, STYLES, isPlanStyle, normalizeEditorTags } from './planShared'
+import { GENRES, LENGTH_TAGS, SOURCES, normalizeEditorTags } from './planShared'
 
 const UNASSIGNED = '未填平台'
-const emptyForm: EditorInput = { platform: '', name: '', email: '', style: [], work_type: [] }
+
+const emptyForm: EditorInput = {
+  platform: '', name: '', email: '', work_type: [], notes: '',
+}
 
 export interface EditorsListProps {
   /** 受控数据（如投稿向导传入）；不传则内部从后端加载 */
@@ -30,23 +33,25 @@ export interface EditorsListProps {
   pageSize?: number
   emptyText?: string
   emptyAction?: ReactNode
+  actions?: ReactNode
 }
 
-/** 编辑库列表（搜索、平台/风格/作品类型筛选、分页、标签气泡），可作为页面或插件式嵌入投稿向导。 */
+/** 编辑库列表（搜索、平台/作品类型筛选、分页、标签气泡），可作为页面或插件式嵌入投稿向导。 */
 export function EditorsList({
   items: externalItems, reloadSignal = 0, selectable = false,
   selectedIds, onToggleSelect, onEdit, onDelete, onTotalChange, onPlatformsChange, pageSize,
-  emptyText = '至少填收稿邮箱、风格或作品类型，也可以先导入 Excel / CSV。',
-  emptyAction,
+  emptyText = '首次打开会载入内置投稿邮箱。也可以自己添加，或导入 Excel / CSV。',
+  emptyAction, actions,
 }: EditorsListProps) {
   const [items, setItems] = useState<Editor[]>([])
   const [loading, setLoading] = useState(!externalItems)
   const [notice, setNotice] = useState('')
   const [query, setQuery] = useState('')
   const [platform, setPlatform] = useState('')
-  const [style, setStyle] = useState('')
-  const [workType, setWorkType] = useState('')
-  const [more, setMore] = useState<{ id: number; anchor: HTMLButtonElement } | null>(null)
+  const [source, setSource] = useState('')
+  const [workTypes, setWorkTypes] = useState<string[]>([])
+  const [excludedWorkTypes, setExcludedWorkTypes] = useState<string[]>([])
+  const [more, setMore] = useState<{ id: number; top: number; left: number; width: number } | null>(null)
 
   const list = useMemo(() => (externalItems ?? items).map(normalizeEditorTags), [externalItems, items])
 
@@ -70,13 +75,8 @@ export function EditorsList({
     if (platform && e.platform !== platform) return false
     const q = query.trim().toLowerCase()
     if (!q) return true
-    return [e.name, e.email, e.platform, ...(e.style ?? []), ...(e.work_type ?? [])].join(' ').toLowerCase().includes(q)
+    return [e.name, e.email, e.platform, e.source, e.notes, ...(e.work_type ?? [])].join(' ').toLowerCase().includes(q)
   }), [list, platform, query])
-
-  const styleCounts = useMemo(
-    () => STYLES.map((tag) => [tag, basePool.filter((e) => (e.style ?? []).includes(tag)).length] as const),
-    [basePool],
-  )
 
   const workTypeCounts = useMemo(() => {
     const map = new Map<string, number>()
@@ -85,33 +85,59 @@ export function EditorsList({
   }, [basePool])
 
   const visible = useMemo(() => basePool.filter((e) => {
-    if (style && !(e.style ?? []).includes(style)) return false
-    if (workType && !(e.work_type ?? []).includes(workType)) return false
+    if (source && e.source !== source) return false
+    if (workTypes.length && !workTypes.some((tag) => (e.work_type ?? []).includes(tag))) return false
+    if (excludedWorkTypes.length && excludedWorkTypes.some((tag) => (e.work_type ?? []).includes(tag))) return false
     return true
-  }), [basePool, style, workType])
+  }), [basePool, source, workTypes, excludedWorkTypes])
 
-  // 筛选变化时收起展开中的标签气泡
-  useEffect(() => { setMore(null) }, [visible])
+  useEffect(() => { setMore(null) }, [platform, query, source, workTypes, excludedWorkTypes, list])
+
+  const toggleWorkType = (tag: string) => {
+    setExcludedWorkTypes((current) => current.filter((item) => item !== tag))
+    setWorkTypes((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])
+  }
+  const excludeWorkType = (tag: string) => {
+    setWorkTypes((current) => current.filter((item) => item !== tag))
+    setExcludedWorkTypes((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])
+  }
+  const resetFilters = () => {
+    setQuery(''); setPlatform(''); setSource(''); setWorkTypes([]); setExcludedWorkTypes([]); setMore(null)
+  }
+
+  const moreEditor = more ? visible.find((item) => item.id === more.id) : undefined
+  const moreWorkTypes = (moreEditor?.work_type ?? []).filter((tag) => !(LENGTH_TAGS as readonly string[]).includes(tag))
 
   return (
     <>
-      <div className="filters">
+      <div className="editor-toolbar">
         <label className="plan-search editor-search">
           <Search size={14} />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索姓名、平台或邮箱" />
         </label>
         <Select value={platform} onChange={setPlatform} ariaLabel="按平台筛选" className="editor-filter-select"
-          options={[{ value: '', label: '全部平台' }, ...platforms.map((p) => ({ value: p, label: p }))]} />
-        <Select value={style} onChange={setStyle} ariaLabel="按风格筛选" className="editor-filter-select"
-          options={[{ value: '', label: '全部风格' }, ...styleCounts.map(([tag, count]) => ({ value: tag, label: `${tag}（${count}）` }))]} />
+          searchable searchPlaceholder="搜索平台" options={[{ value: '', label: '全部平台' }, ...platforms.map((p) => ({ value: p, label: p }))]} />
+        <Select value={source} onChange={setSource} ariaLabel="按来源筛选" className="editor-filter-select is-compact"
+          options={[{ value: '', label: '全部来源' }, ...SOURCES.map((tag) => ({
+            value: tag,
+            label: `${tag}（${basePool.filter((e) => e.source === tag).length}）`,
+          }))]} />
+        <div className="editor-toolbar-actions">
+          <IconButton title="重置筛选" className="editor-tool-icon" disabled={!query && !platform && !source && !workTypes.length && !excludedWorkTypes.length}
+            onClick={resetFilters}>
+            <RotateCcw size={14} />
+          </IconButton>
+          {actions}
+        </div>
       </div>
       <div className="worktype-filter-bar">
-        <span>作品类型</span>
         {workTypeCounts.length ? (
           <div className="field-filter-chips">
             {workTypeCounts.map(([tag, count]) => (
-              <button type="button" key={tag} className={`field-chip ${workType === tag ? 'on' : ''}`}
-                onClick={() => setWorkType(workType === tag ? '' : tag)}>
+              <button type="button" key={tag} title="左键筛选，右键排除"
+                className={`field-chip ${workTypes.includes(tag) ? 'on' : ''} ${excludedWorkTypes.includes(tag) ? 'is-excluded' : ''}`}
+                onClick={() => toggleWorkType(tag)}
+                onContextMenu={(ev) => { ev.preventDefault(); excludeWorkType(tag) }}>
                 {tag}{count > 0 && <small>{count}</small>}
               </button>
             ))}
@@ -134,10 +160,10 @@ export function EditorsList({
             keyOf={(e) => e.id}
             listClassName="editor-groups"
             renderItem={(e) => {
-              const styles = e.style ?? []
-              const workTypes = e.work_type ?? []
-              const tags = [...styles, ...workTypes]
+              const tags = (e.work_type ?? []).filter((tag) => !(LENGTH_TAGS as readonly string[]).includes(tag))
               const shown = tags.slice(0, 2)
+              const rest = tags.slice(shown.length)
+              const note = (e.notes ?? '').trim()
               const checked = selectedIds?.has(e.id) ?? false
               return (
                 <div className={`editor-row ${selectable ? 'is-selectable' : ''}`}>
@@ -149,21 +175,29 @@ export function EditorsList({
                     </label>
                   )}
                   <div className="editor-row-main">
-                    <b>{e.name.trim() || '佚名'}</b>
+                    <b>
+                      <span className="editor-row-name">{e.name.trim() || '佚名'}</span>
+                      <span className="editor-row-sep">｜</span>
+                      <span className="editor-row-plat">{e.platform.trim() || UNASSIGNED}</span>
+                    </b>
                     <small>{e.email}</small>
                   </div>
-                  <div className="editor-row-platform">{e.platform.trim() || UNASSIGNED}</div>
-                  <div className="editor-row-time" title={e.updated_at}>录入 {formatTime(e.updated_at)}</div>
+                  <div className="editor-row-note" title={note || undefined}>
+                    {note || <span className="hint">无备注</span>}
+                  </div>
                   <div className="editor-row-tags">
                     {tags.length ? (
                       <>
                         {shown.map((d, i) => (
-                          <span key={d} className={`chip on ${i >= styles.length ? 'tone' : ''}`}>{d}</span>
+                          <span key={`${i}-${d}`} className="chip on tone">{d}</span>
                         ))}
-                        {tags.length > shown.length && (
+                        {rest.length > 0 && (
                           <button type="button" className="editor-chip-more"
-                            onClick={(ev) => setMore((m) => (m?.id === e.id ? null : { id: e.id, anchor: ev.currentTarget }))}>
-                            +{tags.length - shown.length}
+                            onClick={(ev) => {
+                              const next = moreRect(ev.currentTarget)
+                              setMore((m) => (m?.id === e.id ? null : { id: e.id, ...next }))
+                            }}>
+                            +{rest.length}
                           </button>
                         )}
                       </>
@@ -175,9 +209,6 @@ export function EditorsList({
                     {onEdit && <Button size="sm" onClick={() => onEdit(e)}>编辑</Button>}
                     {onDelete && <IconButton title="删除" className="danger" onClick={() => onDelete(e)}><Trash2 size={15} /></IconButton>}
                   </div>
-                  {more?.id === e.id && (
-                    <EditorTagsPop anchor={more.anchor} styles={styles} workTypes={workTypes} skip={shown.length} onClose={() => setMore(null)} />
-                  )}
                 </div>
               )
             }}
@@ -187,7 +218,75 @@ export function EditorsList({
           />
         </div>
       )}
+      {more && moreEditor && (
+        <EditorTagsPop
+          top={more.top}
+          left={more.left}
+          width={more.width}
+          workTypes={moreWorkTypes}
+          skip={2}
+          onClose={() => setMore(null)}
+        />
+      )}
     </>
+  )
+}
+
+function moreRect(el: HTMLElement) {
+  const rect = el.getBoundingClientRect()
+  const width = Math.min(300, Math.max(180, rect.width))
+  let left = Math.min(rect.right - width, window.innerWidth - width - 12)
+  if (left < 12) left = 12
+  const gap = 7
+  const estimate = 88
+  const spaceBelow = window.innerHeight - rect.bottom - gap
+  const up = spaceBelow < estimate && rect.top - gap > spaceBelow
+  return up
+    ? { top: Math.max(12, rect.top - gap - estimate), left, width }
+    : { top: rect.bottom + gap, left, width }
+}
+
+function EditorTagsPop({ top, left, width, workTypes, skip, onClose }: {
+  top: number
+  left: number
+  width: number
+  workTypes: string[]
+  skip: number
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const restWorkTypes = workTypes.slice(skip).map(String)
+
+  useEffect(() => {
+    const onDown = (ev: MouseEvent) => {
+      const target = ev.target as Node
+      if (ref.current?.contains(target)) return
+      if (target instanceof Element && target.closest('.editor-chip-more')) return
+      onCloseRef.current()
+    }
+    const dismiss = () => onCloseRef.current()
+    const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') dismiss() }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', dismiss, true)
+    window.addEventListener('resize', dismiss)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('resize', dismiss)
+    }
+  }, [])
+
+  return createPortal(
+    <div ref={ref} className="editor-more-pop" style={{ top, left, width }} role="tooltip">
+      <div className="editor-more-tags">
+        {restWorkTypes.map((d, i) => <span className="chip on tone" key={`w-${i}-${d}`}>{d}</span>)}
+      </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -197,6 +296,7 @@ export function EditorsView() {
   const [platformOptions, setPlatformOptions] = useState<string[]>([])
   const [editing, setEditing] = useState<Editor | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const [showData, setShowData] = useState(false)
   const [form, setForm] = useState<EditorInput>(emptyForm)
   const [customWorkType, setCustomWorkType] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
@@ -210,21 +310,25 @@ export function EditorsView() {
   const openEdit = (e: Editor) => {
     const next = normalizeEditorTags(e)
     setEditing(next)
-    setForm({ platform: next.platform, name: next.name, email: next.email, style: next.style, work_type: next.work_type })
+    setForm({
+      platform: next.platform, name: next.name, email: next.email,
+      work_type: next.work_type,
+      notes: next.notes ?? '',
+    })
     setCustomWorkType('')
     setShowForm(true)
   }
 
-  const toggleTag = (field: 'style' | 'work_type', tag: string) => {
+  const toggleTag = (tag: string) => {
     setForm((f) => ({
       ...f,
-      [field]: f[field].includes(tag) ? f[field].filter((x) => x !== tag) : [...f[field], tag],
+      work_type: f.work_type.includes(tag) ? f.work_type.filter((x) => x !== tag) : [...f.work_type, tag],
     }))
   }
 
   const addCustomWorkType = () => {
     const tag = customWorkType.trim()
-    if (!tag || isPlanStyle(tag)) return
+    if (!tag) return
     if (!form.work_type.includes(tag)) setForm((f) => ({ ...f, work_type: [...f.work_type, tag] }))
     setCustomWorkType('')
   }
@@ -232,10 +336,6 @@ export function EditorsView() {
   const save = async () => {
     if (!isValidEmail(form.email)) { toast('请填写有效的收稿邮箱', 'warning'); return }
     const payload = normalizeEditorTags(form)
-    if (!payload.style.some((d) => d.trim()) && !payload.work_type.some((d) => d.trim())) {
-      toast('请至少填一个风格或作品类型', 'warning')
-      return
-    }
     try {
       if (editing) await api.updateEditor(editing.id, payload)
       else await api.addEditor(payload)
@@ -278,43 +378,109 @@ export function EditorsView() {
     } catch (e) { toast(String(e), 'error') }
   }
 
+  const importDefaults = async () => {
+    const ok = await confirm({
+      title: '载入默认编辑库',
+      message: '将写入内置的投稿邮箱。相同邮箱会更新资料，不会删除你自己添加的编辑。',
+      confirmLabel: '载入',
+    })
+    if (!ok) return
+    try {
+      const result = await api.importDefaultEditors()
+      refresh()
+      const parts = [
+        result.added ? `新加入 ${result.added} 位` : '',
+        result.updated ? `更新 ${result.updated} 位` : '',
+      ].filter(Boolean)
+      toast(parts.join('，') || '默认编辑库已是最新', parts.length ? 'success' : 'info')
+    } catch (e) { toast(String(e), 'error') }
+  }
+
   const remove = async (id: number) => {
     const ok = await confirm({ title: '删除编辑', message: '从编辑库里去掉，已经写进计划的收件人不会自动删除。', confirmLabel: '删除', tone: 'danger' })
     if (!ok) return
     try { await api.deleteEditor(id); refresh(); toast('编辑已删除', 'success') } catch (e) { toast(String(e), 'error') }
   }
 
+  const clearAll = async () => {
+    const ok = await confirm({
+      title: '清空编辑库',
+      message: '将删除编辑库里的全部编辑。已经写进计划的收件人不会自动删除。此操作不可撤销。',
+      confirmLabel: '清空',
+      tone: 'danger',
+    })
+    if (!ok) return
+    try {
+      const deleted = await api.clearEditors()
+      refresh()
+      setShowData(false)
+      toast(deleted ? `已清空 ${deleted} 位编辑` : '编辑库已是空的', deleted ? 'success' : 'info')
+    } catch (e) { toast(String(e), 'error') }
+  }
+
   return (
     <>
-      <div className="toolbar">
-        <div className="toolbar-actions">
-          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.txt" hidden
-            onChange={(e) => { void importList(e.target.files?.[0] ?? null); e.target.value = '' }} />
-          <Button variant="ghost" onClick={() => fileRef.current?.click()}><Upload size={15} />导入</Button>
-          <Button variant="ghost" onClick={() => void exportList()}><Download size={15} />导出 Excel</Button>
-          <IconButton title="刷新" onClick={refresh}><RefreshCw size={17} /></IconButton>
-          <Button variant="primary" onClick={openAdd}><Plus size={16} />添加编辑</Button>
-        </div>
-      </div>
-
+      <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.txt" hidden
+        onChange={(e) => { void importList(e.target.files?.[0] ?? null); e.target.value = '' }} />
       <EditorsList
         reloadSignal={reloadSignal}
         onEdit={openEdit}
         onDelete={(e) => void remove(e.id)}
         onTotalChange={setTotal}
         onPlatformsChange={setPlatformOptions}
+        actions={
+          <>
+            <Button size="sm" variant="ghost" onClick={() => setShowData(true)}><Database size={13} />数据管理</Button>
+            <Button size="sm" variant="primary" onClick={openAdd}><Plus size={13} />添加</Button>
+          </>
+        }
         emptyAction={
           <div className="toolbar-actions">
-            <Button onClick={() => fileRef.current?.click()}><Upload size={16} />导入</Button>
-            <Button variant="primary" onClick={openAdd}><Plus size={16} />添加编辑</Button>
+            <Button size="sm" onClick={() => setShowData(true)}><Database size={13} />数据管理</Button>
+            <Button size="sm" variant="primary" onClick={openAdd}><Plus size={13} />添加</Button>
           </div>
         }
       />
 
       {total > 0 && (
         <p className="after-table-hint">
-          导入同邮箱会更新资料。准备好后去 <button type="button" className="text-link" onClick={() => go('plans')}>投稿计划</button> 按风格、作品类型筛编辑。
+          导入同邮箱会更新资料。准备好后去 <button type="button" className="text-link" onClick={() => go('plans')}>投稿计划</button> 按作品类型筛编辑。
         </p>
+      )}
+
+      {showData && (
+        <Modal title="数据管理" width={440} onClose={() => setShowData(false)}>
+          <div className="editor-data-list">
+            <div className="editor-data-row">
+              <div>
+                <b>导入</b>
+                <p>从 Excel / CSV 写入编辑。相同邮箱会更新资料。</p>
+              </div>
+              <Button size="sm" onClick={() => fileRef.current?.click()}><Upload size={13} />导入</Button>
+            </div>
+            <div className="editor-data-row">
+              <div>
+                <b>默认库</b>
+                <p>载入内置投稿邮箱。已有的相同邮箱会更新，不会删你自己加的。</p>
+              </div>
+              <Button size="sm" onClick={() => void importDefaults()}>载入</Button>
+            </div>
+            <div className="editor-data-row">
+              <div>
+                <b>导出</b>
+                <p>把当前编辑库存成 Excel，方便备份或换电脑。</p>
+              </div>
+              <Button size="sm" onClick={() => void exportList()}><Download size={13} />导出</Button>
+            </div>
+            <div className="editor-data-row is-danger">
+              <div>
+                <b>清空</b>
+                <p>删除编辑库里的全部编辑。计划里已有的收件人不会跟着删。</p>
+              </div>
+              <Button size="sm" variant="ghost" className="danger" onClick={() => void clearAll()}>清空</Button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {showForm && (
@@ -329,20 +495,11 @@ export function EditorsView() {
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="选填，编辑或栏目名" /></label>
             <label className="field span2">收稿邮箱（必填）
               <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="editor@example.com" /></label>
-            <div className="field span2">风格
-              <Select
-                value={form.style[0] ?? ''}
-                options={[{ value: '', label: '不设风格' }, ...STYLES.map((s) => ({ value: s, label: s }))]}
-                onChange={(v) => setForm({ ...form, style: v ? [v] : [] })}
-                ariaLabel="风格"
-                placeholder="不设风格"
-              />
-            </div>
             <div className="field span2">作品类型
               <div className="chip-picks">
-                {[...new Set([...GENRES, ...form.work_type.filter((tag) => !isPlanStyle(tag))])].map((g) => (
+                {[...new Set([...GENRES, ...form.work_type])].map((g) => (
                   <button type="button" key={g} className={`chip ${form.work_type.includes(g) ? 'on' : ''}`}
-                    onClick={() => toggleTag('work_type', g)}>{g}</button>
+                    onClick={() => toggleTag(g)}>{g}</button>
                 ))}
               </div>
               <div className="editor-custom-tag">
@@ -351,8 +508,18 @@ export function EditorsView() {
                   placeholder="自定义作品类型，回车添加" />
                 <Button size="sm" onClick={addCustomWorkType}>添加</Button>
               </div>
-              <span className="field-hint">至少填一项。写计划时会用作品的风格和作品类型对上。</span>
+              <span className="field-hint">作品类型用于筛选收件人，可不填。</span>
             </div>
+            <label className="field span2">收稿说明
+              <textarea className="editor-notes" rows={4} value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                placeholder="审稿、结算、收稿方向、不收题材等，选填" />
+            </label>
+            {editing && (
+              <p className="field-hint span2">
+                当前来源：{editing.source || '手动数据'}。在这里保存后会记为手动数据。
+              </p>
+            )}
           </div>
           <datalist id="editor-platforms">
             {platformOptions.map((p) => <option key={p} value={p} />)}
@@ -363,66 +530,3 @@ export function EditorsView() {
   )
 }
 
-// 「+N」标签气泡：只展示行内未显示的标签；跟随按钮定位，超出视口时向上弹开，滚动/缩放跟随。
-function EditorTagsPop({ anchor, styles, workTypes, skip, onClose }: {
-  anchor: HTMLButtonElement
-  styles: string[]
-  workTypes: string[]
-  skip: number
-  onClose: () => void
-}) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<CSSProperties>()
-  // onClose 每次渲染都是新引用，放进 effect 依赖会造成 setPos 死循环导致白屏，用 ref 固定。
-  const onCloseRef = useRef(onClose)
-  onCloseRef.current = onClose
-  const skipStyles = Math.min(skip, styles.length)
-  const restStyles = styles.slice(skipStyles)
-  const restWorkTypes = workTypes.slice(skip - skipStyles)
-
-  useLayoutEffect(() => {
-    const place = () => {
-      if (!anchor.isConnected) { onCloseRef.current(); return }
-      const rect = anchor.getBoundingClientRect()
-      const gap = 7
-      const width = Math.min(300, Math.max(170, rect.width))
-      const estimate = 16 + Math.ceil((restStyles.length + restWorkTypes.length) / 3) * 30
-      const spaceBelow = window.innerHeight - rect.bottom - gap
-      const spaceAbove = rect.top - gap
-      const up = spaceBelow < estimate && spaceAbove > spaceBelow
-      let left = Math.min(rect.right - width, window.innerWidth - width - 12)
-      if (left < 12) left = 12
-      setPos(up
-        ? { top: 'auto', bottom: window.innerHeight - rect.top + gap, left, width }
-        : { top: rect.bottom + gap, bottom: 'auto', left, width })
-    }
-    place()
-    window.addEventListener('resize', place)
-    window.addEventListener('scroll', place, true)
-    return () => {
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-    }
-  }, [anchor, restStyles.length, restWorkTypes.length])
-
-  useEffect(() => {
-    const onDown = (ev: MouseEvent) => {
-      const target = ev.target as Node
-      if (ref.current?.contains(target) || anchor.contains(target)) return
-      onCloseRef.current()
-    }
-    window.addEventListener('mousedown', onDown)
-    return () => window.removeEventListener('mousedown', onDown)
-  }, [anchor])
-
-  return createPortal(
-    <div ref={ref} className="editor-more-pop" style={pos} role="tooltip">
-      <div className="editor-more-tags">
-        {restStyles.map((d) => <span className="chip on" key={d}>{d}</span>)}
-        {!!restStyles.length && !!restWorkTypes.length && <i className="editor-tag-divider" />}
-        {restWorkTypes.map((d) => <span className="chip on tone" key={d}>{d}</span>)}
-      </div>
-    </div>,
-    document.body,
-  )
-}

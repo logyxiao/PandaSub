@@ -16,7 +16,7 @@ Panda Submission (NovelSub) is a local desktop submission tool for fiction write
 ## Features
 
 - **Sender account management**: Configure QQ, 163, and other SMTP accounts with authorization codes, pen names, and daily limits.
-- **Editor library**: Manage editor addresses by platform, style, work type, and status; import or export Excel/CSV files.
+- **Editor library**: Ships with built-in short-story contacts. Filter by work type; import or export Excel/CSV.
 - **Submission plans**: Edit manuscript metadata, message subject, body, recipients, and schedule in one workflow.
 - **Per-plan account selection**: Choose exactly which enabled sender accounts participate in each submission plan.
 - **Automatic pacing**: After each message, wait a random 2–4 minutes (peaking around 3 minutes) before sending the next one—no manual frequency setting.

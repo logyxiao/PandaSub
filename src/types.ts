@@ -33,8 +33,9 @@ export interface Editor {
   platform: string
   name: string
   email: string
-  style: string[]
   work_type: string[]
+  notes: string
+  source: string
   enabled: boolean
   created_at: string
   updated_at: string
@@ -44,8 +45,8 @@ export interface EditorInput {
   platform: string
   name: string
   email: string
-  style: string[]
   work_type: string[]
+  notes: string
 }
 
 export interface EditorImportResult {

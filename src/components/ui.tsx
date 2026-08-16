@@ -28,7 +28,7 @@ export interface SelectOption<T extends string | number = string> {
   description?: string
 }
 
-export function Select<T extends string | number>({ value, options, onChange, ariaLabel, placeholder = '请选择', className = '', disabled = false }: {
+export function Select<T extends string | number>({ value, options, onChange, ariaLabel, placeholder = '请选择', className = '', disabled = false, searchable = false, searchPlaceholder = '搜索' }: {
   value: T
   options: SelectOption<T>[]
   onChange: (value: T) => void
@@ -36,21 +36,35 @@ export function Select<T extends string | number>({ value, options, onChange, ar
   placeholder?: string
   className?: string
   disabled?: boolean
+  searchable?: boolean
+  searchPlaceholder?: string
 }) {
   const [open, setOpen] = useState(false)
   const [up, setUp] = useState(false)
   const [menuStyle, setMenuStyle] = useState<CSSProperties | null>(null)
   const [active, setActive] = useState(0)
+  const [query, setQuery] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
   const listId = useId()
   const selectedIndex = options.findIndex((option) => option.value === value)
   const selected = options[selectedIndex]
+  const visible = (() => {
+    const q = query.trim().toLowerCase()
+    if (!searchable || !q) return options
+    const head = options.filter((option) => option.value === '')
+    const rest = options.filter((option) => option.value !== '' && (
+      String(option.label).toLowerCase().includes(q) || String(option.value).toLowerCase().includes(q)
+    ))
+    return [...head, ...rest]
+  })()
 
   useLayoutEffect(() => {
     if (!open) {
       setMenuStyle(null)
       setUp(false)
+      setQuery('')
       return
     }
     const place = () => {
@@ -58,18 +72,23 @@ export function Select<T extends string | number>({ value, options, onChange, ar
       if (!root) return
       const rect = root.getBoundingClientRect()
       const gap = 7
-      const estimated = Math.min(280, options.length * 48 + 18)
+      const estimated = Math.min(320, visible.length * 40 + (searchable ? 52 : 18))
       const spaceBelow = window.innerHeight - rect.bottom - gap
       const spaceAbove = rect.top - gap
       const shouldUp = spaceBelow < estimated && spaceAbove > spaceBelow
-      const width = Math.min(Math.max(rect.width, 190), window.innerWidth - 32)
+      const width = Math.min(Math.max(rect.width, searchable ? 220 : 190), window.innerWidth - 32)
       let left = rect.left
       if (left + width > window.innerWidth - 16) left = Math.max(16, rect.right - width)
       if (left < 16) left = 16
-      setUp(shouldUp)
-      setMenuStyle(shouldUp
+      const next: CSSProperties = shouldUp
         ? { top: 'auto', bottom: window.innerHeight - rect.top + gap, left, width }
-        : { top: rect.bottom + gap, bottom: 'auto', left, width })
+        : { top: rect.bottom + gap, bottom: 'auto', left, width }
+      setUp(shouldUp)
+      setMenuStyle((prev) => (
+        prev?.top === next.top && prev.bottom === next.bottom && prev.left === next.left && prev.width === next.width
+          ? prev
+          : next
+      ))
     }
     place()
     window.addEventListener('resize', place)
@@ -78,11 +97,11 @@ export function Select<T extends string | number>({ value, options, onChange, ar
       window.removeEventListener('resize', place)
       window.removeEventListener('scroll', place, true)
     }
-  }, [open, options.length])
+  }, [open, visible.length, searchable])
 
   useEffect(() => {
     if (!open) return
-    setActive(selectedIndex >= 0 ? selectedIndex : 0)
+    setActive(0)
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node
       if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return
@@ -90,30 +109,39 @@ export function Select<T extends string | number>({ value, options, onChange, ar
     }
     window.addEventListener('mousedown', onPointerDown)
     return () => window.removeEventListener('mousedown', onPointerDown)
-  }, [open, selectedIndex])
+  }, [open])
+
+  useEffect(() => { setActive(0) }, [query])
+  useEffect(() => {
+    if (open && searchable) searchRef.current?.focus()
+  }, [open, searchable, menuStyle])
 
   const choose = (option: SelectOption<T>) => {
     onChange(option.value)
     setOpen(false)
   }
 
-  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+  const move = (delta: number) => {
+    if (!visible.length) return
+    setActive((index) => (index + delta + visible.length) % visible.length)
+  }
+
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement | HTMLInputElement>) => {
     if (disabled) return
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       if (!open) { setOpen(true); return }
-      const delta = event.key === 'ArrowDown' ? 1 : -1
-      setActive((index) => (index + delta + options.length) % options.length)
-    } else if (event.key === 'Enter' || event.key === ' ') {
+      move(event.key === 'ArrowDown' ? 1 : -1)
+    } else if (event.key === 'Enter' || (event.key === ' ' && event.currentTarget instanceof HTMLButtonElement)) {
       event.preventDefault()
-      if (open) choose(options[active])
+      if (open) { if (visible[active]) choose(visible[active]) }
       else setOpen(true)
     } else if (event.key === 'Escape') {
       setOpen(false)
     } else if (event.key === 'Home' && open) {
       event.preventDefault(); setActive(0)
     } else if (event.key === 'End' && open) {
-      event.preventDefault(); setActive(options.length - 1)
+      event.preventDefault(); setActive(visible.length - 1)
     }
   }
 
@@ -124,15 +152,23 @@ export function Select<T extends string | number>({ value, options, onChange, ar
         <span className={selected ? '' : 'is-placeholder'}>{selected?.label ?? placeholder}</span><ChevronDown size={15} />
       </button>
       {open && menuStyle && createPortal(
-        <div ref={menuRef} id={listId} className={`select-menu ${up ? 'is-up' : ''}`} role="listbox" aria-label={ariaLabel} style={menuStyle}>
-          {options.map((option, index) => (
+        <div ref={menuRef} id={listId} className={`select-menu ${up ? 'is-up' : ''} ${searchable ? 'is-searchable' : ''}`} role="listbox" aria-label={ariaLabel} style={menuStyle}>
+          {searchable && (
+            <label className="select-search">
+              <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={onKeyDown} placeholder={searchPlaceholder} aria-label={searchPlaceholder} />
+            </label>
+          )}
+          {visible.length ? visible.map((option, index) => (
             <button type="button" role="option" aria-selected={option.value === value} key={String(option.value)}
               className={`select-option ${option.value === value ? 'is-selected' : ''} ${index === active ? 'is-active' : ''}`}
               onMouseEnter={() => setActive(index)} onClick={() => choose(option)}>
               <span><b>{option.label}</b>{option.description && <small>{option.description}</small>}</span>
               {option.value === value && <Check size={15} />}
             </button>
-          ))}
+          )) : (
+            <p className="select-empty">没有匹配项</p>
+          )}
         </div>,
         document.body,
       )}

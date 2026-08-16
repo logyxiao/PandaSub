@@ -111,6 +111,10 @@ CREATE TABLE IF NOT EXISTS editors (
   email TEXT NOT NULL UNIQUE,
   style TEXT NOT NULL DEFAULT '[]',
   work_type TEXT NOT NULL DEFAULT '[]',
+  channel TEXT NOT NULL DEFAULT '',
+  reader TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '手动数据',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -128,9 +132,18 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_plan_columns(&connection)?;
     add_editor_enabled_column(&connection)?;
     add_editor_tag_columns(&connection)?;
+    add_editor_profile_columns(&connection)?;
+    classify_builtin_editor_sources(&connection)?;
     migrate_editor_directions(&connection)?;
     normalize_editor_style_values(&connection)?;
-    seed_editor_reader_tags(&connection)?;
+    strip_editor_reader_tags(&connection)?;
+    seed_default_editors(&connection)?;
+    refresh_bundled_editor_library(&connection)?;
+    backfill_missing_editor_types(&connection)?;
+    repair_editor_types_and_platforms(&connection)?;
+    drop_press_and_magazine_editors(&connection)?;
+    drop_longform_editors(&connection)?;
+    drop_script_editors(&connection)?;
     add_task_account_columns(&connection)?;
     add_task_log_recipient_column(&connection)?;
     add_manuscript_file_column(&connection)?;
@@ -273,6 +286,271 @@ fn add_editor_enabled_column(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn add_editor_profile_columns(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    for (name, decl) in [
+        ("channel", "channel TEXT NOT NULL DEFAULT ''"),
+        ("reader", "reader TEXT NOT NULL DEFAULT ''"),
+        ("notes", "notes TEXT NOT NULL DEFAULT ''"),
+        ("source", "source TEXT NOT NULL DEFAULT '手动数据'"),
+    ] {
+        if table_lacks_column(conn, "editors", name) {
+            conn.execute(&format!("ALTER TABLE editors ADD COLUMN {decl}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn classify_builtin_editor_sources(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.source_classified'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done > 0 {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists > 0 && !table_lacks_column(conn, "editors", "source") {
+        let defaults = crate::models::default_editor_inputs().unwrap_or_default();
+        for input in defaults {
+            conn.execute(
+                "UPDATE editors SET source = ?1
+                 WHERE email = ?2 AND (source = '' OR source = ?3)",
+                rusqlite::params![
+                    crate::models::EDITOR_SOURCE_INITIAL,
+                    input.email.trim().to_lowercase(),
+                    crate::models::EDITOR_SOURCE_MANUAL
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.source_classified', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn seed_default_editors(conn: &Connection) -> Result<(), String> {
+    let seeded: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.default_seeded'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if seeded > 0 {
+        return Ok(());
+    }
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM editors", [], |r| r.get(0))
+        .unwrap_or(0);
+    if count == 0 {
+        for input in crate::models::default_editor_inputs()? {
+            crate::store::upsert_editor(conn, &input, crate::models::EDITOR_SOURCE_INITIAL)?;
+        }
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.default_seeded', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn backfill_missing_editor_types(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.types_backfilled'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done > 0 {
+        return Ok(());
+    }
+    let extra: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM editors WHERE channel = '剧本'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if extra == 0 {
+        // 默认库现在只保留短篇，不再回填其他类型。
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.types_backfilled', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn repair_editor_types_and_platforms(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.short_type_platform_fixed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done > 0 {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists > 0 && !table_lacks_column(conn, "editors", "channel") {
+        conn.execute(
+            "DELETE FROM editors WHERE TRIM(COALESCE(platform, '')) = ''",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let defaults = crate::models::default_editor_inputs().unwrap_or_default();
+        for input in defaults {
+            if input.platform.trim().is_empty() {
+                continue;
+            }
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM editors WHERE email = ?1",
+                    [input.email.trim().to_lowercase()],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if exists == 0 {
+                crate::store::upsert_editor(conn, &input, crate::models::EDITOR_SOURCE_INITIAL)?;
+            }
+        }
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.short_type_platform_fixed', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn drop_press_and_magazine_editors(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.dropped_press_magazine'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done > 0 {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists > 0 && !table_lacks_column(conn, "editors", "channel") {
+        conn.execute(
+            "DELETE FROM editors WHERE channel IN ('报刊', '杂志')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.dropped_press_magazine', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn drop_longform_editors(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.dropped_longform'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done > 0 {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists > 0 && !table_lacks_column(conn, "editors", "channel") {
+        conn.execute("DELETE FROM editors WHERE channel = '长篇'", [])
+            .map_err(|e| e.to_string())?;
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.dropped_longform', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn drop_script_editors(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.dropped_script'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done > 0 {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists > 0 && !table_lacks_column(conn, "editors", "channel") {
+        conn.execute("DELETE FROM editors WHERE channel = '剧本'", [])
+            .map_err(|e| e.to_string())?;
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.dropped_script', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn add_editor_tag_columns(conn: &Connection) -> Result<(), String> {
     let exists: i64 = conn
         .query_row(
@@ -317,16 +595,16 @@ fn migrate_editor_directions(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// 一次性：给现有每个编辑的作品类型补上「女频」标签（用 settings 标记，只跑一次）。
-fn seed_editor_reader_tags(conn: &Connection) -> Result<(), String> {
-    let seeded: i64 = conn
+/// 一次性：从作品类型里去掉男女频标签。
+fn strip_editor_reader_tags(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM settings WHERE key = 'editors.reader_tag_seeded'",
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.reader_tag_cleared'",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if seeded > 0 {
+    if done > 0 {
         return Ok(());
     }
     let exists: i64 = conn
@@ -349,19 +627,23 @@ fn seed_editor_reader_tags(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     drop(stmt);
     for (id, raw) in rows {
-        let mut work_type: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
-        if work_type.iter().any(|t| t == "女频") {
+        let work_type: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        let next: Vec<String> = work_type
+            .iter()
+            .filter(|tag| *tag != "男频" && *tag != "女频")
+            .cloned()
+            .collect();
+        if next == work_type {
             continue;
         }
-        work_type.push("女频".into());
         conn.execute(
-            "UPDATE editors SET work_type = ?1, updated_at = datetime('now','localtime') WHERE id = ?2",
-            rusqlite::params![serde_json::json!(work_type).to_string(), id],
+            "UPDATE editors SET work_type = ?1 WHERE id = ?2",
+            rusqlite::params![serde_json::json!(next).to_string(), id],
         )
         .map_err(|e| e.to_string())?;
     }
     conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.reader_tag_seeded', '1')",
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.reader_tag_cleared', '1')",
         [],
     )
     .map_err(|e| e.to_string())?;
@@ -395,22 +677,67 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     drop(stmt);
     for (id, raw_style, raw_work) in rows {
+        let mut work_type: Vec<String> = serde_json::from_str(&raw_work).unwrap_or_default();
         let style: Vec<String> = serde_json::from_str(&raw_style).unwrap_or_default();
-        let work_type: Vec<String> = serde_json::from_str(&raw_work).unwrap_or_default();
-        let (next_style, next_work) = crate::models::split_editor_tags(&style, &work_type);
-        if next_style == style && next_work == work_type {
+        work_type.extend(style);
+        let next_work = crate::models::normalize_editor_work_types(&work_type);
+        let style_cleared = raw_style.trim() == "[]" || raw_style.trim().is_empty();
+        if style_cleared && next_work == crate::models::normalize_editor_work_types(
+            &serde_json::from_str::<Vec<String>>(&raw_work).unwrap_or_default(),
+        ) {
             continue;
         }
         conn.execute(
-            "UPDATE editors SET style = ?1, work_type = ?2 WHERE id = ?3",
-            rusqlite::params![
-                serde_json::json!(next_style).to_string(),
-                serde_json::json!(next_work).to_string(),
-                id
-            ],
+            "UPDATE editors SET style = '[]', work_type = ?1 WHERE id = ?2",
+            rusqlite::params![serde_json::json!(next_work).to_string(), id],
         )
         .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-16-length";
+
+fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
+    let current: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'editors.library_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    if current == BUNDLED_EDITOR_LIBRARY_VERSION {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists > 0 {
+        for input in crate::models::default_editor_inputs()? {
+            let email = input.email.trim().to_lowercase();
+            let source: Option<String> = conn
+                .query_row(
+                    "SELECT source FROM editors WHERE email = ?1",
+                    [&email],
+                    |r| r.get(0),
+                )
+                .ok();
+            if source.as_deref().unwrap_or(crate::models::EDITOR_SOURCE_INITIAL)
+                == crate::models::EDITOR_SOURCE_INITIAL
+            {
+                crate::store::upsert_editor(conn, &input, crate::models::EDITOR_SOURCE_INITIAL)?;
+            }
+        }
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.library_version', ?1)",
+        [BUNDLED_EDITOR_LIBRARY_VERSION],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

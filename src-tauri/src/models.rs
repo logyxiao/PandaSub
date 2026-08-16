@@ -168,6 +168,7 @@ pub struct Settings {
 }
 
 fn default_true() -> bool { true }
+fn default_editor_source() -> String { EDITOR_SOURCE_MANUAL.to_string() }
 fn default_imap_port() -> u16 { 993 }
 fn default_reply_poll() -> i64 { 2 }
 
@@ -185,27 +186,91 @@ impl Default for Settings {
     }
 }
 
-pub const EDITOR_STYLES: &[&str] = &["小程序", "知乎风", "番茄风"];
+const EDITOR_DROPPED_TAGS: &[&str] = &["小程序", "知乎风", "番茄风", "男频", "女频"];
+pub const EDITOR_SOURCE_INITIAL: &str = "初始数据";
+pub const EDITOR_SOURCE_MANUAL: &str = "手动数据";
+pub const EDITOR_SOURCE_IMPORT: &str = "导入数据";
 
-pub fn split_editor_tags(style: &[String], work_type: &[String]) -> (Vec<String>, Vec<String>) {
-    let mut styles = Vec::new();
+pub fn normalize_editor_source(value: &str) -> String {
+    match value.trim() {
+        EDITOR_SOURCE_INITIAL | EDITOR_SOURCE_MANUAL | EDITOR_SOURCE_IMPORT => value.trim().to_string(),
+        _ => EDITOR_SOURCE_MANUAL.to_string(),
+    }
+}
+
+pub fn normalize_editor_work_types(tags: &[String]) -> Vec<String> {
     let mut types = Vec::new();
-    let mut seen_style = std::collections::BTreeSet::new();
-    let mut seen_type = std::collections::BTreeSet::new();
-    for raw in style.iter().chain(work_type.iter()) {
+    let mut seen = std::collections::BTreeSet::new();
+    for raw in tags {
         let tag = raw.trim();
-        if tag.is_empty() {
+        if tag.is_empty() || EDITOR_DROPPED_TAGS.contains(&tag) {
             continue;
         }
-        if EDITOR_STYLES.contains(&tag) {
-            if seen_style.insert(tag.to_string()) {
-                styles.push(tag.to_string());
-            }
-        } else if seen_type.insert(tag.to_string()) {
+        if seen.insert(tag.to_string()) {
             types.push(tag.to_string());
         }
     }
-    (styles, types)
+    types
+}
+
+pub fn canonicalize_editor_platform(raw: &str) -> String {
+    let value = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('樂', "乐");
+    if value.is_empty() {
+        return String::new();
+    }
+    if let Some(alias) = editor_platform_alias(&value) {
+        return alias.to_string();
+    }
+    let stripped = strip_platform_suffix(&value);
+    if let Some(alias) = editor_platform_alias(&stripped) {
+        return alias.to_string();
+    }
+    if !stripped.is_empty() {
+        stripped
+    } else {
+        value
+    }
+}
+
+fn editor_platform_alias(value: &str) -> Option<&'static str> {
+    Some(match value {
+        "九州（一组）" | "九州（二组）" | "九州（海外）" | "九州(一组)" | "九州(二组)" | "九州(海外)" => "九州",
+        "麦芽5组" => "麦芽",
+        "吾里鹿糖" => "吾里",
+        "长樂" => "长乐",
+        "花不完(刚刚好)" | "花不完（刚刚好）" => "花不完",
+        "GoodNovel(海外）" | "GoodNovel(海外)" | "GoodNovel（海外）" | "GoodNovel（海外)" => "GoodNovel",
+        "dreame（海外）" | "dreame(海外)" | "dreame（海外)" | "Dreame（海外）" => "Dreame",
+        "月下" => "月下小说",
+        "四季文学" => "四季",
+        "绣球阅读" => "绣球",
+        _ => return None,
+    })
+}
+
+fn strip_platform_suffix(value: &str) -> String {
+    let mut out = value.to_string();
+    if out.ends_with(')') || out.ends_with('）') {
+        if let Some(start) = out.rfind(['(', '（']) {
+            out.truncate(start);
+            out = out.trim().to_string();
+        }
+    }
+    if let Some(stripped) = out.strip_suffix("组") {
+        let bytes = stripped.as_bytes();
+        let mut i = bytes.len();
+        while i > 0 && bytes[i - 1].is_ascii_digit() {
+            i -= 1;
+        }
+        if i < bytes.len() {
+            out = stripped[..i].trim().to_string();
+        }
+    }
+    out
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -215,9 +280,11 @@ pub struct Editor {
     pub name: String,
     pub email: String,
     #[serde(default)]
-    pub style: Vec<String>,
-    #[serde(default)]
     pub work_type: Vec<String>,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default = "default_editor_source")]
+    pub source: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub created_at: String,
@@ -230,9 +297,14 @@ pub struct EditorInput {
     pub name: String,
     pub email: String,
     #[serde(default)]
-    pub style: Vec<String>,
-    #[serde(default)]
     pub work_type: Vec<String>,
+    #[serde(default)]
+    pub notes: String,
+}
+
+pub fn default_editor_inputs() -> Result<Vec<EditorInput>, String> {
+    serde_json::from_str(include_str!("data/default_editors.json"))
+        .map_err(|e| format!("内置编辑库损坏：{e}"))
 }
 
 #[derive(Serialize, Clone, Debug)]

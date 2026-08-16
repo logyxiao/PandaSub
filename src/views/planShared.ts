@@ -1,31 +1,30 @@
 import { parseRecipient } from '../format'
 import type { Delivery, Editor, Manuscript, ManuscriptInput, Task } from '../types'
 
-export const GENRES = ['女频', '古风', '现代', '都市', '校园', '玄幻', '仙侠', '科幻', '悬疑', '恐怖', '民间', '脑洞', '重生', '穿越', '甜宠', '虐恋', '社会', '性转', '女主', '男主']
+export const LENGTH_TAGS = ['短篇', '中短篇'] as const
+export const GENRES = [
+  ...LENGTH_TAGS,
+  '全品类', '追妻', '追夫', '世情', '爽文', '脑洞', '古言', '现言',
+  '悬疑', '年代', '情绪流', '都市', '亲情虐', '大女主', '玄幻', '重生',
+  '打脸', '种田', '末世', '甜宠', '宅斗', '宫斗', '萌宝',
+  '校园', '仙侠', '穿越', '穿书', '总裁', '婚恋', '虐恋',
+  '全员背叛', '言情', '性转', '死人文学', '系统', '女强', '信息差',
+  '散文', '童话', '诗歌',
+]
 export const CATEGORIES = ['短篇（8000字以下）', '短篇（8000-12000字）', '中篇（1.2-5万字）', '长篇（5万字以上）', '微小说']
-export const STYLES = ['小程序', '知乎风', '番茄风'] as const
-export type PlanStyle = (typeof STYLES)[number]
+export const SOURCES = ['初始数据', '手动数据', '导入数据'] as const
+const DROPPED_EDITOR_TAGS = new Set(['小程序', '知乎风', '番茄风', '男频', '女频'])
 
-export function isPlanStyle(value: string): value is PlanStyle {
-  return (STYLES as readonly string[]).includes(value)
-}
-
-export function normalizeEditorTags<T extends Pick<Editor, 'style' | 'work_type'>>(editor: T): T {
-  const style: string[] = []
+export function normalizeEditorTags<T extends Pick<Editor, 'work_type'>>(editor: T): T {
   const work_type: string[] = []
-  const seenStyle = new Set<string>()
-  const seenType = new Set<string>()
-  for (const raw of [...(editor.style ?? []), ...(editor.work_type ?? [])]) {
+  const seen = new Set<string>()
+  for (const raw of editor.work_type ?? []) {
     const tag = raw.trim()
-    if (!tag) continue
-    if (isPlanStyle(tag)) {
-      if (!seenStyle.has(tag)) { seenStyle.add(tag); style.push(tag) }
-    } else if (!seenType.has(tag)) {
-      seenType.add(tag)
-      work_type.push(tag)
-    }
+    if (!tag || DROPPED_EDITOR_TAGS.has(tag) || seen.has(tag)) continue
+    seen.add(tag)
+    work_type.push(tag)
   }
-  return { ...editor, style, work_type }
+  return { ...editor, work_type }
 }
 
 // 发送节奏：每封邮件间隔 2–4 分钟随机，偏向 3 分钟（平均按 3 分钟估算）。
@@ -154,11 +153,10 @@ export function editorWorkTypeOptions(editors: Editor[]) {
   return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
 }
 
-export function editorMatchesPlan(editor: Editor, style: string, genres: string[]) {
+export function editorMatchesPlan(editor: Editor, genres: string[]) {
+  if (!genres.length) return true
   const tags = normalizeEditorTags(editor)
-  if (style && tags.style.includes(style)) return true
-  if (genres.some((g) => tags.work_type.includes(g))) return true
-  return false
+  return genres.some((g) => tags.work_type.includes(g))
 }
 
 export function editorPlatformKey(editor: Pick<Editor, 'platform' | 'email'>) {
@@ -167,7 +165,6 @@ export function editorPlatformKey(editor: Pick<Editor, 'platform' | 'email'>) {
 
 export function pickOneEditorPerPlatform(
   editors: Editor[],
-  style: string,
   genres: string[],
   sentMap: Map<string, number>,
   preferred: Record<string, string> = {},
@@ -176,7 +173,7 @@ export function pickOneEditorPerPlatform(
   const excluded = new Set([...excludedWorkTypes].map((t) => t.trim()).filter(Boolean))
   const matched = editors
     .map(normalizeEditorTags)
-    .filter((e) => editorMatchesPlan(e, style, genres))
+    .filter((e) => editorMatchesPlan(e, genres))
     .filter((e) => !e.work_type.some((tag) => excluded.has(tag)))
   const groups = new Map<string, Editor[]>()
   for (const editor of matched) {
@@ -192,8 +189,8 @@ export function pickOneEditorPerPlatform(
       const sentA = sentMap.get(a.email.toLowerCase()) ?? 0
       const sentB = sentMap.get(b.email.toLowerCase()) ?? 0
       if ((sentA === 0) !== (sentB === 0)) return sentA === 0 ? -1 : 1
-      const overlapA = matchCount(a, style, genres)
-      const overlapB = matchCount(b, style, genres)
+      const overlapA = matchCount(a, genres)
+      const overlapB = matchCount(b, genres)
       if (overlapA !== overlapB) return overlapB - overlapA
       return b.id - a.id
     })[0]
@@ -202,12 +199,9 @@ export function pickOneEditorPerPlatform(
   return { picked, groups }
 }
 
-function matchCount(editor: Editor, style: string, genres: string[]) {
+function matchCount(editor: Editor, genres: string[]) {
   const tags = normalizeEditorTags(editor)
-  let count = 0
-  if (style && tags.style.includes(style)) count += 1
-  count += genres.filter((g) => tags.work_type.includes(g)).length
-  return count
+  return genres.filter((g) => tags.work_type.includes(g)).length
 }
 
 export function estimateMinutes(count: number, intervalMin: number, intervalMax: number, batchMin: number, batchMax: number, pauseMin: number, pauseMax: number) {
