@@ -85,7 +85,11 @@ export function Select<T extends string | number>({ value, options, onChange, ar
         : { top: rect.bottom + gap, bottom: 'auto', left, width }
       setUp(shouldUp)
       setMenuStyle((prev) => (
-        prev?.top === next.top && prev.bottom === next.bottom && prev.left === next.left && prev.width === next.width
+        prev
+        && prev.top === next.top
+        && prev.bottom === next.bottom
+        && prev.left === next.left
+        && prev.width === next.width
           ? prev
           : next
       ))
