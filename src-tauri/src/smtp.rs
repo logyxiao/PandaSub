@@ -72,8 +72,14 @@ pub fn apply_placeholders_full(
     length: &str,
     genres: &str,
 ) -> String {
+    let prepared = if genres.trim().is_empty() {
+        text.replace("偏{{类型}}", "").replace("偏 {{类型}}", "")
+    } else {
+        text.to_string()
+    };
     let work = if title.trim().is_empty() { "未命名作品" } else { title };
-    text.replace("{{编辑昵称}}", editor_name)
+    prepared
+        .replace("{{编辑昵称}}", editor_name)
         .replace("{{收件人}}", editor_name)
         .replace("{{邮箱}}", email)
         .replace("{{作品名}}", work)
@@ -108,9 +114,7 @@ fn plan_tag_values(manuscript: &Manuscript) -> (String, String, String) {
     } else {
         "未填".into()
     };
-    let genre = if genres.is_empty() { "未选".into() } else { genres.join("、") };
-    let length = if length.is_empty() { "未选".into() } else { length };
-    (words, length, genre)
+    (words, length, genres.join("、"))
 }
 
 fn tidy_mail_subject(subject: &str) -> String {
@@ -161,7 +165,6 @@ pub fn resolve_outgoing_mail(manuscript: &Manuscript, recipient: &str, mutate: b
     let (subject_src, body_src) = pick_mail_template(manuscript);
     let (words, length, genres) = plan_tag_values(manuscript);
     let subject_words = if words == "未填" { "" } else { words.as_str() };
-    let subject_genres = if genres == "未选" { "" } else { genres.as_str() };
     let subject = tidy_mail_subject(&apply_placeholders_full(
         &subject_src,
         &editor_name,
@@ -169,19 +172,41 @@ pub fn resolve_outgoing_mail(manuscript: &Manuscript, recipient: &str, mutate: b
         &manuscript.title,
         subject_words,
         &length,
-        subject_genres,
+        &genres,
     ));
     let body_raw = mutate_body(&body_src, mutate);
-    let body = apply_placeholders_full(
-        &body_raw,
-        &editor_name,
-        &recipient_email,
-        &manuscript.title,
-        &words,
-        &length,
+    let body = omit_empty_type_label(
+        &apply_placeholders_full(
+            &body_raw,
+            &editor_name,
+            &recipient_email,
+            &manuscript.title,
+            &words,
+            &length,
+            &genres,
+        ),
         &genres,
     );
     (subject, body)
+}
+
+fn omit_empty_type_label(text: &str, genres: &str) -> String {
+    if !genres.trim().is_empty() {
+        return text.to_string();
+    }
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !(trimmed.starts_with("类型：") || trimmed.starts_with("类型:"))
+        })
+        .map(|line| {
+            line.replace("，。", "。")
+                .replace("、。", "。")
+                .replace(",.", ".")
+                .replace(" / 。", "。")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn make_message_id() -> String {

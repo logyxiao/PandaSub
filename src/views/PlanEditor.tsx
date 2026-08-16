@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Clock3, FileUp, Plus, Send, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, Clock3, Eye, FileUp, Pencil, Plus, Send, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/feedback'
@@ -50,6 +50,7 @@ export function PlanEditor({
   const [visibleEditors, setVisibleEditors] = useState<Editor[]>([])
   const pickKeyRef = useRef('')
   const [activeTplId, setActiveTplId] = useState(() => form.mail_templates[0]?.id ?? 't1')
+  const [tplMode, setTplMode] = useState<'preview' | 'edit'>('preview')
   const [showEditorForm, setShowEditorForm] = useState(false)
   const [editingEditor, setEditingEditor] = useState<Editor | null>(null)
   const [editorForm, setEditorForm] = useState<EditorInput>(emptyEditor)
@@ -337,6 +338,7 @@ export function PlanEditor({
     }
     writeTemplates([...mailTemplates, item], item.id)
     setActiveTplId(item.id)
+    setTplMode('edit')
   }
 
   const removeTemplate = () => {
@@ -513,24 +515,55 @@ export function PlanEditor({
                   ))}
                 </div>
                 {activeTpl && (
-                  <div className="plan-tpl-editor">
-                    <label className="plan-tpl-name">模板名称
-                      <input value={activeTpl.name} onChange={(e) => updateActiveTpl({ name: e.target.value })} placeholder="例如：常规问候" />
-                    </label>
-                    <input
-                      className="plan-tpl-subject"
-                      value={activeTpl.subject}
-                      onChange={(e) => updateActiveTpl({ subject: e.target.value })}
-                      placeholder="投稿：《{{作品名}}》+{{字数}}+{{类型}}"
-                    />
-                    <textarea
-                      className="plan-body"
-                      value={activeTpl.body}
-                      onChange={(e) => updateActiveTpl({ body: e.target.value })}
-                      placeholder={'尊敬的{{编辑昵称}}：\n\n现将作品《{{作品名}}》投至贵处，请审阅。'}
-                    />
-                    <p className="plan-tpl-hint">标题建议带 {'{{字数}}'} 和 {'{{类型}}'}（不含短篇 / 中短篇）。正文还可用 {'{{作品名}}'} {'{{编辑昵称}}'} {'{{篇幅}}'}。</p>
-                  </div>
+                  <>
+                    <div className="plan-tpl-mode" role="tablist" aria-label="模板视图">
+                      <button type="button" className={`plan-tpl-mode-btn ${tplMode === 'preview' ? 'is-on' : ''}`}
+                        onClick={() => setTplMode('preview')}><Eye size={13} />预览</button>
+                      <button type="button" className={`plan-tpl-mode-btn ${tplMode === 'edit' ? 'is-on' : ''}`}
+                        onClick={() => setTplMode('edit')}><Pencil size={13} />编辑</button>
+                    </div>
+                    {tplMode === 'preview' ? (
+                      <div className="plan-tpl-preview">
+                        <p className="plan-tpl-preview-kicker">{activeTpl.name.trim() || '未命名模板'}</p>
+                        <h4 className="plan-tpl-preview-subject">
+                          {fillPlaceholders(
+                            activeTpl.subject.trim() || '投稿：《{{作品名}}》',
+                            selectedEditors[0] ? editorRecipient(selectedEditors[0]) : '',
+                            form.title,
+                            { wordCount: form.word_count, genres: form.genres, category: form.category, asSubject: true },
+                          ) || '（标题为空）'}
+                        </h4>
+                        <pre className="plan-tpl-preview-body">
+                          {fillPlaceholders(
+                            activeTpl.body,
+                            selectedEditors[0] ? editorRecipient(selectedEditors[0]) : '',
+                            form.title,
+                            { wordCount: form.word_count, genres: form.genres, category: form.category },
+                          ) || '这套模板还没有正文'}
+                        </pre>
+                        <p className="plan-tpl-hint">按左侧作品信息填充。没选类型时，「类型：」整行不会出现。</p>
+                      </div>
+                    ) : (
+                      <div className="plan-tpl-editor">
+                        <label className="plan-tpl-name">模板名称
+                          <input value={activeTpl.name} onChange={(e) => updateActiveTpl({ name: e.target.value })} placeholder="例如：常规问候" />
+                        </label>
+                        <input
+                          className="plan-tpl-subject"
+                          value={activeTpl.subject}
+                          onChange={(e) => updateActiveTpl({ subject: e.target.value })}
+                          placeholder="投稿：《{{作品名}}》+{{字数}}+{{类型}}"
+                        />
+                        <textarea
+                          className="plan-body"
+                          value={activeTpl.body}
+                          onChange={(e) => updateActiveTpl({ body: e.target.value })}
+                          placeholder={'尊敬的{{编辑昵称}}：\n\n现将作品《{{作品名}}》投至贵处，请审阅。'}
+                        />
+                        <p className="plan-tpl-hint">标题建议带 {'{{字数}}'} 和 {'{{类型}}'}（不含短篇 / 中短篇）。正文还可用 {'{{作品名}}'} {'{{编辑昵称}}'} {'{{篇幅}}'}。没选类型时不会带上「类型：」。</p>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>

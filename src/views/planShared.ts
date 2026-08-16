@@ -300,16 +300,29 @@ export function fillPlaceholders(
   const { lengths, genres } = splitPlanTags(extras.genres ?? [])
   const length = lengths.join('、') || categoryLabel(extras.category ?? '')
   const words = extras.wordCount && extras.wordCount > 0 ? `${extras.wordCount}字` : extras.asSubject ? '' : '未填'
-  const types = genres.join('、') || (extras.asSubject ? '' : '未选')
-  const filled = text
+  const types = genres.join('、')
+  const source = types.trim()
+    ? text
+    : text.replaceAll('偏{{类型}}', '').replaceAll('偏 {{类型}}', '')
+  const filled = source
     .replaceAll('{{编辑昵称}}', name)
     .replaceAll('{{收件人}}', name)
     .replaceAll('{{邮箱}}', email)
     .replaceAll('{{作品名}}', title || '未命名作品')
     .replaceAll('{{字数}}', words)
-    .replaceAll('{{篇幅}}', length || '未选')
+    .replaceAll('{{篇幅}}', length)
     .replaceAll('{{类型}}', types)
-  return extras.asSubject ? tidyMailSubject(filled) : filled
+  const omitted = extras.asSubject ? filled : omitEmptyTypeLabel(filled, types)
+  return extras.asSubject ? tidyMailSubject(omitted) : omitted
+}
+
+function omitEmptyTypeLabel(text: string, types: string) {
+  if (types.trim()) return text
+  return text
+    .split('\n')
+    .filter((line) => !/^\s*类型[：:]/.test(line))
+    .map((line) => line.replace(/[，,、]\s*(?=[。．.])/g, '').replace(/\s*\/\s*(?=[。．.])/g, ''))
+    .join('\n')
 }
 
 export function sentCountByEmail(deliveries: Delivery[]) {
