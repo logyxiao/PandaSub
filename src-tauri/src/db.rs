@@ -642,7 +642,7 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-16-paused";
+const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-16-local";
 
 fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
     let current: String = conn
@@ -663,7 +663,34 @@ fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
         )
         .unwrap_or(0);
     if exists > 0 {
-        for input in crate::models::default_editor_inputs()? {
+        let defaults = crate::models::default_editor_inputs()?;
+        let keep: std::collections::HashSet<String> = defaults
+            .iter()
+            .map(|input| input.email.trim().to_lowercase())
+            .filter(|email| !email.is_empty())
+            .collect();
+        if !keep.is_empty() {
+            let mut stmt = conn
+                .prepare("SELECT email FROM editors WHERE source = ?1")
+                .map_err(|e| e.to_string())?;
+            let stale: Vec<String> = stmt
+                .query_map([crate::models::EDITOR_SOURCE_INITIAL], |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|email: &String| !keep.contains(&email.trim().to_lowercase()))
+                .collect();
+            drop(stmt);
+            for email in stale {
+                conn.execute(
+                    "DELETE FROM editors WHERE email = ?1 AND source = ?2",
+                    rusqlite::params![email, crate::models::EDITOR_SOURCE_INITIAL],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        for input in defaults {
             let email = input.email.trim().to_lowercase();
             let source: Option<String> = conn
                 .query_row(

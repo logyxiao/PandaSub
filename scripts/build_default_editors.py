@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build src-tauri/src/data/default_editors.json from the two source spreadsheets."""
+"""Build src-tauri/src/data/default_editors.json from spreadsheets or the local app database."""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -487,11 +488,67 @@ def main() -> None:
     })
 
 
+def local_db_path() -> Path:
+    if override := os.environ.get("NOVELSUB_DB"):
+        return Path(override).expanduser()
+    return Path.home() / "Library/Application Support/com.novelsub.desktop/novelsub.sqlite"
+
+
+def export_from_local_db() -> None:
+    import sqlite3
+
+    db = local_db_path()
+    if not db.exists():
+        raise SystemExit(f"local editor database not found: {db}")
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT platform, name, email, work_type, notes
+        FROM editors
+        WHERE TRIM(COALESCE(email, '')) != ''
+        ORDER BY platform, name, email
+        """
+    ).fetchall()
+
+    editors = []
+    seen: set[str] = set()
+    for row in rows:
+        email = (row["email"] or "").strip().lower()
+        if not email or email in seen:
+            continue
+        seen.add(email)
+        try:
+            work_type = json.loads(row["work_type"] or "[]")
+        except json.JSONDecodeError:
+            work_type = []
+        if not isinstance(work_type, list):
+            work_type = []
+        editors.append({
+            "platform": (row["platform"] or "").strip(),
+            "name": (row["name"] or "").strip(),
+            "email": email,
+            "work_type": [str(tag).strip() for tag in work_type if str(tag).strip()],
+            "notes": (row["notes"] or "").strip(),
+        })
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(json.dumps(editors, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    platforms = Counter(e["platform"] or "未填" for e in editors)
+    tags = Counter(t for e in editors for t in e["work_type"])
+    print(f"wrote {len(editors)} editors from {db} -> {OUT}")
+    print("platforms", len(platforms))
+    print("top work_type", tags.most_common(20))
+
+
 if __name__ == "__main__":
     import sys
     if "--merge-library" in sys.argv:
         merge_from_library()
     elif "--apply-channel" in sys.argv:
         apply_channel_tags()
+    elif "--from-local-db" in sys.argv:
+        export_from_local_db()
     else:
         main()
