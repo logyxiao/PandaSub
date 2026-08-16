@@ -43,8 +43,10 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    let mut tasks = store::load_tasks(&conn)?;
-    tasks.truncate(20);
+    let _ = store::prune_orphan_tasks(&conn);
+    let mut manuscripts = store::load_all_manuscripts(&conn)?;
+    manuscripts.truncate(20);
+    let tasks = store::load_tasks(&conn)?;
     let logs = store::load_logs(&conn, None, 50, 0)?;
     let human_replies = store::count_replies(&conn, "human").unwrap_or(0);
     let auto_replies = store::count_replies(&conn, "auto").unwrap_or(0);
@@ -58,6 +60,7 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
         human_replies,
         auto_replies,
         tasks,
+        manuscripts,
         logs,
     })
 }

@@ -5,27 +5,27 @@ import { Modal } from '../components/Modal'
 import { useToast } from '../components/feedback'
 import { Button } from '../components/ui'
 import { isValidEmail, parseRecipient, providerName } from '../format'
-import type { Account, Delivery, Editor, EditorInput, MailTemplate, Manuscript, ManuscriptInput, TaskInput } from '../types'
+import type { Account, Editor, EditorInput, MailTemplate, Manuscript, ManuscriptInput, TaskInput } from '../types'
 import {
   GENRES, LENGTH_TAGS, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
   fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
-  defaultMailTemplates, pickOneEditorPerPlatform, sentCountByEmail,
+  defaultMailTemplates, editorPlatformKey, groupMatchingByPlatform, isDroppedMailTemplate,
+  pickOneEditorPerPlatform,
 } from './planShared'
-import { EditorsList } from './Editors'
+import { EditorsList, emptyEditorListFilters, type EditorListFilters } from './Editors'
 
 const emptyEditor: EditorInput = {
   platform: '', name: '', email: '', work_type: [], notes: '',
 }
 
 export function PlanEditor({
-  editing, editors, onReloadEditors, deliveries, enabledAccounts,
+  editing, editors, onReloadEditors, enabledAccounts,
   form, setForm, taskForm, setTaskForm,
   saving, onClose, onSaveDraft, onSaveAndSend, onImportFile,
 }: {
   editing: Manuscript | null
   editors: Editor[]
   onReloadEditors: () => Promise<void>
-  deliveries: Delivery[]
   enabledAccounts: Account[]
   form: ManuscriptInput
   setForm: (next: ManuscriptInput | ((f: ManuscriptInput) => ManuscriptInput)) => void
@@ -44,16 +44,20 @@ export function PlanEditor({
   const [orphans, setOrphans] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
   const [listCount, setListCount] = useState<number | null>(null)
+  const [listFilters, setListFilters] = useState<EditorListFilters>(() =>
+    emptyEditorListFilters(form.genres, form.excluded_types ?? []),
+  )
+  const [visibleEditors, setVisibleEditors] = useState<Editor[]>([])
+  const pickKeyRef = useRef('')
   const [activeTplId, setActiveTplId] = useState(() => form.mail_templates[0]?.id ?? 't1')
   const [showEditorForm, setShowEditorForm] = useState(false)
+  const [editingEditor, setEditingEditor] = useState<Editor | null>(null)
   const [editorForm, setEditorForm] = useState<EditorInput>(emptyEditor)
   const [customWorkType, setCustomWorkType] = useState('')
   const [savingEditor, setSavingEditor] = useState(false)
   const [testing, setTesting] = useState(false)
   const initRef = useRef(false)
-  const lastAutoPick = useRef<string | null>(null)
 
-  const sentMap = useMemo(() => sentCountByEmail(deliveries), [deliveries])
   const platforms = useMemo(
     () => [...new Set(editors.map((e) => e.platform.trim()).filter(Boolean))].sort(),
     [editors],
@@ -94,10 +98,13 @@ export function PlanEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在进入时初始化一次
   }, [])
 
-  const selectedEditors = useMemo(
-    () => editors.filter((e) => selectedIds.has(e.id)),
-    [editors, selectedIds],
-  )
+  const selectedEditors = useMemo(() => {
+    const map = new Map(editors.map((editor) => [editor.id, editor]))
+    return [...selectedIds].flatMap((id) => {
+      const editor = map.get(id)
+      return editor ? [editor] : []
+    })
+  }, [editors, selectedIds])
 
   // 收件名单 = 勾选的编辑 + 已保存但不在编辑库里的收件人（保留不丢）。
   const recipients = useMemo(
@@ -105,16 +112,15 @@ export function PlanEditor({
     [selectedEditors, orphans],
   )
 
-  // 发送时默认跳过已投过的编辑，只统计未投数量。
-  const pending = recipients.filter((r) => (sentMap.get(parseRecipient(r).email.toLowerCase()) ?? 0) === 0).length
-  const sendCount = pending
+  const sendCount = recipients.filter((r) => isValidEmail(r)).length
 
   const selectedAccounts = useMemo(() => {
     if (!taskForm.account_ids.length) return enabledAccounts
     return enabledAccounts.filter((account) => taskForm.account_ids.includes(account.id))
   }, [enabledAccounts, taskForm.account_ids])
   const minutes = estimateAutoMinutes(sendCount)
-  const mailTemplates = form.mail_templates?.length ? form.mail_templates : defaultMailTemplates()
+  const mailTemplates = (form.mail_templates?.length ? form.mail_templates : defaultMailTemplates())
+    .filter((item) => !isDroppedMailTemplate(item))
   const activeTpl = mailTemplates.find((item) => item.id === activeTplId) ?? mailTemplates[0]
   const ready = Boolean(
     form.title.trim()
@@ -154,6 +160,15 @@ export function PlanEditor({
   }, [form.word_count, setForm])
 
   useEffect(() => {
+    if (!form.mail_templates?.some(isDroppedMailTemplate)) return
+    const kept = form.mail_templates.filter((item) => !isDroppedMailTemplate(item))
+    const next = kept.length ? kept : defaultMailTemplates()
+    const current = next.find((item) => item.id === activeTplId) ?? next[0]
+    setForm((f) => ({ ...f, mail_templates: next, subject: current?.subject ?? f.subject, body: current?.body ?? f.body }))
+    if (current && current.id !== activeTplId) setActiveTplId(current.id)
+  }, [form.mail_templates, activeTplId, setForm])
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault()
@@ -191,25 +206,66 @@ export function PlanEditor({
     }))
   }
 
-  // 新建时进入第二步按篇幅 + 作品类型匹配（每个平台一位），用户可自行增删。
-  // 第一步筛选变了才重算；同筛选下再进第二步，保留用户勾选。
+  const platformGroups = useMemo(
+    () => groupMatchingByPlatform(editors, form.genres, excluded),
+    [editors, form.genres, excluded],
+  )
+
+  const matchKey = `${form.genres.join('\0')}::${excluded.join('\0')}`
+
+  // 新建且匹配条件变了才重抽。返回上一步再进来会保留已选和筛选。
   const goToStep2 = () => {
-    if (!editing) {
-      const key = `${form.genres.join('\0')}::${excluded.join('\0')}`
-      if (lastAutoPick.current !== key) {
-        lastAutoPick.current = key
-        const { picked: auto } = pickOneEditorPerPlatform(editors, form.genres, sentMap, {}, excluded)
-        setSelectedIds(new Set(auto.map((e) => e.id)))
-      }
+    if (!editing && pickKeyRef.current !== matchKey) {
+      const { picked: auto } = pickOneEditorPerPlatform(editors, form.genres, new Map(), {}, excluded)
+      setSelectedIds(new Set(auto.map((e) => e.id)))
+      setListFilters(emptyEditorListFilters(form.genres, excluded))
+      pickKeyRef.current = matchKey
     }
     setStep(2)
   }
 
+  const goToStep3 = () => {
+    if (!visibleEditors.length) {
+      toast('当前筛选没有编辑，先调整筛选或返回上一步', 'warning')
+      return
+    }
+    setSelectedIds(new Set(visibleEditors.map((editor) => editor.id)))
+    setStep(3)
+  }
+
+  const platformPeersOf = (editor: Editor) => platformGroups.get(editorPlatformKey(editor)) ?? [editor]
+
+  const replacePlatformEditor = (current: Editor, next: Editor) => {
+    setSelectedIds((prev) => {
+      const ids = new Set<number>()
+      for (const id of prev) {
+        if (id === current.id) ids.add(next.id)
+        else if (id !== next.id) ids.add(id)
+      }
+      return ids
+    })
+  }
+
   const openAddEditor = () => {
+    setEditingEditor(null)
     setEditorForm(normalizeEditorTags({
       ...emptyEditor,
       work_type: [...form.genres],
     }))
+    setCustomWorkType('')
+    setShowEditorForm(true)
+  }
+
+  const openEditEditor = (editor: Editor) => {
+    const next = normalizeEditorTags(editor)
+    setEditingEditor(next)
+    setEditorForm({
+      platform: next.platform,
+      name: next.name,
+      email: next.email,
+      work_type: next.work_type,
+      notes: next.notes ?? '',
+    })
     setCustomWorkType('')
     setShowEditorForm(true)
   }
@@ -234,17 +290,25 @@ export function PlanEditor({
     const email = editorForm.email.trim().toLowerCase()
     if (!isValidEmail(editorForm.email)) { toast('请填写有效的收稿邮箱', 'warning'); return }
     const payload = normalizeEditorTags({ ...editorForm, email })
-    if (editors.some((e) => e.email.toLowerCase() === email)) {
+    const clash = editors.some((e) => e.email.toLowerCase() === email && e.id !== editingEditor?.id)
+    if (clash) {
       toast('这个邮箱已经在编辑库里了', 'warning')
       return
     }
     setSavingEditor(true)
     try {
-      const id = await api.addEditor(payload)
-      await onReloadEditors()
-      setSelectedIds((prev) => new Set(prev).add(id))
-      setShowEditorForm(false)
-      toast('编辑已加入资料库', 'success')
+      if (editingEditor) {
+        await api.updateEditor(editingEditor.id, payload)
+        await onReloadEditors()
+        setShowEditorForm(false)
+        toast('编辑资料已更新', 'success')
+      } else {
+        const id = await api.addEditor(payload)
+        await onReloadEditors()
+        setSelectedIds((prev) => new Set(prev).add(id))
+        setShowEditorForm(false)
+        toast('编辑已加入资料库', 'success')
+      }
     } catch (e) { toast(String(e), 'error') }
     finally { setSavingEditor(false) }
   }
@@ -268,7 +332,7 @@ export function PlanEditor({
     const item: MailTemplate = {
       id: `tpl-${Date.now()}`,
       name: `模板 ${mailTemplates.length + 1}`,
-      subject: '投稿：《{{作品名}}》',
+      subject: '投稿：《{{作品名}}》+{{字数}}+{{类型}}',
       body: '尊敬的{{编辑昵称}}：\n\n现将作品《{{作品名}}》投至贵处，请审阅。谢谢。',
     }
     writeTemplates([...mailTemplates, item], item.id)
@@ -296,7 +360,7 @@ export function PlanEditor({
     const extras = { wordCount: form.word_count, genres: form.genres, category: form.category }
     setTesting(true)
     try {
-      const subject = fillPlaceholders(activeTpl.subject.trim() || form.title, first ? editorRecipient(first) : '', form.title, extras)
+      const subject = fillPlaceholders(activeTpl.subject.trim() || form.title, first ? editorRecipient(first) : '', form.title, { ...extras, asSubject: true })
       const body = fillPlaceholders(activeTpl.body, first ? editorRecipient(first) : '', form.title, extras)
       // 测试邮件也带上附件：新导入的文件直接用字节；编辑已有计划时按稿件 id 从数据库读已保存的附件。
       const attachment = form.file_data?.length
@@ -343,7 +407,11 @@ export function PlanEditor({
           {steps.map((s) => (
             <button key={s.n} type="button" role="tab" aria-selected={step === s.n}
               className={`plan-step ${step === s.n ? 'on' : ''} ${step > s.n ? 'done' : ''}`}
-              onClick={() => (s.n === 2 ? goToStep2() : setStep(s.n))}>
+              onClick={() => {
+                if (s.n === 2) goToStep2()
+                else if (s.n === 3 && step === 2) goToStep3()
+                else setStep(s.n)
+              }}>
               <i>{s.n}</i>{s.label}
             </button>
           ))}
@@ -453,7 +521,7 @@ export function PlanEditor({
                       className="plan-tpl-subject"
                       value={activeTpl.subject}
                       onChange={(e) => updateActiveTpl({ subject: e.target.value })}
-                      placeholder="邮件标题，可用 {{作品名}} {{字数}} {{类型}}"
+                      placeholder="投稿：《{{作品名}}》+{{字数}}+{{类型}}"
                     />
                     <textarea
                       className="plan-body"
@@ -461,13 +529,13 @@ export function PlanEditor({
                       onChange={(e) => updateActiveTpl({ body: e.target.value })}
                       placeholder={'尊敬的{{编辑昵称}}：\n\n现将作品《{{作品名}}》投至贵处，请审阅。'}
                     />
-                    <p className="plan-tpl-hint">占位符：{'{{作品名}}'} {'{{编辑昵称}}'} {'{{字数}}'} {'{{篇幅}}'} {'{{类型}}'}</p>
+                    <p className="plan-tpl-hint">标题建议带 {'{{字数}}'} 和 {'{{类型}}'}（不含短篇 / 中短篇）。正文还可用 {'{{作品名}}'} {'{{编辑昵称}}'} {'{{篇幅}}'}。</p>
                   </div>
                 )}
               </div>
             </div>
             <div className="step-actions">
-              <Button variant="primary" onClick={goToStep2}>下一步：选择编辑</Button>
+              <Button variant="primary" onClick={() => goToStep2()}>下一步：选择编辑</Button>
             </div>
           </section>
         )}
@@ -482,14 +550,17 @@ export function PlanEditor({
               <Button size="sm" onClick={openAddEditor}><Plus size={14} />添加编辑</Button>
             </div>
             <EditorsList
-              key={`plan-${form.genres.join('|')}-${excluded.join('|')}`}
               items={selectedEditors}
               selectable
               selectedIds={selectedIds}
               onToggleSelect={toggleSelect}
               onTotalChange={setListCount}
-              initialWorkTypes={form.genres}
-              initialExcludedWorkTypes={excluded}
+              onVisibleChange={setVisibleEditors}
+              platformPeersOf={platformPeersOf}
+              onReplaceEditor={replacePlatformEditor}
+              onEdit={openEditEditor}
+              filters={listFilters}
+              onFiltersChange={setListFilters}
               pageSize={6}
               emptyText="还没有选中的编辑。返回上一步调整篇幅和作品类型，或点右上角添加。"
             />
@@ -498,7 +569,7 @@ export function PlanEditor({
             )}
             <div className="step-actions">
               <Button onClick={() => setStep(1)}>上一步</Button>
-              <Button variant="primary" onClick={() => setStep(3)}>下一步：选择邮箱</Button>
+              <Button variant="primary" onClick={goToStep3}>下一步：选择邮箱</Button>
             </div>
           </section>
         )}
@@ -568,12 +639,14 @@ export function PlanEditor({
       </div>
 
       {showEditorForm && (
-        <Modal title="添加编辑" width={520}
+        <Modal title={editingEditor ? '修改编辑资料' : '添加编辑'} width={560}
           onClose={() => setShowEditorForm(false)}
           footer={
             <>
               <Button variant="ghost" onClick={() => setShowEditorForm(false)}>取消</Button>
-              <Button variant="primary" disabled={savingEditor} onClick={() => void saveEditor()}>保存到编辑库</Button>
+              <Button variant="primary" disabled={savingEditor} onClick={() => void saveEditor()}>
+                {editingEditor ? '保存修改' : '保存到编辑库'}
+              </Button>
             </>
           }>
           <div className="form-grid">
@@ -599,8 +672,18 @@ export function PlanEditor({
                   placeholder="自定义作品类型，回车添加" />
                 <Button size="sm" onClick={addCustomEditorWorkType}>添加</Button>
               </div>
-              <span className="field-hint">会直接写入编辑库，同一邮箱不能重复添加。</span>
+              <span className="field-hint">改完会写回编辑库，后面的计划也会用这份资料。</span>
             </div>
+            <label className="field span2">收稿说明
+              <textarea className="editor-notes" rows={4} value={editorForm.notes}
+                onChange={(e) => setEditorForm({ ...editorForm, notes: e.target.value })}
+                placeholder="审稿、结算、收稿方向、不收题材等，选填" />
+            </label>
+            {editingEditor && (
+              <p className="field-hint span2">
+                当前来源：{editingEditor.source || '手动数据'}。保存后会记为手动数据。
+              </p>
+            )}
           </div>
           <datalist id="plan-editor-platforms">
             {platforms.map((p) => <option key={p} value={p} />)}

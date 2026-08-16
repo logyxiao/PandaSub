@@ -317,22 +317,9 @@ pub fn delete_manuscript(state: State<'_, AppState>, id: i64) -> Result<(), Stri
     }
     conn.execute("DELETE FROM manuscripts WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
-    for task in tasks {
-        if !task.manuscript_ids.contains(&id) {
-            continue;
-        }
-        if task.manuscript_ids.len() <= 1 {
-            conn.execute("DELETE FROM tasks WHERE id = ?1", [task.id])
-                .map_err(|e| e.to_string())?;
-        } else {
-            let ids: Vec<i64> = task.manuscript_ids.into_iter().filter(|x| *x != id).collect();
-            conn.execute(
-                "UPDATE tasks SET manuscript_ids = ?1 WHERE id = ?2",
-                rusqlite::params![json!(ids).to_string(), task.id],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
+    conn.execute("DELETE FROM deliveries WHERE manuscript_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    store::prune_orphan_tasks(&conn)?;
     Ok(())
 }
 

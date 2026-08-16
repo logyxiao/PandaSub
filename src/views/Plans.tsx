@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react'
-import { FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, onTask } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, RuntimeTrack } from '../components/ui'
-import { formatTime, fromDbTime, isValidEmail, parseRecipient, statusLabel, taskTone, toDbTime } from '../format'
+import { formatTime, fromDbTime, isValidEmail, statusLabel, taskTone, toDbTime } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
 import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
-import { categoryFromWords, countChars, createEmptyManuscript, latestTask, syncMailFromTemplates, toInput } from './planShared'
+import { categoryFromWords, countChars, createEmptyManuscript, latestTask, planSendProgress, syncMailFromTemplates, toInput } from './planShared'
 
 const emptyTask: TaskInput = {
   name: '', manuscript_ids: [], account_ids: [], schedule_type: 'immediate', scheduled_at: null,
@@ -55,6 +55,9 @@ export function PlansView() {
     onTask((task) => {
       if (cancelled) return
       setTasks((prev) => [task, ...prev.filter((x) => x.id !== task.id)])
+      void api.listDeliveries().then((d) => {
+        if (!cancelled) setDeliveries(d)
+      })
     }).then((u) => {
       if (cancelled) u()
       else un = u
@@ -99,6 +102,27 @@ export function PlansView() {
     setShowEditor(true)
   }
 
+  const openCopy = (m: Manuscript) => {
+    const task = latestTask(m.id, tasks)
+    const copied = toInput(m)
+    const title = copied.title.trim()
+    setEditing(null)
+    setForm({
+      ...copied,
+      title: title ? `${title.replace(/（副本）$/, '')}（副本）` : '未命名计划（副本）',
+      file_name: '',
+      has_file: false,
+      file_data: undefined,
+    })
+    setTaskForm({
+      ...emptyTask,
+      account_ids: (copied.account_ids?.length ? copied.account_ids : task?.account_ids) ?? enabledAccounts.map((a) => a.id),
+      retry_max: task?.retry_max ?? settings?.default_retry_max ?? 3,
+    })
+    setScheduledInput('')
+    setShowEditor(true)
+  }
+
   const persistManuscript = async (payload: ManuscriptInput) => {
     if (!payload.title.trim()) { toast('请填写作品名称', 'warning'); return null }
     const next = syncMailFromTemplates({
@@ -138,33 +162,26 @@ export function PlansView() {
       toast('这个计划正在发送，请先停止再重新发送', 'warning')
       return
     }
-    const sent = new Set(deliveries.map((d) => parseRecipient(d.recipient).email.toLowerCase()))
-    // 默认跳过已投过的编辑。
-    const sending = form.recipients.filter((r) => {
-      if (!isValidEmail(r)) return false
-      if (sent.has(parseRecipient(r).email.toLowerCase())) return false
-      return true
-    })
-    if (!sending.length) { toast('去掉已投过的之后，没有可发的编辑了', 'warning'); return }
+    const sending = form.recipients.filter((r) => isValidEmail(r))
+    if (!sending.length) { toast('还没有可发送的编辑', 'warning'); return }
     if (taskForm.schedule_type === 'scheduled') {
       if (!scheduledInput) { toast('请选择发送时间', 'warning'); return }
       if (new Date(scheduledInput).getTime() <= Date.now()) { toast('定时时间必须晚于现在', 'warning'); return }
     }
     setSaving(true)
     try {
-      const id = await persistManuscript({ ...form, recipients: sending })
+      const id = await persistManuscript(form)
       if (!id) return
-      await api.createTask({
-        ...taskForm,
-        name: form.title.trim(),
-        manuscript_ids: [id],
-        scheduled_at: taskForm.schedule_type === 'scheduled' ? toDbTime(scheduledInput) : null,
-      })
-      if (sending.length !== form.recipients.length && taskForm.schedule_type !== 'scheduled') {
-        await api.updateManuscript(id, syncMailFromTemplates({
-          ...form,
-          word_count: form.word_count || countChars(form.body),
-        }))
+      if (current && current.status === 'stopped') {
+        if (taskForm.account_ids.length) await api.updateTaskAccounts(current.id, taskForm.account_ids)
+        await api.startTask(current.id)
+      } else {
+        await api.createTask({
+          ...taskForm,
+          name: form.title.trim(),
+          manuscript_ids: [id],
+          scheduled_at: taskForm.schedule_type === 'scheduled' ? toDbTime(scheduledInput) : null,
+        })
       }
       setShowEditor(false)
       await load()
@@ -272,7 +289,6 @@ export function PlansView() {
         editing={editing}
         editors={editors}
         onReloadEditors={async () => { setEditors(await api.listEditors()) }}
-        deliveries={deliveries}
         enabledAccounts={enabledAccounts}
         form={form}
         setForm={setForm}
@@ -315,6 +331,7 @@ export function PlansView() {
                 {manuscripts.map((m) => {
                   const task = latestTask(m.id, tasks)
                   const n = m.recipients.filter((r) => isValidEmail(r)).length
+                  const progress = planSendProgress(m, deliveries)
                   return (
                     <tr key={m.id}>
                       <td>
@@ -324,8 +341,8 @@ export function PlansView() {
                       <td>{n ? `${n} 家` : <span className="warn-text">未设置</span>}</td>
                       <td style={{ minWidth: 140 }}>
                         {task
-                          ? <RuntimeTrack sent={task.sent} total={task.total} status={task.status}
-                              meta={task.schedule_type === 'loop' ? `已成功 ${task.sent} 封` : `${task.sent} / ${task.total || '—'}`} />
+                          ? <RuntimeTrack sent={progress.sent} total={progress.total || n} status={task.status}
+                              meta={task.schedule_type === 'loop' ? `已成功 ${progress.sent} 封` : `${progress.sent} / ${progress.total || n || '—'}`} />
                           : <span className="hint">草稿</span>}
                       </td>
                       <td>
@@ -335,24 +352,29 @@ export function PlansView() {
                       </td>
                       <td>{formatTime(m.updated_at)}</td>
                       <td>
-                        <div className="row-actions">
-                          {task && ['stopped', 'completed', 'scheduled'].includes(task.status) && (
-                            <Button size="sm" variant="primary" onClick={() => void startAgain(task)}>
-                              {task.status === 'scheduled' ? '立即开始'
-                                : task.status === 'completed' ? '重新发送'
-                                : task.schedule_type === 'loop' ? (task.sent > 0 ? '重新循环' : '开始')
-                                : task.sent > 0 ? '继续发送' : '开始'}
-                            </Button>
-                          )}
-                          {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
-                          {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
-                          {task && ['running', 'paused'].includes(task.status) && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
-                          <Button size="sm" onClick={() => void openDetail(m)}>发送详情</Button>
-                          <IconButton title="配置投稿邮箱" onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
-                          <Button size="sm" onClick={() => openEdit(m)}>编辑</Button>
-                          {!(task && ['running', 'paused'].includes(task.status)) && (
-                            <IconButton title="删除" className="danger" onClick={() => void remove(m)}><Trash2 size={15} /></IconButton>
-                          )}
+                        <div className="row-actions plan-row-actions">
+                          <div className="plan-row-actions-text">
+                            {task && ['stopped', 'completed', 'scheduled'].includes(task.status) && (
+                              <Button size="sm" variant="primary" onClick={() => void startAgain(task)}>
+                                {task.status === 'scheduled' ? '立即开始'
+                                  : task.status === 'completed' ? '重新发送'
+                                  : task.schedule_type === 'loop' ? (task.sent > 0 ? '重新循环' : '开始')
+                                  : task.sent > 0 ? '继续' : '开始'}
+                              </Button>
+                            )}
+                            {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
+                            {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
+                            {task && ['running', 'paused'].includes(task.status) && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
+                            <Button size="sm" onClick={() => void openDetail(m)}>记录</Button>
+                            <Button size="sm" onClick={() => openEdit(m)}>编辑</Button>
+                          </div>
+                          <div className="plan-row-actions-icons">
+                            <IconButton title="复制计划" onClick={() => openCopy(m)}><Copy size={15} /></IconButton>
+                            <IconButton title="配置投稿邮箱" onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
+                            {!(task && ['running', 'paused'].includes(task.status)) && (
+                              <IconButton title="删除" className="danger" onClick={() => void remove(m)}><Trash2 size={15} /></IconButton>
+                            )}
+                          </div>
                         </div>
                       </td>
                     </tr>

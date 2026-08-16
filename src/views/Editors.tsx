@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Database, Download, Plus, RotateCcw, Search, Trash2, Upload, Users } from 'lucide-react'
+import { ChevronDown, Database, Download, Plus, RotateCcw, Search, Trash2, Upload, Users } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
@@ -9,13 +9,29 @@ import { Button, EmptyState, IconButton, PagedList, Select } from '../components
 import { isValidEmail } from '../format'
 import { useNav } from '../nav'
 import type { Editor, EditorInput } from '../types'
-import { GENRES, LENGTH_TAGS, SOURCES, editorMatchesPlan, normalizeEditorTags } from './planShared'
+import { GENRES, SOURCES, editorMatchesPlan, editorRowTags, normalizeEditorTags } from './planShared'
 
 const UNASSIGNED = '未填平台'
 
 const emptyForm: EditorInput = {
   platform: '', name: '', email: '', work_type: [], notes: '',
 }
+
+export interface EditorListFilters {
+  query: string
+  platform: string
+  source: string
+  workTypes: string[]
+  excludedWorkTypes: string[]
+}
+
+export const emptyEditorListFilters = (workTypes: string[] = [], excludedWorkTypes: string[] = []): EditorListFilters => ({
+  query: '',
+  platform: '',
+  source: '',
+  workTypes,
+  excludedWorkTypes,
+})
 
 export interface EditorsListProps {
   /** 受控数据（如投稿向导传入）；不传则内部从后端加载 */
@@ -29,6 +45,7 @@ export interface EditorsListProps {
   onEdit?: (editor: Editor) => void
   onDelete?: (editor: Editor) => void
   onTotalChange?: (total: number) => void
+  onVisibleChange?: (editors: Editor[]) => void
   onPlatformsChange?: (platforms: string[]) => void
   pageSize?: number
   emptyText?: string
@@ -36,24 +53,36 @@ export interface EditorsListProps {
   actions?: ReactNode
   initialWorkTypes?: string[]
   initialExcludedWorkTypes?: string[]
+  filters?: EditorListFilters
+  onFiltersChange?: (next: EditorListFilters) => void
+  platformPeersOf?: (editor: Editor) => Editor[]
+  onReplaceEditor?: (current: Editor, next: Editor) => void
 }
 
 /** 编辑库列表（搜索、平台/作品类型筛选、分页、标签气泡），可作为页面或插件式嵌入投稿向导。 */
 export function EditorsList({
   items: externalItems, reloadSignal = 0, selectable = false,
-  selectedIds, onToggleSelect, onEdit, onDelete, onTotalChange, onPlatformsChange, pageSize,
+  selectedIds, onToggleSelect, onEdit, onDelete, onTotalChange, onVisibleChange, onPlatformsChange, pageSize,
   emptyText = '首次打开会载入内置投稿邮箱。也可以自己添加，或导入 Excel / CSV。',
   emptyAction, actions, initialWorkTypes, initialExcludedWorkTypes,
+  filters, onFiltersChange,
+  platformPeersOf, onReplaceEditor,
 }: EditorsListProps) {
   const [items, setItems] = useState<Editor[]>([])
   const [loading, setLoading] = useState(!externalItems)
   const [notice, setNotice] = useState('')
-  const [query, setQuery] = useState('')
-  const [platform, setPlatform] = useState('')
-  const [source, setSource] = useState('')
-  const [workTypes, setWorkTypes] = useState<string[]>(() => initialWorkTypes ?? [])
-  const [excludedWorkTypes, setExcludedWorkTypes] = useState<string[]>(() => initialExcludedWorkTypes ?? [])
+  const [localFilters, setLocalFilters] = useState<EditorListFilters>(() =>
+    emptyEditorListFilters(initialWorkTypes ?? [], initialExcludedWorkTypes ?? []),
+  )
+  const current = filters ?? localFilters
+  const { query, platform, source, workTypes, excludedWorkTypes } = current
+  const setFilters = (patch: Partial<EditorListFilters>) => {
+    const next = { ...current, ...patch }
+    if (onFiltersChange) onFiltersChange(next)
+    else setLocalFilters(next)
+  }
   const [more, setMore] = useState<{ id: number; top: number; left: number; width: number } | null>(null)
+  const [peerPick, setPeerPick] = useState<{ id: number; top: number; left: number; width: number } | null>(null)
 
   const list = useMemo(() => (externalItems ?? items).map(normalizeEditorTags), [externalItems, items])
 
@@ -91,33 +120,52 @@ export function EditorsList({
   }), [basePool, source, workTypes, excludedWorkTypes])
 
   useEffect(() => { onTotalChange?.(visible.length) }, [visible.length, onTotalChange])
-  useEffect(() => { setMore(null) }, [platform, query, source, workTypes, excludedWorkTypes, list])
+  const onVisibleChangeRef = useRef(onVisibleChange)
+  onVisibleChangeRef.current = onVisibleChange
+  useEffect(() => { onVisibleChangeRef.current?.(visible) }, [visible])
+  useEffect(() => { setMore(null); setPeerPick(null) }, [platform, query, source, workTypes, excludedWorkTypes, list])
 
   const toggleWorkType = (tag: string) => {
-    setExcludedWorkTypes((current) => current.filter((item) => item !== tag))
-    setWorkTypes((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])
+    setFilters({
+      excludedWorkTypes: excludedWorkTypes.filter((item) => item !== tag),
+      workTypes: workTypes.includes(tag) ? workTypes.filter((item) => item !== tag) : [...workTypes, tag],
+    })
   }
   const excludeWorkType = (tag: string) => {
-    setWorkTypes((current) => current.filter((item) => item !== tag))
-    setExcludedWorkTypes((current) => current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag])
+    setFilters({
+      workTypes: workTypes.filter((item) => item !== tag),
+      excludedWorkTypes: excludedWorkTypes.includes(tag)
+        ? excludedWorkTypes.filter((item) => item !== tag)
+        : [...excludedWorkTypes, tag],
+    })
   }
   const resetFilters = () => {
-    setQuery(''); setPlatform(''); setSource(''); setWorkTypes([]); setExcludedWorkTypes([]); setMore(null)
+    setFilters(emptyEditorListFilters())
+    setMore(null)
+    setPeerPick(null)
   }
 
   const moreEditor = more ? visible.find((item) => item.id === more.id) : undefined
-  const moreWorkTypes = (moreEditor?.work_type ?? []).filter((tag) => !(LENGTH_TAGS as readonly string[]).includes(tag))
+  const moreWorkTypes = moreEditor ? editorRowTags(moreEditor.work_type) : []
+  const peerEditor = peerPick ? visible.find((item) => item.id === peerPick.id) : undefined
+  const peerList = peerEditor && platformPeersOf
+    ? [...platformPeersOf(peerEditor)].sort((a, b) => {
+        if (a.id === peerEditor.id) return -1
+        if (b.id === peerEditor.id) return 1
+        return (a.name || a.email).localeCompare(b.name || b.email, 'zh')
+      })
+    : []
 
   return (
     <>
       <div className="editor-toolbar">
         <label className="plan-search editor-search">
           <Search size={14} />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索姓名、平台或邮箱" />
+          <input value={query} onChange={(e) => setFilters({ query: e.target.value })} placeholder="搜索姓名、平台、邮箱或备注" />
         </label>
-        <Select value={platform} onChange={setPlatform} ariaLabel="按平台筛选" className="editor-filter-select"
+        <Select value={platform} onChange={(value) => setFilters({ platform: value })} ariaLabel="按平台筛选" className="editor-filter-select"
           searchable searchPlaceholder="搜索平台" options={[{ value: '', label: '全部平台' }, ...platforms.map((p) => ({ value: p, label: p }))]} />
-        <Select value={source} onChange={setSource} ariaLabel="按来源筛选" className="editor-filter-select is-compact"
+        <Select value={source} onChange={(value) => setFilters({ source: value })} ariaLabel="按来源筛选" className="editor-filter-select is-compact"
           options={[{ value: '', label: '全部来源' }, ...SOURCES.map((tag) => ({
             value: tag,
             label: `${tag}（${basePool.filter((e) => e.source === tag).length}）`,
@@ -158,9 +206,10 @@ export function EditorsList({
             items={visible}
             pageSize={pageSize}
             keyOf={(e) => e.id}
+            resetKey={`${query}\0${platform}\0${source}\0${workTypes.join('\0')}\0${excludedWorkTypes.join('\0')}`}
             listClassName="editor-groups"
             renderItem={(e) => {
-              const tags = (e.work_type ?? []).filter((tag) => !(LENGTH_TAGS as readonly string[]).includes(tag))
+              const tags = editorRowTags(e.work_type)
               const shown = tags.slice(0, 2)
               const rest = tags.slice(shown.length)
               const note = (e.notes ?? '').trim()
@@ -174,7 +223,12 @@ export function EditorsList({
                         aria-label={`${checked ? '取消选择' : '选择'} ${e.name.trim() || e.email}`} />
                     </label>
                   )}
-                  <div className="editor-row-main">
+                  <div className={`editor-row-main ${onEdit ? 'is-hit' : ''}`}
+                    role={onEdit ? 'button' : undefined}
+                    tabIndex={onEdit ? 0 : undefined}
+                    title={onEdit ? '修改这份编辑资料' : undefined}
+                    onClick={onEdit ? () => onEdit(e) : undefined}
+                    onKeyDown={onEdit ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onEdit(e) } } : undefined}>
                     <b>
                       <span className="editor-row-name">{e.name.trim() || '佚名'}</span>
                       <span className="editor-row-sep">｜</span>
@@ -182,7 +236,12 @@ export function EditorsList({
                     </b>
                     <small>{e.email}</small>
                   </div>
-                  <div className="editor-row-note" title={note || undefined}>
+                  <div className={`editor-row-note ${onEdit ? 'is-hit' : ''}`}
+                    role={onEdit ? 'button' : undefined}
+                    tabIndex={onEdit ? 0 : undefined}
+                    title={note ? (onEdit ? `${note}\n点击修改` : note) : (onEdit ? '点击补充备注' : undefined)}
+                    onClick={onEdit ? () => onEdit(e) : undefined}
+                    onKeyDown={onEdit ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onEdit(e) } } : undefined}>
                     {note || <span className="hint">无备注</span>}
                   </div>
                   <div className="editor-row-tags">
@@ -206,6 +265,23 @@ export function EditorsList({
                     )}
                   </div>
                   <div className="row-actions">
+                    {platformPeersOf && (() => {
+                      const peers = platformPeersOf(e)
+                      const count = peers.length
+                      if (count <= 1) {
+                        return <span className="editor-peer-count is-solo">同平台 1</span>
+                      }
+                      return (
+                        <button type="button" className={`editor-peer-count ${peerPick?.id === e.id ? 'on' : ''}`}
+                          title="更换同平台编辑"
+                          onClick={(ev) => {
+                            const next = moreRect(ev.currentTarget, 260, 220)
+                            setPeerPick((m) => (m?.id === e.id ? null : { id: e.id, ...next }))
+                          }}>
+                          同平台 {count}<ChevronDown size={12} />
+                        </button>
+                      )
+                    })()}
                     {onEdit && <Button size="sm" onClick={() => onEdit(e)}>编辑</Button>}
                     {onDelete && <IconButton title="删除" className="danger" onClick={() => onDelete(e)}><Trash2 size={15} /></IconButton>}
                   </div>
@@ -228,17 +304,30 @@ export function EditorsList({
           onClose={() => setMore(null)}
         />
       )}
+      {peerPick && peerEditor && peerList.length > 1 && (
+        <PlatformPeersPop
+          top={peerPick.top}
+          left={peerPick.left}
+          width={peerPick.width}
+          current={peerEditor}
+          peers={peerList}
+          onPick={(next) => {
+            if (next.id !== peerEditor.id) onReplaceEditor?.(peerEditor, next)
+            setPeerPick(null)
+          }}
+          onClose={() => setPeerPick(null)}
+        />
+      )}
     </>
   )
 }
 
-function moreRect(el: HTMLElement) {
+export function moreRect(el: HTMLElement, minWidth = 180, estimate = 88) {
   const rect = el.getBoundingClientRect()
-  const width = Math.min(300, Math.max(180, rect.width))
+  const width = Math.min(320, Math.max(minWidth, rect.width))
   let left = Math.min(rect.right - width, window.innerWidth - width - 12)
   if (left < 12) left = 12
   const gap = 7
-  const estimate = 88
   const spaceBelow = window.innerHeight - rect.bottom - gap
   const up = spaceBelow < estimate && rect.top - gap > spaceBelow
   return up
@@ -246,7 +335,7 @@ function moreRect(el: HTMLElement) {
     : { top: rect.bottom + gap, left, width }
 }
 
-function EditorTagsPop({ top, left, width, workTypes, skip, onClose }: {
+export function EditorTagsPop({ top, left, width, workTypes, skip, onClose }: {
   top: number
   left: number
   width: number
@@ -285,6 +374,58 @@ function EditorTagsPop({ top, left, width, workTypes, skip, onClose }: {
       <div className="editor-more-tags">
         {restWorkTypes.map((d, i) => <span className="chip on tone" key={`w-${i}-${d}`}>{d}</span>)}
       </div>
+    </div>,
+    document.body,
+  )
+}
+
+function PlatformPeersPop({ top, left, width, current, peers, onPick, onClose }: {
+  top: number
+  left: number
+  width: number
+  current: Editor
+  peers: Editor[]
+  onPick: (editor: Editor) => void
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  useEffect(() => {
+    const onDown = (ev: MouseEvent) => {
+      const target = ev.target as Node
+      if (ref.current?.contains(target)) return
+      if (target instanceof Element && target.closest('.editor-peer-count')) return
+      onCloseRef.current()
+    }
+    const dismiss = () => onCloseRef.current()
+    const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') dismiss() }
+    window.addEventListener('mousedown', onDown)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', dismiss, true)
+    window.addEventListener('resize', dismiss)
+    return () => {
+      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('resize', dismiss)
+    }
+  }, [])
+
+  return createPortal(
+    <div ref={ref} className="editor-peer-pop" style={{ top, left, width }} role="listbox" aria-label="同平台编辑">
+      {peers.map((editor) => {
+        const on = editor.id === current.id
+        return (
+          <button type="button" key={editor.id} role="option" aria-selected={on}
+            className={`editor-peer-item ${on ? 'on' : ''}`}
+            onClick={() => onPick(editor)}>
+            <b>{editor.name.trim() || '佚名'}</b>
+            <small>{editor.email}</small>
+          </button>
+        )
+      })}
     </div>,
     document.body,
   )

@@ -165,6 +165,7 @@ export interface Dashboard {
   human_replies: number
   auto_replies: number
   tasks: Task[]
+  manuscripts: Manuscript[]
   logs: TaskLog[]
 }
 

@@ -1,4 +1,4 @@
-import { parseRecipient } from '../format'
+import { isValidEmail, parseRecipient } from '../format'
 import type { Delivery, Editor, MailTemplate, Manuscript, ManuscriptInput, Task } from '../types'
 
 export const LENGTH_TAGS = ['短篇', '中短篇'] as const
@@ -6,6 +6,22 @@ export const LENGTH_TAG_SET = new Set<string>(LENGTH_TAGS)
 
 export function isLengthTag(tag: string) {
   return LENGTH_TAG_SET.has(tag)
+}
+
+/** 行上前两个胶囊优先作品类型；短篇 / 中短篇排到后面，多的进 +N。 */
+export function editorRowTags(tags: Iterable<string> = []) {
+  const main: string[] = []
+  const lengths: string[] = []
+  for (const raw of tags) {
+    const tag = raw.trim()
+    if (!tag) continue
+    if (isLengthTag(tag)) {
+      if (!lengths.includes(tag)) lengths.push(tag)
+    } else if (!main.includes(tag)) {
+      main.push(tag)
+    }
+  }
+  return [...main, ...lengths]
 }
 
 export function splitPlanTags(tags: Iterable<string>) {
@@ -25,6 +41,7 @@ export function splitPlanTags(tags: Iterable<string>) {
 
 export const GENRES = [
   ...LENGTH_TAGS,
+  '女频', '男频',
   '全品类', '追妻', '追夫', '世情', '爽文', '脑洞', '古言', '现言',
   '悬疑', '年代', '情绪流', '都市', '亲情虐', '大女主', '玄幻', '重生',
   '打脸', '种田', '末世', '甜宠', '宅斗', '宫斗', '萌宝',
@@ -33,7 +50,7 @@ export const GENRES = [
   '散文', '童话', '诗歌',
 ]
 export const SOURCES = ['初始数据', '手动数据', '导入数据'] as const
-const DROPPED_EDITOR_TAGS = new Set(['小程序', '知乎风', '番茄风', '男频', '女频'])
+const DROPPED_EDITOR_TAGS = new Set(['小程序', '知乎风', '番茄风'])
 
 export function normalizeEditorTags<T extends Pick<Editor, 'work_type'>>(editor: T): T {
   const work_type: string[] = []
@@ -59,68 +76,87 @@ export const SCHEDULE_OPTIONS = [
 ] as const
 
 
+const OLD_DEFAULT_SUBJECTS = new Set([
+  '投稿：《{{作品名}}》',
+  '《{{作品名}}》投稿（{{字数}}）',
+  '《{{作品名}}》投稿',
+  '恳请审阅：《{{作品名}}》',
+  '投稿附件：《{{作品名}}》',
+  '投稿来了：《{{作品名}}》',
+  '{{类型}} | 《{{作品名}}》',
+  '《{{作品名}}》请您看看',
+])
+
 export const DEFAULT_MAIL_TEMPLATES: MailTemplate[] = [
   {
     id: 't1',
     name: '常规问候',
-    subject: '投稿：《{{作品名}}》',
+    subject: '投稿：《{{作品名}}》+{{字数}}+{{类型}}',
     body: '尊敬的{{编辑昵称}}：\n\n您好。现将作品《{{作品名}}》投至贵处，恳请审阅。\n\n篇幅：{{篇幅}}\n字数：{{字数}}\n类型：{{类型}}\n\n稿件已附上，辛苦了。',
   },
   {
     id: 't2',
     name: '书名开场',
-    subject: '《{{作品名}}》投稿（{{字数}}）',
+    subject: '《{{作品名}}》投稿+{{字数}}+{{类型}}',
     body: '{{编辑昵称}} 您好：\n\n附上《{{作品名}}》，{{篇幅}}，{{类型}}。请您抽空看看是否合适。谢谢。',
   },
   {
     id: 't3',
     name: '短讯',
-    subject: '《{{作品名}}》投稿',
+    subject: '《{{作品名}}》投稿+{{字数}}+{{类型}}',
     body: '{{编辑昵称}} 您好，投稿《{{作品名}}》。若方便，请帮忙看看。谢谢。',
   },
   {
     id: 't4',
     name: '恳请审阅',
-    subject: '恳请审阅：《{{作品名}}》',
+    subject: '恳请审阅：《{{作品名}}》+{{字数}}+{{类型}}',
     body: '尊敬的{{编辑昵称}}，您好：\n\n我是一名作者，现将《{{作品名}}》投来，恳请审阅。如需完整稿件或作者简介，我可再行补充。\n\n此致\n敬礼',
   },
   {
     id: 't5',
     name: '附件说明',
-    subject: '投稿附件：《{{作品名}}》',
+    subject: '投稿附件：《{{作品名}}》+{{字数}}+{{类型}}',
     body: '{{编辑昵称}} 您好：\n\n作品《{{作品名}}》已作为附件发送，正文不另贴。{{篇幅}} / {{字数}} / {{类型}}。请查收。',
   },
   {
     id: 't6',
     name: '轻松口吻',
-    subject: '投稿来了：《{{作品名}}》',
+    subject: '投稿来了：《{{作品名}}》+{{字数}}+{{类型}}',
     body: '{{编辑昵称}}，您好呀。\n\n投一篇《{{作品名}}》过来，大概 {{字数}}，偏{{类型}}。不合适直接略过就好，谢谢您。',
   },
   {
     id: 't7',
     name: '类型自报',
-    subject: '{{类型}} | 《{{作品名}}》',
+    subject: '《{{作品名}}》+{{字数}}+{{类型}}',
     body: '编辑老师好：\n\n这篇是{{篇幅}}{{类型}}，《{{作品名}}》，{{字数}}。想问问贵处是否还收这类稿。附件里是全文。',
   },
   {
     id: 't8',
     name: '期待回复',
-    subject: '《{{作品名}}》请您看看',
+    subject: '《{{作品名}}》请您看看+{{字数}}+{{类型}}',
     body: '尊敬的{{编辑昵称}}：\n\n打扰了。作品《{{作品名}}》已附上，期待您的意见。若暂不合适，也完全理解。\n\n祝工作顺利。',
   },
-  {
-    id: 't9',
-    name: '初次投稿',
-    subject: '初次投稿：《{{作品名}}》',
-    body: '{{编辑昵称}} 您好：\n\n第一次向贵处投稿，作品《{{作品名}}》，{{篇幅}}，{{字数}}。请多包涵，也请您审阅。谢谢。',
-  },
-  {
-    id: 't10',
-    name: '完整稿件',
-    subject: '完整稿：《{{作品名}}》',
-    body: '{{编辑昵称}} 您好：\n\n《{{作品名}}》全文已附，请查收。类型是{{类型}}，篇幅{{篇幅}}。给您添麻烦了。',
-  },
 ]
+
+export function ensureSubjectMeta(subject: string) {
+  let next = subject.trim() || '投稿：《{{作品名}}》'
+  if (!next.includes('{{字数}}')) next = `${next}+{{字数}}`
+  if (!next.includes('{{类型}}')) next = `${next}+{{类型}}`
+  return next
+}
+
+export function upgradeMailSubject(item: MailTemplate) {
+  const preset = DEFAULT_MAIL_TEMPLATES.find((entry) => entry.id === item.id)
+  if (preset && OLD_DEFAULT_SUBJECTS.has(item.subject)) return preset.subject
+  return ensureSubjectMeta(item.subject)
+}
+
+const DROPPED_MAIL_TEMPLATE_IDS = new Set(['t9', 't10'])
+const DROPPED_MAIL_TEMPLATE_NAMES = new Set(['初次投稿', '完整稿件'])
+
+export function isDroppedMailTemplate(item: MailTemplate) {
+  return DROPPED_MAIL_TEMPLATE_IDS.has(item.id) || DROPPED_MAIL_TEMPLATE_NAMES.has(item.name.trim())
+}
 
 export function defaultMailTemplates(): MailTemplate[] {
   return DEFAULT_MAIL_TEMPLATES.map((item) => ({ ...item }))
@@ -131,7 +167,12 @@ export function hydrateMailTemplates(
   subject: string,
   body: string,
 ): MailTemplate[] {
-  if (stored?.length) return stored.map((item) => ({ ...item }))
+  if (stored?.length) {
+    const kept = stored
+      .filter((item) => !isDroppedMailTemplate(item))
+      .map((item) => ({ ...item, subject: upgradeMailSubject(item) }))
+    if (kept.length) return kept
+  }
   const defaults = defaultMailTemplates()
   if (subject.trim() || body.trim()) {
     defaults[0] = {
@@ -213,6 +254,19 @@ export function latestTask(id: number, tasks: Task[]) {
   return tasks.filter((t) => t.manuscript_ids.includes(id)).sort((a, b) => b.id - a.id)[0]
 }
 
+/** 本计划已成功投递且仍在收件名单里的人数 / 当前有效收件人数。 */
+export function planSendProgress(manuscript: Pick<Manuscript, 'id' | 'recipients'>, deliveries: Delivery[]) {
+  const recipients = manuscript.recipients.filter((row) => isValidEmail(row))
+  const want = new Set(recipients.map((row) => parseRecipient(row).email.toLowerCase()))
+  const sent = new Set<string>()
+  for (const item of deliveries) {
+    if (item.manuscript_id !== manuscript.id) continue
+    const email = parseRecipient(item.recipient).email.toLowerCase()
+    if (want.has(email)) sent.add(email)
+  }
+  return { sent: sent.size, total: want.size }
+}
+
 export function toInput(m: Manuscript): ManuscriptInput {
   return {
     title: m.title, body: m.body, content_type: m.content_type, recipients: m.recipients,
@@ -224,24 +278,38 @@ export function toInput(m: Manuscript): ManuscriptInput {
   }
 }
 
+export function tidyMailSubject(subject: string) {
+  return subject
+    .replaceAll('未填', '')
+    .replaceAll('未选', '')
+    .replace(/（\s*）/g, '')
+    .replace(/\(\s*\)/g, '')
+    .replace(/\+{2,}/g, '+')
+    .replace(/^\++|\++$/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 export function fillPlaceholders(
   text: string,
   recipient: string,
   title: string,
-  extras: { wordCount?: number; genres?: string[]; category?: string } = {},
+  extras: { wordCount?: number; genres?: string[]; category?: string; asSubject?: boolean } = {},
 ) {
   const { name, email } = parseRecipient(recipient || '编辑 <editor@example.com>')
   const { lengths, genres } = splitPlanTags(extras.genres ?? [])
   const length = lengths.join('、') || categoryLabel(extras.category ?? '')
-  const words = extras.wordCount && extras.wordCount > 0 ? `${extras.wordCount}字` : '未填'
-  return text
+  const words = extras.wordCount && extras.wordCount > 0 ? `${extras.wordCount}字` : extras.asSubject ? '' : '未填'
+  const types = genres.join('、') || (extras.asSubject ? '' : '未选')
+  const filled = text
     .replaceAll('{{编辑昵称}}', name)
     .replaceAll('{{收件人}}', name)
     .replaceAll('{{邮箱}}', email)
     .replaceAll('{{作品名}}', title || '未命名作品')
     .replaceAll('{{字数}}', words)
     .replaceAll('{{篇幅}}', length || '未选')
-    .replaceAll('{{类型}}', genres.join('、') || '未选')
+    .replaceAll('{{类型}}', types)
+  return extras.asSubject ? tidyMailSubject(filled) : filled
 }
 
 export function sentCountByEmail(deliveries: Delivery[]) {
@@ -286,6 +354,30 @@ export function editorPlatformKey(editor: Pick<Editor, 'platform' | 'email'>) {
   return editor.platform.trim() || `__${editor.email.trim().toLowerCase()}`
 }
 
+export function groupMatchingByPlatform(
+  editors: Editor[],
+  genres: string[],
+  excludedWorkTypes: Iterable<string> = [],
+) {
+  const excluded = new Set([...excludedWorkTypes].map((t) => t.trim()).filter(Boolean))
+  const groups = new Map<string, Editor[]>()
+  for (const editor of editors.map(normalizeEditorTags)) {
+    if (!editorMatchesPlan(editor, genres, excluded)) continue
+    const key = editorPlatformKey(editor)
+    const list = groups.get(key) ?? []
+    list.push(editor)
+    groups.set(key, list)
+  }
+  return groups
+}
+
+export function pickRandomPlatformEditor(list: Editor[], sentMap: Map<string, number> = new Map()) {
+  if (!list.length) return undefined
+  const unsent = list.filter((editor) => (sentMap.get(editor.email.toLowerCase()) ?? 0) === 0)
+  const pool = unsent.length ? unsent : list
+  return pool[Math.floor(Math.random() * pool.length)]
+}
+
 export function pickOneEditorPerPlatform(
   editors: Editor[],
   genres: string[],
@@ -293,37 +385,15 @@ export function pickOneEditorPerPlatform(
   preferred: Record<string, string> = {},
   excludedWorkTypes: Iterable<string> = [],
 ) {
-  const excluded = new Set([...excludedWorkTypes].map((t) => t.trim()).filter(Boolean))
-  const matched = editors
-    .map(normalizeEditorTags)
-    .filter((e) => editorMatchesPlan(e, genres, excluded))
-  const groups = new Map<string, Editor[]>()
-  for (const editor of matched) {
-    const key = editorPlatformKey(editor)
-    const list = groups.get(key) ?? []
-    list.push(editor)
-    groups.set(key, list)
-  }
+  const groups = groupMatchingByPlatform(editors, genres, excludedWorkTypes)
   const picked: Editor[] = []
   for (const [key, list] of groups) {
     const prefer = preferred[key]?.toLowerCase()
-    const chosen = list.find((e) => e.email.toLowerCase() === prefer) ?? list.slice().sort((a, b) => {
-      const sentA = sentMap.get(a.email.toLowerCase()) ?? 0
-      const sentB = sentMap.get(b.email.toLowerCase()) ?? 0
-      if ((sentA === 0) !== (sentB === 0)) return sentA === 0 ? -1 : 1
-      const overlapA = matchCount(a, genres)
-      const overlapB = matchCount(b, genres)
-      if (overlapA !== overlapB) return overlapB - overlapA
-      return b.id - a.id
-    })[0]
+    const chosen = (prefer && list.find((e) => e.email.toLowerCase() === prefer))
+      || pickRandomPlatformEditor(list, sentMap)
     if (chosen) picked.push(chosen)
   }
   return { picked, groups }
-}
-
-function matchCount(editor: Editor, genres: string[]) {
-  const tags = normalizeEditorTags(editor)
-  return genres.filter((g) => tags.work_type.includes(g)).length
 }
 
 export function estimateMinutes(count: number, intervalMin: number, intervalMax: number, batchMin: number, batchMax: number, pauseMin: number, pauseMax: number) {

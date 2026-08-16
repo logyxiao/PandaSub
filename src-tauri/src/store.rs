@@ -282,6 +282,41 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// 删掉稿件已不存在的发送任务，避免工作台还显示已删除的计划。
+pub fn prune_orphan_tasks(conn: &Connection) -> Result<(), String> {
+    let existing: std::collections::HashSet<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM manuscripts")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(|e| e.to_string())?
+    };
+    for task in load_tasks(conn)? {
+        let alive: Vec<i64> = task
+            .manuscript_ids
+            .iter()
+            .copied()
+            .filter(|id| existing.contains(id))
+            .collect();
+        if alive.is_empty() {
+            conn.execute("DELETE FROM task_logs WHERE task_id = ?1", [task.id])
+                .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM tasks WHERE id = ?1", [task.id])
+                .map_err(|e| e.to_string())?;
+        } else if alive.len() != task.manuscript_ids.len() {
+            conn.execute(
+                "UPDATE tasks SET manuscript_ids = ?1 WHERE id = ?2",
+                rusqlite::params![serde_json::json!(alive).to_string(), task.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 pub fn load_logs(
     conn: &Connection,
     task_id: Option<i64>,
@@ -492,7 +527,32 @@ pub fn insert_delivery(
     Ok(conn.last_insert_rowid())
 }
 
-/// 本次运行开始后已投递成功的收件人邮箱集合（统一小写），用于停止后「继续发送」时跳过已投的收件人。
+/// 某篇稿件已投递成功的收件人邮箱（统一小写）。只看这份计划，不管其他计划。
+pub fn delivered_emails_for_manuscript(
+    conn: &Connection,
+    manuscript_id: i64,
+) -> Result<std::collections::HashSet<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT recipient FROM deliveries WHERE manuscript_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([manuscript_id], |r| {
+            let raw: String = r.get(0)?;
+            Ok(raw.to_lowercase())
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn task_delivery_count(conn: &Connection, task_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM deliveries WHERE task_id = ?1",
+        [task_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
 pub fn delivered_emails_since(
     conn: &Connection,
     task_id: i64,

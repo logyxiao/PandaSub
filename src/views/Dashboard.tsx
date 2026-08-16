@@ -6,10 +6,11 @@ import { useNav } from '../nav'
 import { useToast } from '../components/feedback'
 import { Badge, Button, IconButton, RuntimeTrack } from '../components/ui'
 import type { Dashboard, Task, TaskLog } from '../types'
+import { latestTask } from './planShared'
 
 const empty: Dashboard = {
   account_count: 0, manuscript_count: 0, editor_count: 0, sent_today: 0, failed_today: 0,
-  running_tasks: 0, human_replies: 0, auto_replies: 0, tasks: [], logs: [],
+  running_tasks: 0, human_replies: 0, auto_replies: 0, tasks: [], manuscripts: [], logs: [],
 }
 
 export function DashboardView() {
@@ -178,27 +179,36 @@ export function DashboardView() {
             <table>
               <thead><tr><th>计划</th><th>进度</th><th>状态</th><th>创建时间</th><th aria-label="操作" /></tr></thead>
               <tbody>
-                {data.tasks.map((task) => (
-                  <tr key={task.id}>
-                    <td><b>{task.name}</b><small>{task.schedule_type === 'loop' ? '循环发送' : task.schedule_type === 'scheduled' ? '定时发送' : '立即发送'}</small></td>
-                    <td style={{ minWidth: 140 }}>
-                      <RuntimeTrack sent={task.sent} total={task.total} status={task.status}
-                        meta={task.schedule_type === 'loop' ? `已成功 ${task.sent} 封` : `${task.sent} / ${task.total || '—'}`} />
-                    </td>
-                    <td><Badge tone={taskTone[task.status]} dot>{statusLabel(task.status)}</Badge></td>
-                    <td>{formatTime(task.created_at)}</td>
-                    <td>
-                      <div className="row-actions">
-                        {task.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
-                        {task.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
-                        {(task.status === 'running' || task.status === 'paused') && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {!data.tasks.length && (
+                {data.manuscripts.map((m) => {
+                  const task = latestTask(m.id, data.tasks)
+                  return (
+                    <tr key={m.id}>
+                      <td><b>{m.title.trim() || '未命名计划'}</b><small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || (task?.schedule_type === 'loop' ? '循环发送' : task?.schedule_type === 'scheduled' ? '定时发送' : '投稿计划')}</small></td>
+                      <td style={{ minWidth: 140 }}>
+                        {task
+                          ? <RuntimeTrack sent={task.sent} total={task.total} status={task.status}
+                              meta={task.schedule_type === 'loop' ? `已成功 ${task.sent} 封` : `${task.sent} / ${task.total || '—'}`} />
+                          : <span className="hint">草稿</span>}
+                      </td>
+                      <td>
+                        {task
+                          ? <Badge tone={taskTone[task.status]} dot>{statusLabel(task.status)}</Badge>
+                          : <Badge tone="neutral">草稿</Badge>}
+                      </td>
+                      <td>{formatTime(m.updated_at)}</td>
+                      <td>
+                        <div className="row-actions">
+                          {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
+                          {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
+                          {(task?.status === 'running' || task?.status === 'paused') && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+                {!data.manuscripts.length && (
                   <tr><td colSpan={5} className="empty">
-                    {loading ? '正在读取…' : '还没有发送中的计划。到「投稿计划」里创建。'}
+                    {loading ? '正在读取…' : '还没有投稿计划。到「投稿计划」里创建。'}
                   </td></tr>
                 )}
               </tbody>

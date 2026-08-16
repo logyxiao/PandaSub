@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Inbox, Plus, RotateCcw, Search, X } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
@@ -7,7 +7,8 @@ import { Badge, Button, EmptyState, IconButton, Pager } from '../components/ui'
 import { formatTime, parseRecipient } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, Manuscript } from '../types'
-import { editorRecipient, toInput } from './planShared'
+import { EditorTagsPop, moreRect } from './Editors'
+import { editorRecipient, editorRowTags, normalizeEditorTags, toInput } from './planShared'
 
 interface DetailRow {
   order: number
@@ -15,6 +16,8 @@ interface DetailRow {
   name: string
   platform: string
   email: string
+  notes: string
+  work_type: string[]
   sent: boolean
   sentCount: number
   lastSentAt: string | null
@@ -41,6 +44,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   const [showPicker, setShowPicker] = useState(false)
   const [pickQuery, setPickQuery] = useState('')
   const [resending, setResending] = useState<string | null>(null)
+  const [more, setMore] = useState<{ key: string; top: number; left: number; width: number; workTypes: string[] } | null>(null)
 
   // 只看这个计划自己的投递记录，按收件人邮箱归组。
   const sentByEmail = useMemo(() => {
@@ -60,13 +64,16 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     const parsed = parseRecipient(raw)
     const email = parsed.email.toLowerCase()
     const editor = editors.find((e) => e.email.toLowerCase() === email)
+    const profile = editor ? normalizeEditorTags(editor) : null
     const sent = sentByEmail.get(email) ?? []
     return {
       order: i + 1,
       raw,
-      name: editor?.name.trim() || parsed.name || parsed.email,
-      platform: editor?.platform.trim() || '—',
+      name: profile?.name.trim() || parsed.name || parsed.email,
+      platform: profile?.platform.trim() || '—',
       email: parsed.email,
+      notes: (profile?.notes ?? '').trim(),
+      work_type: profile?.work_type ?? [],
       sent: sent.length > 0,
       sentCount: sent.length,
       lastSentAt: sent.length ? sent[sent.length - 1].sent_at : null,
@@ -80,7 +87,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     else if (filter === 'unsent') list = list.filter((r) => !r.sent)
     if (!q) return list
     return list.filter((r) =>
-      [r.name, r.platform, r.email, r.raw].join(' ').toLowerCase().includes(q))
+      [r.name, r.platform, r.email, r.notes, r.raw, ...r.work_type].join(' ').toLowerCase().includes(q))
   }, [rows, query, filter])
 
   const sentCount = rows.filter((r) => r.sent).length
@@ -100,11 +107,13 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   const filteredCandidates = useMemo(() => {
     const q = pickQuery.trim().toLowerCase()
     if (!q) return candidates
-    return candidates.filter((e) =>
-      [e.name, e.platform, e.email].join(' ').toLowerCase().includes(q))
+    return candidates.filter((e) => {
+      const next = normalizeEditorTags(e)
+      return [next.name, next.platform, next.email, next.notes, ...(next.work_type ?? [])].join(' ').toLowerCase().includes(q)
+    })
   }, [candidates, pickQuery])
 
-  useEffect(() => { setPage(1) }, [query, pageSize, filter])
+  useEffect(() => { setPage(1); setMore(null) }, [query, pageSize, filter])
 
   const mutateRecipients = async (next: string[], okMsg: string) => {
     if (next.length === recipients.length) return
@@ -169,7 +178,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   }
 
   return (
-    <Modal title="发送详情" width={880} onClose={onClose}>
+    <Modal title="记录" width={1080} onClose={onClose}>
       <div className="send-detail-head">
         <div className="send-detail-title">
           <h3>{manuscript.title}</h3>
@@ -178,7 +187,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
         <div className="send-detail-actions">
           <label className="plan-search send-detail-search">
             <Search size={14} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索姓名、平台或邮箱" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索姓名、平台、邮箱或备注" />
           </label>
           <Button size="sm" disabled={locked} onClick={() => setShowPicker((v) => !v)}><Plus size={14} />添加编辑</Button>
         </div>
@@ -193,21 +202,29 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
           <div className="send-detail-picker-head">
             <label className="plan-search">
               <Search size={14} />
-              <input value={pickQuery} onChange={(e) => setPickQuery(e.target.value)} placeholder="搜索编辑库（姓名、平台、邮箱）" />
+              <input value={pickQuery} onChange={(e) => setPickQuery(e.target.value)} placeholder="搜索姓名、平台、邮箱或备注" />
             </label>
             <span className="hint">{filteredCandidates.length} 位可选</span>
           </div>
           {filteredCandidates.length ? (
-            <div className="send-detail-picker-list">
-              {filteredCandidates.map((e) => (
-                <div className="send-detail-pick" key={e.id}>
-                  <div className="send-detail-pick-info">
-                    <b>{e.name.trim() || e.email}</b>
-                    <small>{[e.platform.trim(), e.email].filter(Boolean).join(' · ')}</small>
-                  </div>
-                  <Button size="sm" onClick={() => addEditor(e)}>添加</Button>
-                </div>
-              ))}
+            <div className="send-detail-picker-list editor-groups">
+              {filteredCandidates.map((raw) => {
+                const e = normalizeEditorTags(raw)
+                return (
+                  <EditorDataRow
+                    key={e.id}
+                    name={e.name}
+                    platform={e.platform}
+                    email={e.email}
+                    notes={e.notes ?? ''}
+                    workTypes={e.work_type ?? []}
+                    moreKey={`pick-${e.id}`}
+                    more={more}
+                    onMore={setMore}
+                    actions={<Button size="sm" onClick={() => addEditor(e)}>添加</Button>}
+                  />
+                )
+              })}
             </div>
           ) : (
             <p className="hint">
@@ -233,50 +250,119 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
                 onClick={() => setFilter(value)}>{label}</button>
             ))}
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>序号</th><th>编辑</th><th>平台</th><th>邮箱</th><th>状态</th><th>发送时间</th><th aria-label="操作" /></tr></thead>
-              <tbody>
-                {visible.map((r) => (
-                  <tr key={r.order}>
-                    <td className="mono">{r.order}</td>
-                    <td><b>{r.name}</b></td>
-                    <td>{r.platform}</td>
-                    <td className="mono">{r.email}</td>
-                    <td>
+          <div className="panel send-detail-list">
+            <div className="editor-groups">
+              {visible.map((r) => (
+                <EditorDataRow
+                  key={`${r.order}-${r.email}`}
+                  name={r.name}
+                  platform={r.platform}
+                  email={r.email}
+                  notes={r.notes}
+                  workTypes={r.work_type}
+                  moreKey={`row-${r.email}`}
+                  more={more}
+                  onMore={setMore}
+                  extra={(
+                    <div className="editor-row-status">
                       {r.sent
                         ? <Badge tone="success" dot>已发送{r.sentCount > 1 ? ` ×${r.sentCount}` : ''}</Badge>
                         : <Badge tone="neutral">未发送</Badge>}
-                    </td>
-                    <td>{formatTime(r.lastSentAt)}</td>
-                    <td>
-                      <div className="row-actions">
-                        {!r.sent && (
-                          <Button size="sm" disabled={locked || resending !== null} onClick={() => void manualSend(r)}>
-                            {resending === r.email.toLowerCase() ? '发送中…' : '手动发送'}
-                          </Button>
-                        )}
-                        {r.sent && (
-                          <IconButton title={resending === r.email.toLowerCase() ? '发送中…' : '重新发送该编辑'}
-                            disabled={resending !== null} onClick={() => void resend(r)}>
-                            <RotateCcw size={14} />
-                          </IconButton>
-                        )}
-                        <IconButton title={locked ? '计划正在发送，先停止再移除' : '移除该编辑'} className="danger"
-                          disabled={locked} onClick={() => removeRecipient(r.email)}>
-                          <X size={14} />
+                      <small>{r.lastSentAt ? formatTime(r.lastSentAt) : '—'}</small>
+                    </div>
+                  )}
+                  actions={(
+                    <>
+                      {!r.sent && (
+                        <Button size="sm" disabled={locked || resending !== null} onClick={() => void manualSend(r)}>
+                          {resending === r.email.toLowerCase() ? '发送中…' : '手动发送'}
+                        </Button>
+                      )}
+                      {r.sent && (
+                        <IconButton title={resending === r.email.toLowerCase() ? '发送中…' : '重新发送该编辑'}
+                          disabled={resending !== null} onClick={() => void resend(r)}>
+                          <RotateCcw size={14} />
                         </IconButton>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      )}
+                      <IconButton title={locked ? '计划正在发送，先停止再移除' : '移除该编辑'} className="danger"
+                        disabled={locked} onClick={() => removeRecipient(r.email)}>
+                        <X size={14} />
+                      </IconButton>
+                    </>
+                  )}
+                />
+              ))}
+            </div>
           </div>
           <Pager page={safePage} pageCount={pageCount} pageSize={pageSize} total={filtered.length}
             onPage={setPage} onPageSize={(n) => setPageSize(n)} />
         </>
       )}
+      {more && (
+        <EditorTagsPop
+          top={more.top}
+          left={more.left}
+          width={more.width}
+          workTypes={more.workTypes}
+          skip={2}
+          onClose={() => setMore(null)}
+        />
+      )}
     </Modal>
+  )
+}
+
+function EditorDataRow({ name, platform, email, notes, workTypes, moreKey, more, onMore, extra, actions }: {
+  name: string
+  platform: string
+  email: string
+  notes: string
+  workTypes: string[]
+  moreKey: string
+  more: { key: string; top: number; left: number; width: number; workTypes: string[] } | null
+  onMore: (next: { key: string; top: number; left: number; width: number; workTypes: string[] } | null) => void
+                  extra?: ReactNode
+  actions: ReactNode
+}) {
+  const tags = editorRowTags(workTypes)
+  const shown = tags.slice(0, 2)
+  const rest = tags.slice(shown.length)
+  const note = notes.trim()
+  return (
+    <div className={`editor-row is-send${extra ? ' has-status' : ''}`}>
+      <div className="editor-row-main">
+        <b>
+          <span className="editor-row-name">{name.trim() || '佚名'}</span>
+          <span className="editor-row-sep">｜</span>
+          <span className="editor-row-plat">{platform.trim() || '未填平台'}</span>
+        </b>
+        <small>{email}</small>
+      </div>
+      <div className="editor-row-note" title={note || undefined}>
+        {note || <span className="hint">无备注</span>}
+      </div>
+      <div className="editor-row-tags">
+        {tags.length ? (
+          <>
+            {shown.map((d, i) => (
+              <span key={`${i}-${d}`} className="chip on tone">{d}</span>
+            ))}
+            {rest.length > 0 && (
+              <button type="button" className="editor-chip-more"
+                onClick={(ev) => {
+                  const next = moreRect(ev.currentTarget)
+                  onMore(more?.key === moreKey ? null : { key: moreKey, ...next, workTypes: tags })
+                }}>
+                +{rest.length}
+              </button>
+            )}
+          </>
+        ) : (
+          <span className="hint">未设标签</span>
+        )}
+      </div>
+      {extra}
+      <div className="row-actions">{actions}</div>
+    </div>
   )
 }

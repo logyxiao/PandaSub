@@ -117,6 +117,26 @@ fn plan_tag_values(manuscript: &Manuscript) -> (String, String, String) {
     (words, length, genre)
 }
 
+fn tidy_mail_subject(subject: &str) -> String {
+    let mut out = subject
+        .replace("未填", "")
+        .replace("未选", "")
+        .replace('（', "(")
+        .replace('）', ")");
+    loop {
+        let next = out.replace("()", "").replace("++", "+");
+        if next == out {
+            break;
+        }
+        out = next;
+    }
+    out = out.trim_matches(|c: char| c == '+' || c.is_whitespace()).to_string();
+    while out.contains("  ") {
+        out = out.replace("  ", " ");
+    }
+    out
+}
+
 pub fn pick_mail_template(manuscript: &Manuscript) -> (String, String) {
     let usable: Vec<&MailTemplate> = manuscript
         .mail_templates
@@ -144,15 +164,17 @@ pub fn resolve_outgoing_mail(manuscript: &Manuscript, recipient: &str, mutate: b
     let (editor_name, recipient_email) = parse_recipient(recipient);
     let (subject_src, body_src) = pick_mail_template(manuscript);
     let (words, length, genres) = plan_tag_values(manuscript);
-    let subject = apply_placeholders_full(
+    let subject_words = if words == "未填" { "" } else { words.as_str() };
+    let subject_genres = if genres == "未选" { "" } else { genres.as_str() };
+    let subject = tidy_mail_subject(&apply_placeholders_full(
         &subject_src,
         &editor_name,
         &recipient_email,
         &manuscript.title,
-        &words,
+        subject_words,
         &length,
-        &genres,
-    );
+        subject_genres,
+    ));
     let body_raw = mutate_body(&body_src, mutate);
     let body = apply_placeholders_full(
         &body_raw,

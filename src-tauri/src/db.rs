@@ -137,7 +137,6 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     classify_builtin_editor_sources(&connection)?;
     migrate_editor_directions(&connection)?;
     normalize_editor_style_values(&connection)?;
-    strip_editor_reader_tags(&connection)?;
     seed_default_editors(&connection)?;
     refresh_bundled_editor_library(&connection)?;
     backfill_missing_editor_types(&connection)?;
@@ -597,61 +596,6 @@ fn migrate_editor_directions(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// 一次性：从作品类型里去掉男女频标签。
-fn strip_editor_reader_tags(conn: &Connection) -> Result<(), String> {
-    let done: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM settings WHERE key = 'editors.reader_tag_cleared'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    if done > 0 {
-        return Ok(());
-    }
-    let exists: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    if exists == 0 || table_lacks_column(conn, "editors", "work_type") {
-        return Ok(());
-    }
-    let mut stmt = conn
-        .prepare("SELECT id, work_type FROM editors")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    drop(stmt);
-    for (id, raw) in rows {
-        let work_type: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
-        let next: Vec<String> = work_type
-            .iter()
-            .filter(|tag| *tag != "男频" && *tag != "女频")
-            .cloned()
-            .collect();
-        if next == work_type {
-            continue;
-        }
-        conn.execute(
-            "UPDATE editors SET work_type = ?1 WHERE id = ?2",
-            rusqlite::params![serde_json::json!(next).to_string(), id],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.reader_tag_cleared', '1')",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
     let exists: i64 = conn
         .query_row(
@@ -698,7 +642,7 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-16-length";
+const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-16-paused";
 
 fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
     let current: String = conn

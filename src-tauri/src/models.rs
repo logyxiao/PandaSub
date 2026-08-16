@@ -204,7 +204,7 @@ impl Default for Settings {
     }
 }
 
-const EDITOR_DROPPED_TAGS: &[&str] = &["小程序", "知乎风", "番茄风", "男频", "女频"];
+const EDITOR_DROPPED_TAGS: &[&str] = &["小程序", "知乎风", "番茄风"];
 pub const EDITOR_SOURCE_INITIAL: &str = "初始数据";
 pub const EDITOR_SOURCE_MANUAL: &str = "手动数据";
 pub const EDITOR_SOURCE_IMPORT: &str = "导入数据";
@@ -266,6 +266,10 @@ fn editor_platform_alias(value: &str) -> Option<&'static str> {
         "月下" => "月下小说",
         "四季文学" => "四季",
         "绣球阅读" => "绣球",
+        "17K" | "17k" => "17k",
+        "长乐文学" | "长樂文学" => "长乐",
+        "花不完故事会" => "花不完",
+        "吾里文化" | "鹿糖" => "吾里",
         _ => return None,
     })
 }
@@ -344,6 +348,7 @@ pub struct Dashboard {
     pub human_replies: i64,
     pub auto_replies: i64,
     pub tasks: Vec<Task>,
+    pub manuscripts: Vec<Manuscript>,
     pub logs: Vec<TaskLog>,
 }
 

@@ -257,32 +257,42 @@ async fn run_task_worker(
     let mut queue = build_queue(&task, &manuscripts, &attachments);
     if !is_loop {
         let full_total = queue.len() as i64;
-        // 继续模式：任务已发过一部分（sent > 0），跳过本次运行已投递成功的收件人，
-        // 从剩下的继续投递；进度和节奏档位接着 task.sent 算。
-        if task.sent > 0 {
-            if let Some(started_at) = task.started_at.as_deref() {
-                let delivered = {
-                    let conn = db.lock().unwrap();
-                    store::delivered_emails_since(&conn, task_id, started_at).unwrap_or_default()
-                };
-                if !delivered.is_empty() {
-                    queue.retain(|t| {
-                        let (_, email) = smtp::parse_recipient(&t.recipient);
-                        !delivered.contains(&email.to_lowercase())
-                    });
+        let own_deliveries = {
+            let conn = db.lock().unwrap();
+            store::task_delivery_count(&conn, task_id).unwrap_or(0)
+        };
+        // 同一任务清零后重发：不跳过本计划已投的。新任务 / 继续：跳过本计划已成功的收件人。
+        let resend_all = task.sent == 0 && own_deliveries > 0;
+        if !resend_all {
+            let already = {
+                let conn = db.lock().unwrap();
+                let mut emails = std::collections::HashSet::new();
+                for manuscript in &manuscripts {
+                    emails.extend(
+                        store::delivered_emails_for_manuscript(&conn, manuscript.id).unwrap_or_default(),
+                    );
                 }
+                emails
+            };
+            if !already.is_empty() {
+                queue.retain(|t| {
+                    let (_, email) = smtp::parse_recipient(&t.recipient);
+                    !already.contains(&email.to_lowercase())
+                });
             }
         }
+        let skipped = full_total - queue.len() as i64;
+        let initial_sent = skipped;
         {
             let conn = db.lock().unwrap();
             let _ = conn.execute(
-                "UPDATE tasks SET total = ?1 WHERE id = ?2",
-                [full_total, task_id],
+                "UPDATE tasks SET total = ?1, sent = ?2 WHERE id = ?3",
+                rusqlite::params![full_total, initial_sent, task_id],
             );
         }
+        emit_task(&app, &db, task_id);
         if queue.is_empty() {
-            if task.sent > 0 {
-                // 继续时所有收件人本次运行都投递过了：任务实际已投完。
+            if full_total > 0 && initial_sent > 0 {
                 let log = store::insert_log(
                     &db.lock().unwrap(),
                     Some(task_id),

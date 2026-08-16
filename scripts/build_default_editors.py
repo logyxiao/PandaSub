@@ -15,6 +15,7 @@ OUT = ROOT / "src-tauri/src/data/default_editors.json"
 
 MAILBOX = Path("/Users/to/Downloads/投稿邮箱.xlsx")
 DIRECTION = Path("/Users/to/Downloads/短篇小说收稿方向汇总_2026-08-13版.xlsx")
+LIBRARY = Path("/Users/to/Downloads/编辑库.xlsx")
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 QQ_MAIL_RE = re.compile(r"(?:邮箱|email|mail)[:：\s]*(\d{5,12})", re.I)
@@ -43,6 +44,12 @@ PLATFORM_ALIASES = {
     "月下": "月下小说",
     "四季文学": "四季",
     "绣球阅读": "绣球",
+    "17K": "17k",
+    "长乐文学": "长乐",
+    "长樂文学": "长乐",
+    "花不完故事会": "花不完",
+    "吾里文化": "吾里",
+    "鹿糖": "吾里",
 }
 
 # Longer phrases first. Values are the tags written into work_type.
@@ -66,8 +73,9 @@ PHRASE_ALIASES: list[tuple[str, list[str]]] = [
     ("虐爽", ["虐恋", "爽文"]),
 ]
 
-# Do not include 男频/女频, or generic 故事/小说 (e.g. 「故事有看头」).
+# Do not include generic 故事/小说 (e.g. 「故事有看头」).
 TAG_VOCAB = [
+    "女频", "男频",
     "亲情虐", "情绪流", "大女主", "信息差", "区别对待", "全员背叛",
     "全品类", "死人文学",
     "追妻", "追夫", "世情", "爽文", "打脸", "虐恋", "甜宠", "婚恋",
@@ -196,6 +204,174 @@ def add_editor(bucket: dict[str, dict], item: dict) -> None:
     existing["notes"] = join_notes([("", n) for n in notes if n])
 
 
+DROPPED_EXPORT_TAGS = {"小程序", "知乎风", "番茄风", "其他", "知乎文", "海外投稿"}
+EXPORT_TAG_ALIASES: dict[str, list[str]] = {
+    "虐爽": ["虐恋", "爽文"],
+    "古言知乎": ["古言"],
+    "古言脑洞": ["古言", "脑洞"],
+    "古言重生爽文": ["古言", "重生", "爽文"],
+    "古言大女主": ["古言", "大女主"],
+    "现言-甜文": ["现言", "甜宠"],
+    "双男主": ["双男主"],
+}
+PLACEHOLDER_LOCALS = {"投稿", "editor", "test", "admin", "noreply", "no-reply"}
+
+
+def parse_export_tags(raw: str) -> list[str]:
+    tags, seen = [], set()
+
+    def add(tag: str) -> None:
+        tag = tag.strip()
+        if not tag or tag in seen or tag in DROPPED_EXPORT_TAGS:
+            return
+        seen.add(tag)
+        tags.append(tag)
+
+    for part in re.split(r"[、，,|/]", raw or ""):
+        piece = clean_space(part)
+        if piece in EXPORT_TAG_ALIASES:
+            for tag in EXPORT_TAG_ALIASES[piece]:
+                add(tag)
+        else:
+            add(piece)
+    return tags
+
+
+def parse_exported_library() -> list[dict]:
+    """Read 编辑库.xlsx. Only keep rows that already have a platform."""
+    rows = sheet_rows(LIBRARY, "Sheet1")
+    out = []
+    for row in rows[1:]:
+        row += [""] * 5
+        platform, name, email, _style, work = row[:5]
+        platform = canonicalize_platform(platform)
+        if not platform:
+            continue
+        emails = extract_emails(email)
+        if not emails:
+            continue
+        work_type = parse_export_tags(work)
+        if "短篇" not in work_type and "中短篇" not in work_type:
+            work_type = ["短篇", "中短篇", *work_type]
+        for addr in emails:
+            local = addr.split("@", 1)[0]
+            if local in PLACEHOLDER_LOCALS:
+                continue
+            out.append({
+                "platform": platform,
+                "name": clean_space(name),
+                "email": addr,
+                "work_type": work_type,
+                "notes": "",
+            })
+    return out
+
+
+def merge_work_types(current: list[str], extra: list[str]) -> list[str]:
+    seen = set()
+    out = []
+    for tag in [*current, *extra]:
+        tag = tag.strip()
+        if not tag or tag in seen or tag in DROPPED_EXPORT_TAGS:
+            continue
+        seen.add(tag)
+        out.append(tag)
+    return out
+
+
+BOTH_CHANNEL_RE = re.compile(r"不限男女频|男女频|男频[、,/]女频|女频[、,/]男频|男/女频|女/男频|男频女频都")
+REJECT_MALE_RE = re.compile(r"不收男频|不要男频|拒收男频")
+REJECT_FEMALE_RE = re.compile(r"不收女频|不要女频|拒收女频")
+
+
+def infer_channel_tags(notes: str) -> list[str]:
+    text = notes or ""
+    tags: list[str] = []
+    if BOTH_CHANNEL_RE.search(text):
+        if not REJECT_FEMALE_RE.search(text):
+            tags.append("女频")
+        if not REJECT_MALE_RE.search(text):
+            tags.append("男频")
+    if "女频" in text and "女频" not in tags and not REJECT_FEMALE_RE.search(text):
+        tags.append("女频")
+    if "男频" in text and "男频" not in tags and not REJECT_MALE_RE.search(text):
+        tags.append("男频")
+    return tags
+
+
+def channel_tags_from_library() -> dict[str, list[str]]:
+    if not LIBRARY.exists():
+        return {}
+    rows = sheet_rows(LIBRARY, "Sheet1")
+    out: dict[str, list[str]] = {}
+    for row in rows[1:]:
+        row += [""] * 5
+        _platform, _name, email, _style, work = row[:5]
+        tags = [tag for tag in ("女频", "男频") if tag in (work or "")]
+        for addr in extract_emails(email):
+            if tags:
+                out[addr] = tags
+    return out
+
+
+def apply_channel_tags() -> None:
+    """Write 男频/女频 into existing work_type. No new field."""
+    if not OUT.exists():
+        raise SystemExit(f"missing bundled library: {OUT}")
+    editors = json.loads(OUT.read_text(encoding="utf-8"))
+    from_xlsx = channel_tags_from_library()
+    added = {"女频": 0, "男频": 0}
+    for editor in editors:
+        email = editor["email"].strip().lower()
+        current = editor.get("work_type") or []
+        extra = merge_work_types(
+            from_xlsx.get(email) or [],
+            infer_channel_tags(editor.get("notes") or ""),
+        )
+        if not extra:
+            extra = ["女频"]
+        next_types = merge_work_types(current, extra)
+        for tag in extra:
+            if tag not in current:
+                added[tag] = added.get(tag, 0) + 1
+        editor["work_type"] = next_types
+    editors.sort(key=lambda e: (e.get("platform", ""), e.get("name", ""), e["email"]))
+    OUT.write_text(json.dumps(editors, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    female = sum(1 for e in editors if "女频" in e.get("work_type", []))
+    male = sum(1 for e in editors if "男频" in e.get("work_type", []))
+    both = sum(1 for e in editors if "女频" in e.get("work_type", []) and "男频" in e.get("work_type", []))
+    print(f"applied channel tags -> {OUT}")
+    print(f"女频 {female}, 男频 {male}, both {both}, newly added {added}")
+
+
+def merge_from_library() -> None:
+    if not LIBRARY.exists():
+        raise SystemExit(f"missing editor library spreadsheet: {LIBRARY}")
+    if not OUT.exists():
+        raise SystemExit(f"missing bundled library: {OUT}")
+
+    existing = json.loads(OUT.read_text(encoding="utf-8"))
+    bucket = {item["email"].strip().lower(): item for item in existing}
+    added = 0
+    tagged = 0
+    for item in parse_exported_library():
+        email = item["email"]
+        current = bucket.get(email)
+        if current:
+            next_types = merge_work_types(current.get("work_type") or [], item["work_type"])
+            if next_types != current.get("work_type"):
+                current["work_type"] = next_types
+                tagged += 1
+            continue
+        bucket[email] = item
+        added += 1
+
+    editors = sorted(bucket.values(), key=lambda e: (e.get("platform", ""), e.get("name", ""), e["email"]))
+    OUT.write_text(json.dumps(editors, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"merged library -> {OUT}")
+    print(f"total {len(editors)} (added {added}, work_type merged {tagged}, existing kept {len(existing)})")
+
+
 def parse_short() -> list[dict]:
     rows = sheet_rows(MAILBOX, "短篇编辑")
     last_platform = ""
@@ -312,4 +488,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--merge-library" in sys.argv:
+        merge_from_library()
+    elif "--apply-channel" in sys.argv:
+        apply_channel_tags()
+    else:
+        main()
