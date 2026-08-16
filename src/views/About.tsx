@@ -16,12 +16,30 @@ export function AboutView() {
   return (
     <div className="about-page">
       <section className="panel about-hero">
-      <div>
-      <img className="about-logo" src={logo} alt="" />
-      <h2>熊猫投稿</h2>
-      </div>
+        <img className="about-logo" src={logo} alt="" />
         <div>
-          <section className="panel about-section">
+          <h2>熊猫投稿</h2>
+          <p>面向小说作者的本地桌面投稿工具。把发件邮箱、编辑资料、作品信息、投稿计划和回复检查放在一起，帮助你有节奏地完成投稿。</p>
+          <p className="about-free">本项目<strong>完全开源免费</strong>，所有功能均可免费使用，不设付费墙。</p>
+          <div className="about-meta">
+            <span>版本 {version ? `v${version}` : '读取中…'}</span>
+            <span>标识 com.novelsub.desktop</span>
+            <span>数据仅保存在本机</span>
+          </div>
+          <a className="about-repo" href={PROJECT_URL} target="_blank" rel="noreferrer">
+            <ExternalLink size={14} />
+            {PROJECT_URL}
+          </a>
+        </div>
+      </section>
+
+      <section className="panel about-section">
+        <div className="panel-heading">
+          <div>
+            <h2>项目说明</h2>
+            <p>完全开源免费、本地优先，不上传你的稿件和邮箱授权码。</p>
+          </div>
+        </div>
         <div className="about-points">
           <article>
             <HardDrive size={18} />
@@ -50,10 +68,6 @@ export function AboutView() {
           </article>
         </div>
       </section>
-        </div>
-      </section>
-
-     
 
       <section className="panel about-section">
         <div className="panel-heading">
