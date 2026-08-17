@@ -524,15 +524,20 @@ function PlatformPeersPop({ top, left, width, current, peers, onPick, onClose }:
       onCloseRef.current()
     }
     const dismiss = () => onCloseRef.current()
+    const onScroll = (ev: Event) => {
+      const target = ev.target
+      if (target instanceof Node && ref.current?.contains(target)) return
+      dismiss()
+    }
     const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') dismiss() }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
-    window.addEventListener('scroll', dismiss, true)
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', dismiss)
     return () => {
       window.removeEventListener('mousedown', onDown)
       window.removeEventListener('keydown', onKey)
-      window.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', dismiss)
     }
   }, [])

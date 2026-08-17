@@ -2119,7 +2119,11 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   position: fixed;
   z-index: 120;
   max-height: 240px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  touch-action: pan-y;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: 12px;
