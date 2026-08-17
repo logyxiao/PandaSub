@@ -162,6 +162,8 @@
 .icon-button:hover:not(:disabled) { color: var(--ink); background: var(--surface-2); border-color: var(--border); }
 .icon-button:disabled { opacity: .4; cursor: not-allowed; }
 .icon-button.danger:hover { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border); }
+.icon-button.is-fav { color: #9A7A32; }
+.icon-button.is-fav:hover:not(:disabled) { color: #9A7A32; }
 
 /* ==========================================================================
    状态徽标
@@ -289,6 +291,18 @@
 .editor-filter-select.is-compact { min-width: 84px; width: 92px; }
 .editor-toolbar .editor-filter-select .select-trigger { height: 32px; padding: 0 8px 0 10px; font-size: 12px; }
 .editor-toolbar .editor-filter-select.is-compact .select-trigger { padding: 0 6px 0 8px; }
+.editor-fav-filter { height: 32px; padding: 0 10px; gap: 5px; }
+.editor-fav-filter.on { color: #9A7A32; border-color: #E4D4A8; background: #F7F1DE; }
+.icon-button.editor-star {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--faint);
+}
+.icon-button.editor-star:hover:not(:disabled) { color: #9A7A32; background: var(--surface-2); border-color: transparent; }
+.icon-button.editor-star.on { color: #9A7A32; }
 .plan-meta .select-trigger { height: 38px; font-size: 12px; }
 .plan-import-select { max-width: 170px; }
 .plan-import-select .select-trigger { height: 32px; font-size: 11.5px; }
@@ -401,6 +415,7 @@
 .ui-table-wrap { overflow-x: auto; }
 .ui-table {
   width: 100%;
+  min-width: 0;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -425,6 +440,8 @@
   vertical-align: middle;
   font-size: 12px;
 }
+.ui-table th,
+.ui-table td { min-width: 0; }
 .ui-table td b,
 .ui-table td small,
 .ui-table .hint,
@@ -447,14 +464,35 @@
 .ui-table tbody tr:last-child td { border-bottom: 0; }
 .ui-table tbody tr:hover { background: var(--surface-2); }
 .ui-table tbody tr.dim { opacity: 0.62; }
-.ui-table-cell.has-ellipsis { min-width: 0; }
+.ui-table-cell.has-ellipsis { min-width: 0; overflow: hidden; }
 .ui-table-ellipsis {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   overflow-wrap: anywhere;
   word-break: break-word;
+  line-height: 1.5;
+  max-height: calc(1.5em * var(--ui-table-lines, 1));
 }
+.ui-table-ellipsis.is-single {
+  max-height: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ui-table th.is-actions,
+.ui-table td.is-actions {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  min-width: 148px;
+  overflow: visible;
+  background: var(--surface);
+  box-shadow: -8px 0 10px -8px rgba(20, 28, 45, 0.12);
+  white-space: nowrap;
+}
+.ui-table th.is-actions { background: var(--surface-2); }
+.ui-table tbody tr:hover td.is-actions { background: var(--surface-2); }
 .ui-table-empty-row td { padding: 0; }
 .ui-table-empty {
   padding: 36px 18px;
@@ -462,7 +500,7 @@
   font-size: 12px;
   text-align: center;
 }
-.ui-table .row-actions { justify-content: flex-end; }
+.ui-table .row-actions { justify-content: flex-end; flex-wrap: nowrap; }
 .ui-table .editor-row-check { justify-content: center; }
 .ui-table .is-hit { cursor: pointer; }
 
@@ -936,6 +974,28 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   font-size: 11px;
   font-weight: 650;
   color: var(--success);
+}
+.reply-delivery { min-width: 0; }
+.reply-delivery b {
+  display: block;
+  overflow: hidden;
+  font-weight: 600;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reply-delivery small {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reply-preview-editor-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
 }
 .editor-row.is-send.has-status { grid-template-columns: minmax(160px, 1fr) minmax(0, 1.2fr) minmax(120px, 0.8fr) 86px auto; }
 .editor-row-status { display: grid; gap: 3px; justify-items: start; }
@@ -2069,7 +2129,8 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   text-align: left;
   cursor: pointer;
 }
-.editor-peer-item b { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.editor-peer-item b { display: flex; align-items: center; gap: 6px; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.editor-star-mark { flex: none; color: #9A7A32; }
 .editor-peer-item small { overflow: hidden; color: var(--muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .editor-peer-item:hover { background: var(--surface-2); }
 .editor-peer-item.on { background: var(--brand-soft); color: var(--brand-strong); }

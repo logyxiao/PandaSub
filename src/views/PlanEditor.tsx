@@ -10,7 +10,7 @@ import {
   GENRES, LENGTH_TAGS, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
   fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
   defaultMailTemplates, editorPlatformKey, groupMatchingByPlatform, isDroppedMailTemplate,
-  pickOneEditorPerPlatform,
+  mergeEditorSelectionByPlatform,
 } from './planShared'
 import { EditorsList, emptyEditorListFilters, type EditorListFilters } from './Editors'
 
@@ -19,13 +19,14 @@ const emptyEditor: EditorInput = {
 }
 
 export function PlanEditor({
-  editing, editors, onReloadEditors, enabledAccounts,
+  editing, editors, onReloadEditors, onFavoriteChange, enabledAccounts,
   form, setForm, taskForm, setTaskForm,
   saving, onClose, onSaveDraft, onSaveAndSend, onImportFile,
 }: {
   editing: Manuscript | null
   editors: Editor[]
   onReloadEditors: () => Promise<void>
+  onFavoriteChange?: (id: number, favorited: boolean) => void
   enabledAccounts: Account[]
   form: ManuscriptInput
   setForm: (next: ManuscriptInput | ((f: ManuscriptInput) => ManuscriptInput)) => void
@@ -47,7 +48,6 @@ export function PlanEditor({
   const [listFilters, setListFilters] = useState<EditorListFilters>(() =>
     emptyEditorListFilters(form.genres, form.excluded_types ?? []),
   )
-  const [visibleEditors, setVisibleEditors] = useState<Editor[]>([])
   const pickKeyRef = useRef('')
   const [activeTplId, setActiveTplId] = useState(() => form.mail_templates[0]?.id ?? 't1')
   const [tplMode, setTplMode] = useState<'preview' | 'edit'>('preview')
@@ -183,8 +183,15 @@ export function PlanEditor({
   const toggleSelect = (editor: Editor, checked: boolean) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      if (checked) next.add(editor.id)
-      else next.delete(editor.id)
+      if (checked) {
+        const key = editorPlatformKey(editor)
+        for (const item of editors) {
+          if (item.id !== editor.id && editorPlatformKey(item) === key) next.delete(item.id)
+        }
+        next.add(editor.id)
+      } else {
+        next.delete(editor.id)
+      }
       return next
     })
   }
@@ -214,11 +221,10 @@ export function PlanEditor({
 
   const matchKey = `${form.genres.join('\0')}::${excluded.join('\0')}`
 
-  // 新建且匹配条件变了才重抽。返回上一步再进来会保留已选和筛选。
+  // 标签变了就按匹配结果补齐勾选：每个平台一位，已经换过的人还在。返回上一步会保留筛选。
   const goToStep2 = () => {
-    if (!editing && pickKeyRef.current !== matchKey) {
-      const { picked: auto } = pickOneEditorPerPlatform(editors, form.genres, new Map(), {}, excluded)
-      setSelectedIds(new Set(auto.map((e) => e.id)))
+    if (pickKeyRef.current !== matchKey) {
+      setSelectedIds((prev) => mergeEditorSelectionByPlatform(editors, prev, form.genres, excluded))
       setListFilters(emptyEditorListFilters(form.genres, excluded))
       pickKeyRef.current = matchKey
     }
@@ -226,11 +232,10 @@ export function PlanEditor({
   }
 
   const goToStep3 = () => {
-    if (!visibleEditors.length) {
-      toast('当前筛选没有编辑，先调整筛选或返回上一步', 'warning')
+    if (!sendCount) {
+      toast('还没有选择编辑，先从编辑库勾选，或返回上一步调整筛选', 'warning')
       return
     }
-    setSelectedIds(new Set(visibleEditors.map((editor) => editor.id)))
     setStep(3)
   }
 
@@ -577,25 +582,34 @@ export function PlanEditor({
           <section className="plan-step-2">
             <div className="step-toolbar">
               <span className="step-meta">
-                已选 <strong>{listCount ?? selectedIds.size}</strong> 位
-                {listCount != null && listCount !== selectedIds.size && <> · 共选 {selectedIds.size} 位</>}
+                共有 <strong>{listCount ?? 0}</strong> 条可选数据，已选 <strong>{selectedIds.size}</strong> 条
               </span>
               <Button size="sm" onClick={openAddEditor}><Plus size={14} />添加编辑</Button>
             </div>
             <EditorsList
-              items={selectedEditors}
+              items={editors}
               selectable
+              onePerPlatform
               selectedIds={selectedIds}
               onToggleSelect={toggleSelect}
               onTotalChange={setListCount}
-              onVisibleChange={setVisibleEditors}
               platformPeersOf={platformPeersOf}
               onReplaceEditor={replacePlatformEditor}
+              onFavoriteChange={onFavoriteChange}
               onEdit={openEditEditor}
               filters={listFilters}
-              onFiltersChange={setListFilters}
+              onFiltersChange={(next) => {
+                const tagsChanged = next.workTypes.join('\0') !== listFilters.workTypes.join('\0')
+                  || next.excludedWorkTypes.join('\0') !== listFilters.excludedWorkTypes.join('\0')
+                setListFilters(next)
+                if (tagsChanged) {
+                  setSelectedIds((prev) => mergeEditorSelectionByPlatform(
+                    editors, prev, next.workTypes, next.excludedWorkTypes,
+                  ))
+                }
+              }}
               pageSize={6}
-              emptyText="还没有选中的编辑。返回上一步调整篇幅和作品类型，或点右上角添加。"
+              emptyText="没有符合筛选的编辑。可调整筛选，或点右上角从编辑库添加。"
             />
             {!!orphans.length && (
               <p className="step-orphan">另有 {orphans.length} 位保存过的收件人不在编辑库中，将保留发送。</p>

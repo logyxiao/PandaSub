@@ -54,6 +54,7 @@ export const api = {
   listEditors: () => invoke<Editor[]>('list_editors'),
   addEditor: (input: EditorInput) => invoke<number>('add_editor', { input }),
   updateEditor: (id: number, input: EditorInput) => invoke('update_editor', { id, input }),
+  toggleEditorFavorite: (id: number) => invoke<boolean>('toggle_editor_favorite', { id }),
   deleteEditor: (id: number) => invoke('delete_editor', { id }),
   clearEditors: () => invoke<number>('clear_editors'),
   exportEditors: (path: string) => invoke<string>('export_editors', { path }),

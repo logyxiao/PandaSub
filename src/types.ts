@@ -37,6 +37,7 @@ export interface Editor {
   notes: string
   source: string
   enabled: boolean
+  favorited: boolean
   created_at: string
   updated_at: string
 }

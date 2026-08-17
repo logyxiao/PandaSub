@@ -99,6 +99,22 @@ pub fn update_editor(
 }
 
 #[tauri::command]
+pub fn toggle_editor_favorite(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE editors SET favorited = CASE WHEN favorited = 1 THEN 0 ELSE 1 END,
+                updated_at = datetime('now','localtime')
+         WHERE id = ?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    let favorited: i64 = conn
+        .query_row("SELECT favorited FROM editors WHERE id = ?1", [id], |r| r.get(0))
+        .map_err(|_| "没有找到这位编辑".to_string())?;
+    Ok(favorited != 0)
+}
+
+#[tauri::command]
 pub fn delete_editor(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM editors WHERE id = ?1", [id])

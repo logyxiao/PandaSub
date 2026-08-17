@@ -135,8 +135,13 @@ function cellAlign(align?: TableAlign): CSSProperties | undefined {
   return align ? { textAlign: align } : undefined
 }
 
-function cellClass(col: { ellipsis?: unknown; className?: string }) {
-  return ['ui-table-cell', col.ellipsis ? 'has-ellipsis' : '', col.className ?? ''].filter(Boolean).join(' ')
+function cellClass(col: { key?: string; ellipsis?: unknown; className?: string }) {
+  return [
+    'ui-table-cell',
+    col.ellipsis ? 'has-ellipsis' : '',
+    col.key === 'actions' ? 'is-actions' : '',
+    col.className ?? '',
+  ].filter(Boolean).join(' ')
 }
 
 function wrapEllipsis(content: ReactNode, ellipsis?: boolean | { rows?: number }) {
@@ -144,8 +149,8 @@ function wrapEllipsis(content: ReactNode, ellipsis?: boolean | { rows?: number }
   const rows = typeof ellipsis === 'object' ? (ellipsis.rows ?? 1) : 1
   return (
     <div
-      className="ui-table-ellipsis"
-      style={{ WebkitLineClamp: rows, lineClamp: rows } as CSSProperties}
+      className={`ui-table-ellipsis${rows <= 1 ? ' is-single' : ''}`}
+      style={{ '--ui-table-lines': rows } as CSSProperties}
       title={typeof content === 'string' ? content : undefined}
     >
       {content}

@@ -367,6 +367,19 @@ export function editorPlatformKey(editor: Pick<Editor, 'platform' | 'email'>) {
   return editor.platform.trim() || `__${editor.email.trim().toLowerCase()}`
 }
 
+export function isEditorFavorited(editor: Pick<Editor, 'favorited'>) {
+  return Boolean(editor.favorited)
+}
+
+export function compareEditorsByFavorite(a: Editor, b: Editor) {
+  const fa = isEditorFavorited(a) ? 1 : 0
+  const fb = isEditorFavorited(b) ? 1 : 0
+  if (fa !== fb) return fb - fa
+  const plat = a.platform.localeCompare(b.platform, 'zh')
+  if (plat) return plat
+  return (a.name || a.email).localeCompare(b.name || b.email, 'zh')
+}
+
 export function groupMatchingByPlatform(
   editors: Editor[],
   genres: string[],
@@ -381,6 +394,7 @@ export function groupMatchingByPlatform(
     list.push(editor)
     groups.set(key, list)
   }
+  for (const list of groups.values()) list.sort(compareEditorsByFavorite)
   return groups
 }
 
@@ -388,7 +402,9 @@ export function pickRandomPlatformEditor(list: Editor[], sentMap: Map<string, nu
   if (!list.length) return undefined
   const unsent = list.filter((editor) => (sentMap.get(editor.email.toLowerCase()) ?? 0) === 0)
   const pool = unsent.length ? unsent : list
-  return pool[Math.floor(Math.random() * pool.length)]
+  const favored = pool.filter(isEditorFavorited)
+  const pickFrom = favored.length ? favored : pool
+  return pickFrom[Math.floor(Math.random() * pickFrom.length)]
 }
 
 export function pickOneEditorPerPlatform(
@@ -407,6 +423,22 @@ export function pickOneEditorPerPlatform(
     if (chosen) picked.push(chosen)
   }
   return { picked, groups }
+}
+
+/** 按当前标签给每个匹配平台勾一位：已选且仍匹配的保留，缺的平台补上。 */
+export function mergeEditorSelectionByPlatform(
+  editors: Editor[],
+  selectedIds: Iterable<number>,
+  genres: string[],
+  excludedWorkTypes: Iterable<string> = [],
+) {
+  const selected = new Set(selectedIds)
+  const next = new Set<number>()
+  for (const list of groupMatchingByPlatform(editors, genres, excludedWorkTypes).values()) {
+    const kept = list.find((editor) => selected.has(editor.id))
+    next.add((kept ?? list[0]).id)
+  }
+  return next
 }
 
 export function estimateMinutes(count: number, intervalMin: number, intervalMax: number, batchMin: number, batchMax: number, pauseMin: number, pauseMax: number) {

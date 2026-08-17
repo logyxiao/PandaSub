@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS editors (
   notes TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT '手动数据',
   enabled INTEGER NOT NULL DEFAULT 1,
+  favorited INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -132,6 +133,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_account_imap_columns(&connection)?;
     add_manuscript_plan_columns(&connection)?;
     add_editor_enabled_column(&connection)?;
+    add_editor_favorited_column(&connection)?;
     add_editor_tag_columns(&connection)?;
     add_editor_profile_columns(&connection)?;
     classify_builtin_editor_sources(&connection)?;
@@ -263,6 +265,27 @@ fn add_manuscript_plan_columns(conn: &Connection) -> Result<(), String> {
             conn.execute(&format!("ALTER TABLE manuscripts ADD COLUMN {decl}"), [])
                 .map_err(|e| e.to_string())?;
         }
+    }
+    Ok(())
+}
+
+fn add_editor_favorited_column(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "editors", "favorited") {
+        conn.execute(
+            "ALTER TABLE editors ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

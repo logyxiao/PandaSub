@@ -309,6 +309,8 @@ pub struct Editor {
     pub source: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub favorited: bool,
     pub created_at: String,
     pub updated_at: String,
 }

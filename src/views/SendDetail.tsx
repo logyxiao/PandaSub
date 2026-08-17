@@ -9,7 +9,7 @@ import { formatTime, parseRecipient } from '../format'
 import { useNav } from '../nav'
 import type { Account, Delivery, Editor, Manuscript } from '../types'
 import { EditorIdentity, EditorTagsPop, EditorTypeChips, moreRect } from './Editors'
-import { editorRecipient, normalizeEditorTags, toInput } from './planShared'
+import { editorRecipient, compareEditorsByFavorite, normalizeEditorTags, toInput } from './planShared'
 
 interface DetailRow {
   order: number
@@ -109,7 +109,10 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     })
   }, [candidates, pickQuery])
 
-  const pickerRows = useMemo(() => filteredCandidates.map(normalizeEditorTags), [filteredCandidates])
+  const pickerRows = useMemo(
+    () => filteredCandidates.map(normalizeEditorTags).sort(compareEditorsByFavorite),
+    [filteredCandidates],
+  )
 
   useEffect(() => { setMore(null) }, [query, filter, pickQuery])
 

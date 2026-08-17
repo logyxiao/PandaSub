@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Inbox, RefreshCw, Search } from 'lucide-react'
+import { Inbox, RefreshCw, Search, Star, Trash2 } from 'lucide-react'
 import { api, onReply } from '../api'
 import { Table } from '../components/Table'
-import { useToast } from '../components/feedback'
+import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
 import { Modal } from '../components/Modal'
 import { formatTime, parseRecipient, replyKindLabel, replyKindTone } from '../format'
 import { useNav } from '../nav'
-import type { Reply } from '../types'
+import type { Editor, Reply } from '../types'
+import { isEditorFavorited } from './planShared'
 
 function replyBodyPreview(reply: Reply) {
   return (reply.body || reply.snippet || '').replace(/\s+/g, ' ').trim() || '（无正文）'
@@ -20,8 +21,40 @@ function replyDelivery(reply: Reply) {
   }
 }
 
+function replyEditorEmails(reply: Reply) {
+  return [...new Set([
+    parseRecipient(reply.recipient).email,
+    parseRecipient(reply.from_email).email,
+    reply.from_email,
+  ].map((value) => value.trim().toLowerCase()).filter(Boolean))]
+}
+
+function editorForReply(reply: Reply, byEmail: Map<string, Editor>) {
+  for (const email of replyEditorEmails(reply)) {
+    const editor = byEmail.get(email)
+    if (editor) return editor
+  }
+}
+
+function ReplyFavStar({ editor, onToggle }: {
+  editor?: Editor
+  onToggle: (editor: Editor) => void
+}) {
+  if (!editor) return null
+  const on = isEditorFavorited(editor)
+  return (
+    <IconButton
+      className={on ? 'is-fav' : ''}
+      title={on ? '取消收藏这位编辑' : '收藏这位编辑'}
+      onClick={() => onToggle(editor)}>
+      <Star size={15} fill={on ? 'currentColor' : 'none'} />
+    </IconButton>
+  )
+}
+
 export function RepliesView() {
   const [items, setItems] = useState<Reply[]>([])
+  const [editors, setEditors] = useState<Editor[]>([])
   const [kind, setKind] = useState('')
   const [query, setQuery] = useState('')
   const [notice, setNotice] = useState('')
@@ -29,6 +62,7 @@ export function RepliesView() {
   const [preview, setPreview] = useState<Reply | null>(null)
   const [reclassifying, setReclassifying] = useState(false)
   const toast = useToast()
+  const confirm = useConfirm()
   const { go } = useNav()
 
   const load = useCallback(async () => {
@@ -38,6 +72,9 @@ export function RepliesView() {
     } catch (e) { setNotice(String(e)) }
   }, [kind])
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    void api.listEditors().then(setEditors).catch((e) => setNotice(String(e)))
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -88,6 +125,40 @@ export function RepliesView() {
         || (r.from_email ?? '').toLowerCase().includes(q)
     })
   }, [items, query])
+
+  const editorsByEmail = useMemo(() => {
+    const map = new Map<string, Editor>()
+    for (const editor of editors) {
+      const email = editor.email.trim().toLowerCase()
+      if (email) map.set(email, editor)
+    }
+    return map
+  }, [editors])
+
+  const toggleFavorite = async (editor: Editor) => {
+    try {
+      const saved = await api.toggleEditorFavorite(editor.id)
+      setEditors((list) => list.map((item) => (item.id === editor.id ? { ...item, favorited: saved } : item)))
+    } catch (e) { toast(String(e), 'error') }
+  }
+
+  const removeEditor = async (editor: Editor) => {
+    const label = editor.name.trim() || editor.email
+    const ok = await confirm({
+      title: '删除编辑',
+      message: `将「${label}」从编辑库去掉。已经写进计划的收件人不会自动删除。`,
+      confirmLabel: '删除',
+      tone: 'danger',
+    })
+    if (!ok) return
+    try {
+      await api.deleteEditor(editor.id)
+      setEditors((list) => list.filter((item) => item.id !== editor.id))
+      toast('编辑已删除', 'success')
+    } catch (e) { toast(String(e), 'error') }
+  }
+
+  const previewEditor = preview ? editorForReply(preview, editorsByEmail) : undefined
 
   return (
     <>
@@ -165,10 +236,10 @@ export function RepliesView() {
                 render: (_value, r) => {
                   const { email, plan } = replyDelivery(r)
                   return (
-                    <>
+                    <div className="reply-delivery">
                       <b title={email}>{email}</b>
                       <small title={plan}>{plan}</small>
-                    </>
+                    </div>
                   )
                 },
               },
@@ -182,12 +253,22 @@ export function RepliesView() {
               {
                 key: 'actions',
                 title: '',
-                width: 76,
-                render: (_value, r) => (
-                  <div className="row-actions">
-                    <Button size="sm" onClick={() => setPreview(r)}>查看</Button>
-                  </div>
-                ),
+                width: 148,
+                render: (_value, r) => {
+                  const editor = editorForReply(r, editorsByEmail)
+                  return (
+                    <div className="row-actions">
+                      <ReplyFavStar editor={editor} onToggle={(item) => void toggleFavorite(item)} />
+                      {editor && (
+                        <IconButton className="danger" title="删除这位编辑"
+                          onClick={() => void removeEditor(editor)}>
+                          <Trash2 size={15} />
+                        </IconButton>
+                      )}
+                      <Button size="sm" onClick={() => setPreview(r)}>查看</Button>
+                    </div>
+                  )
+                },
               },
             ]}
           />
@@ -196,7 +277,20 @@ export function RepliesView() {
 
       {preview && (
         <Modal title={preview.subject || '回复正文'} onClose={() => setPreview(null)} width={680}
-          footer={<Button variant="ghost" onClick={() => setPreview(null)}>关闭</Button>}>
+          footer={
+            <>
+              {previewEditor && (
+                <div className="reply-preview-editor-actions">
+                  <ReplyFavStar editor={previewEditor} onToggle={(item) => void toggleFavorite(item)} />
+                  <IconButton className="danger" title="删除这位编辑"
+                    onClick={() => void removeEditor(previewEditor)}>
+                    <Trash2 size={15} />
+                  </IconButton>
+                </div>
+              )}
+              <Button variant="ghost" onClick={() => setPreview(null)}>关闭</Button>
+            </>
+          }>
           <div className="preview-body">
             <p className="hint">
               {replyKindLabel[preview.kind]} · {preview.from_email}

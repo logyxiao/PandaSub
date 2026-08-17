@@ -142,7 +142,7 @@ pub fn load_manuscript_attachment(
     }
 }
 
-const EDITOR_COLS: &str = "id, platform, name, email, work_type, notes, source, created_at, updated_at, enabled";
+const EDITOR_COLS: &str = "id, platform, name, email, work_type, notes, source, created_at, updated_at, enabled, favorited";
 
 fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
     let raw_work_type: String = r.get(4)?;
@@ -158,6 +158,7 @@ fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
         created_at: r.get(7)?,
         updated_at: r.get(8)?,
         enabled: r.get::<_, i64>(9)? != 0,
+        favorited: r.get::<_, i64>(10)? != 0,
     })
 }
 
@@ -207,7 +208,7 @@ pub fn upsert_editor(conn: &Connection, input: &EditorInput, source: &str) -> Re
 
 pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {EDITOR_COLS} FROM editors ORDER BY platform ASC, name ASC"))
+        .prepare(&format!("SELECT {EDITOR_COLS} FROM editors ORDER BY favorited DESC, platform ASC, name ASC"))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], map_editor)

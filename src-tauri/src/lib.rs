@@ -170,6 +170,7 @@ pub fn run() {
             commands::list_editors,
             commands::add_editor,
             commands::update_editor,
+            commands::toggle_editor_favorite,
             commands::delete_editor,
             commands::clear_editors,
             commands::export_editors,

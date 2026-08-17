@@ -290,6 +290,9 @@ export function PlansView() {
         editing={editing}
         editors={editors}
         onReloadEditors={async () => { setEditors(await api.listEditors()) }}
+        onFavoriteChange={(id, favorited) => {
+          setEditors((list) => list.map((editor) => (editor.id === id ? { ...editor, favorited } : editor)))
+        }}
         enabledAccounts={enabledAccounts}
         form={form}
         setForm={setForm}

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Database, Download, Plus, RotateCcw, Search, Trash2, Upload, Users } from 'lucide-react'
+import { ChevronDown, Database, Download, Plus, RotateCcw, Search, Star, Trash2, Upload, Users } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
@@ -10,7 +10,7 @@ import { Table, type TableColumn } from '../components/Table'
 import { isValidEmail } from '../format'
 import { useNav } from '../nav'
 import type { Editor, EditorInput } from '../types'
-import { GENRES, SOURCES, editorMatchesPlan, editorRowTags, normalizeEditorTags } from './planShared'
+import { GENRES, SOURCES, compareEditorsByFavorite, editorMatchesPlan, editorPlatformKey, editorRowTags, isEditorFavorited, normalizeEditorTags } from './planShared'
 
 const UNASSIGNED = '未填平台'
 
@@ -24,6 +24,7 @@ export interface EditorListFilters {
   source: string
   workTypes: string[]
   excludedWorkTypes: string[]
+  favoritedOnly: boolean
 }
 
 export const emptyEditorListFilters = (workTypes: string[] = [], excludedWorkTypes: string[] = []): EditorListFilters => ({
@@ -32,6 +33,7 @@ export const emptyEditorListFilters = (workTypes: string[] = [], excludedWorkTyp
   source: '',
   workTypes,
   excludedWorkTypes,
+  favoritedOnly: false,
 })
 
 export interface EditorsListProps {
@@ -48,6 +50,7 @@ export interface EditorsListProps {
   onTotalChange?: (total: number) => void
   onVisibleChange?: (editors: Editor[]) => void
   onPlatformsChange?: (platforms: string[]) => void
+  onFavoriteChange?: (id: number, favorited: boolean) => void
   pageSize?: number
   emptyText?: string
   emptyAction?: ReactNode
@@ -58,6 +61,8 @@ export interface EditorsListProps {
   onFiltersChange?: (next: EditorListFilters) => void
   platformPeersOf?: (editor: Editor) => Editor[]
   onReplaceEditor?: (current: Editor, next: Editor) => void
+  /** 投稿向导：每个平台只显示一位，同平台其他人走「同平台」更换 */
+  onePerPlatform?: boolean
 }
 
 /** 编辑库列表（搜索、平台/作品类型筛选、分页、标签气泡），可作为页面或插件式嵌入投稿向导。 */
@@ -67,7 +72,7 @@ export function EditorsList({
   emptyText = '首次打开会载入内置投稿邮箱。也可以自己添加，或导入 Excel / CSV。',
   emptyAction, actions, initialWorkTypes, initialExcludedWorkTypes,
   filters, onFiltersChange,
-  platformPeersOf, onReplaceEditor,
+  platformPeersOf, onReplaceEditor, onFavoriteChange, onePerPlatform = false,
 }: EditorsListProps) {
   const [items, setItems] = useState<Editor[]>([])
   const [loading, setLoading] = useState(!externalItems)
@@ -76,7 +81,7 @@ export function EditorsList({
     emptyEditorListFilters(initialWorkTypes ?? [], initialExcludedWorkTypes ?? []),
   )
   const current = filters ?? localFilters
-  const { query, platform, source, workTypes, excludedWorkTypes } = current
+  const { query, platform, source, workTypes, excludedWorkTypes, favoritedOnly } = current
   const setFilters = (patch: Partial<EditorListFilters>) => {
     const next = { ...current, ...patch }
     if (onFiltersChange) onFiltersChange(next)
@@ -115,16 +120,36 @@ export function EditorsList({
     return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
   }, [basePool])
 
-  const visible = useMemo(() => basePool.filter((e) => {
-    if (source && e.source !== source) return false
-    return editorMatchesPlan(e, workTypes, excludedWorkTypes)
-  }), [basePool, source, workTypes, excludedWorkTypes])
+  const visible = useMemo(() => {
+    const filtered = [...basePool.filter((e) => {
+      if (favoritedOnly && !isEditorFavorited(e)) return false
+      if (source && e.source !== source) return false
+      return editorMatchesPlan(e, workTypes, excludedWorkTypes)
+    })].sort(compareEditorsByFavorite)
+    // 搜索时列出库里所有命中的人，方便从编辑库找人；平时每个平台只留一位。
+    if (!onePerPlatform || query.trim()) return filtered
+    const groups = new Map<string, Editor[]>()
+    const order: string[] = []
+    for (const editor of filtered) {
+      const key = editorPlatformKey(editor)
+      const list = groups.get(key)
+      if (list) list.push(editor)
+      else {
+        groups.set(key, [editor])
+        order.push(key)
+      }
+    }
+    return order.map((key) => {
+      const list = groups.get(key) ?? []
+      return list.find((item) => selectedIds?.has(item.id)) ?? list[0]
+    })
+  }, [basePool, source, workTypes, excludedWorkTypes, favoritedOnly, onePerPlatform, query, selectedIds])
 
   useEffect(() => { onTotalChange?.(visible.length) }, [visible.length, onTotalChange])
   const onVisibleChangeRef = useRef(onVisibleChange)
   onVisibleChangeRef.current = onVisibleChange
   useEffect(() => { onVisibleChangeRef.current?.(visible) }, [visible])
-  useEffect(() => { setMore(null); setPeerPick(null) }, [platform, query, source, workTypes, excludedWorkTypes, list])
+  useEffect(() => { setMore(null); setPeerPick(null) }, [platform, query, source, workTypes, excludedWorkTypes, favoritedOnly, list])
 
   const toggleWorkType = (tag: string) => {
     setFilters({
@@ -146,6 +171,18 @@ export function EditorsList({
     setPeerPick(null)
   }
 
+  const toggleFavorite = useCallback(async (editor: Editor) => {
+    try {
+      const saved = await api.toggleEditorFavorite(editor.id)
+      if (!externalItems) {
+        setItems((list) => list.map((item) => (item.id === editor.id ? { ...item, favorited: saved } : item)))
+      }
+      onFavoriteChange?.(editor.id, saved)
+    } catch (e) {
+      setNotice(String(e))
+    }
+  }, [externalItems, onFavoriteChange])
+
   const moreEditor = more ? visible.find((item) => item.id === more.id) : undefined
   const moreWorkTypes = moreEditor ? editorRowTags(moreEditor.work_type) : []
   const peerEditor = peerPick ? visible.find((item) => item.id === peerPick.id) : undefined
@@ -153,6 +190,7 @@ export function EditorsList({
     ? [...platformPeersOf(peerEditor)].sort((a, b) => {
         if (a.id === peerEditor.id) return -1
         if (b.id === peerEditor.id) return 1
+        if (isEditorFavorited(a) !== isEditorFavorited(b)) return isEditorFavorited(a) ? -1 : 1
         return (a.name || a.email).localeCompare(b.name || b.email, 'zh')
       })
     : []
@@ -178,6 +216,23 @@ export function EditorsList({
       })
     }
     cols.push(
+      {
+        key: 'favorite',
+        title: '',
+        width: 40,
+        align: 'center',
+        render: (_value, e) => {
+          const on = isEditorFavorited(e)
+          return (
+            <IconButton
+              className={`editor-star ${on ? 'on' : ''}`}
+              title={on ? '取消收藏' : '收藏'}
+              onClick={() => void toggleFavorite(e)}>
+              <Star size={15} fill={on ? 'currentColor' : 'none'} />
+            </IconButton>
+          )
+        },
+      },
       {
         key: 'editor',
         title: '编辑',
@@ -256,7 +311,7 @@ export function EditorsList({
       },
     )
     return cols
-  }, [selectable, selectedIds, onToggleSelect, onEdit, onDelete, platformPeersOf, peerPick, more])
+  }, [selectable, selectedIds, onToggleSelect, onEdit, onDelete, platformPeersOf, peerPick, more, toggleFavorite])
 
   return (
     <>
@@ -272,8 +327,12 @@ export function EditorsList({
             value: tag,
             label: `${tag}（${basePool.filter((e) => e.source === tag).length}）`,
           }))]} />
+        <button type="button" className={`field-chip editor-fav-filter ${favoritedOnly ? 'on' : ''}`}
+          onClick={() => setFilters({ favoritedOnly: !favoritedOnly })}>
+          <Star size={12} fill={favoritedOnly ? 'currentColor' : 'none'} />收藏
+        </button>
         <div className="editor-toolbar-actions">
-          <IconButton title="重置筛选" className="editor-tool-icon" disabled={!query && !platform && !source && !workTypes.length && !excludedWorkTypes.length}
+          <IconButton title="重置筛选" className="editor-tool-icon" disabled={!query && !platform && !source && !workTypes.length && !excludedWorkTypes.length && !favoritedOnly}
             onClick={resetFilters}>
             <RotateCcw size={14} />
           </IconButton>
@@ -307,7 +366,7 @@ export function EditorsList({
           <Table
             rowKey="id"
             dataSource={visible}
-            resetKey={`${query}\0${platform}\0${source}\0${workTypes.join('\0')}\0${excludedWorkTypes.join('\0')}`}
+            resetKey={`${query}\0${platform}\0${source}\0${workTypes.join('\0')}\0${excludedWorkTypes.join('\0')}\0${favoritedOnly ? '1' : '0'}`}
             pagination={{
               pageSize: pageSize ?? 10,
               pageSizeOptions: [...new Set([pageSize ?? 10, 10, 20, 50])].sort((a, b) => a - b),
@@ -486,7 +545,10 @@ function PlatformPeersPop({ top, left, width, current, peers, onPick, onClose }:
           <button type="button" key={editor.id} role="option" aria-selected={on}
             className={`editor-peer-item ${on ? 'on' : ''}`}
             onClick={() => onPick(editor)}>
-            <b>{editor.name.trim() || '佚名'}</b>
+            <b>
+              {isEditorFavorited(editor) && <Star size={12} className="editor-star-mark" fill="currentColor" />}
+              {editor.name.trim() || '佚名'}
+            </b>
             <small>{editor.email}</small>
           </button>
         )
