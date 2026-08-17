@@ -139,7 +139,6 @@ function cellClass(col: { key?: string; ellipsis?: unknown; className?: string }
   return [
     'ui-table-cell',
     col.ellipsis ? 'has-ellipsis' : '',
-    col.key === 'actions' ? 'is-actions' : '',
     col.className ?? '',
   ].filter(Boolean).join(' ')
 }

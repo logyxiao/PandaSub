@@ -528,18 +528,20 @@ pub fn insert_delivery(
     Ok(conn.last_insert_rowid())
 }
 
-/// 某篇稿件已投递成功的收件人邮箱（统一小写）。只看这份计划，不管其他计划。
-pub fn delivered_emails_for_manuscript(
+/// Returns recipients delivered by this task for this manuscript only.
+/// Delivery history from other tasks must not make a newly-created task skip recipients.
+pub fn delivered_emails_for_task_manuscript(
     conn: &Connection,
+    task_id: i64,
     manuscript_id: i64,
 ) -> Result<std::collections::HashSet<String>, String> {
     let mut stmt = conn
-        .prepare("SELECT DISTINCT recipient FROM deliveries WHERE manuscript_id = ?1")
+        .prepare("SELECT DISTINCT recipient FROM deliveries WHERE task_id = ?1 AND manuscript_id = ?2")
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([manuscript_id], |r| {
+        .query_map(params![task_id, manuscript_id], |r| {
             let raw: String = r.get(0)?;
-            Ok(raw.to_lowercase())
+            Ok(crate::smtp::parse_recipient(&raw).1.to_lowercase())
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<std::collections::HashSet<_>, _>>()
@@ -665,6 +667,26 @@ pub fn insert_reply(
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
     let created_at = now_str(conn)?;
+    let (recipient, task_name) = if let Some(delivery_id) = delivery_id {
+        conn.query_row(
+            "SELECT d.recipient, COALESCE(t.name, '')
+             FROM deliveries d LEFT JOIN tasks t ON t.id = d.task_id WHERE d.id = ?1",
+            [delivery_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default()
+    } else if let Some(task_id) = task_id {
+        let name = conn
+            .query_row("SELECT name FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        (String::new(), name)
+    } else {
+        (String::new(), String::new())
+    };
     Ok(Reply {
         id,
         delivery_id,
@@ -682,8 +704,8 @@ pub fn insert_reply(
         imap_uid,
         received_at: created_at.clone(),
         created_at,
-        recipient: String::new(),
-        task_name: String::new(),
+        recipient,
+        task_name,
     })
 }
 
@@ -717,7 +739,15 @@ pub fn load_replies(conn: &Connection, kind: Option<&str>, limit: i64) -> Result
                FROM replies r
                LEFT JOIN deliveries d ON d.id = r.delivery_id
                LEFT JOIN tasks t ON t.id = r.task_id";
-    if let Some(k) = kind {
+    if kind == Some("accepted") {
+        let mut stmt = conn
+            .prepare(&format!("{sql} WHERE r.accepted = 1 ORDER BY r.id DESC LIMIT ?1"))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], map_reply)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    } else if let Some(k) = kind {
         let mut stmt = conn
             .prepare(&format!("{sql} WHERE r.kind = ?1 ORDER BY r.id DESC LIMIT ?2"))
             .map_err(|e| e.to_string())?;
@@ -743,6 +773,11 @@ pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
         |r| r.get(0),
     )
     .map_err(|e| e.to_string())
+}
+
+pub fn count_accepted_replies(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT COUNT(*) FROM replies WHERE accepted = 1", [], |r| r.get(0))
+        .map_err(|e| e.to_string())
 }
 
 /// 按新分类规则更新某条回复的判定结果（kind / reason / accepted）。

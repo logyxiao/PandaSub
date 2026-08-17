@@ -1,23 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Activity, AlertCircle, ArrowRight, BookOpenText, CheckCircle2, CirclePause, CirclePlay, Inbox, Mail, RefreshCw, Square, UserRound, Users } from 'lucide-react'
-import { api, onLog, onTask } from '../api'
-import { formatClock, formatTime, statusLabel, taskTone } from '../format'
+import { api, onLog, onReply, onTask } from '../api'
+import { formatTime } from '../format'
 import { useNav } from '../nav'
 import { useToast } from '../components/feedback'
-import { Badge, Button, IconButton, RuntimeTrack } from '../components/ui'
+import { Badge, Button, IconButton, RuntimeTrack, Select } from '../components/ui'
 import { Table } from '../components/Table'
 import type { Dashboard, Task, TaskLog } from '../types'
-import { latestTask } from './planShared'
 
 const empty: Dashboard = {
   account_count: 0, manuscript_count: 0, editor_count: 0, sent_today: 0, failed_today: 0,
-  running_tasks: 0, human_replies: 0, auto_replies: 0, tasks: [], manuscripts: [], logs: [],
+  running_tasks: 0, human_replies: 0, auto_replies: 0, accepted_replies: 0, tasks: [], recent_replies: [],
 }
 
 export function DashboardView() {
   const [data, setData] = useState<Dashboard>(empty)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [replyKind, setReplyKind] = useState('human')
   const toast = useToast()
   const { go } = useNav()
 
@@ -34,13 +34,14 @@ export function DashboardView() {
     let cancelled = false
     let un1: (() => void) | undefined
     let un2: (() => void) | undefined
+    let un3: (() => void) | undefined
     const seenLogIds = new Set<number>()
+    const seenReplyIds = new Set<number>()
     onLog((log: TaskLog) => {
       if (cancelled || seenLogIds.has(log.id)) return
       seenLogIds.add(log.id)
       setData((d) => ({
         ...d,
-        logs: [log, ...d.logs].slice(0, 50),
         sent_today: d.sent_today + (log.level === 'success' && log.category === 'send' ? 1 : 0),
         failed_today: d.failed_today + (log.level === 'error' && (log.category === 'network' || log.category === 'send') ? 1 : 0),
       }))
@@ -59,9 +60,23 @@ export function DashboardView() {
       if (cancelled) u()
       else un2 = u
     })
+    onReply((reply) => {
+      if (cancelled || seenReplyIds.has(reply.id)) return
+      seenReplyIds.add(reply.id)
+      setData((d) => ({
+        ...d,
+        human_replies: d.human_replies + (reply.kind === 'human' ? 1 : 0),
+        auto_replies: d.auto_replies + (reply.kind === 'auto' ? 1 : 0),
+        accepted_replies: d.accepted_replies + (reply.accepted ? 1 : 0),
+        recent_replies: [reply, ...d.recent_replies.filter((item) => item.id !== reply.id)].slice(0, 30),
+      }))
+    }).then((u) => {
+      if (cancelled) u()
+      else un3 = u
+    })
     return () => {
       cancelled = true
-      un1?.(); un2?.()
+      un1?.(); un2?.(); un3?.()
     }
   }, [])
 
@@ -73,18 +88,22 @@ export function DashboardView() {
     } catch (e) { toast(String(e), 'error') }
   }
 
-  const stats: Array<{ label: string; value: number; unit: string; icon: typeof Mail; cls?: string; to: 'accounts' | 'editors' | 'plans' | 'logs' | 'replies' }> = [
+  const stats: Array<{ label: string; value: number; unit: string; icon: typeof Mail; cls?: string; to: 'accounts' | 'editors' | 'plans' | 'logs' | 'replies'; replyKind?: string }> = [
     { label: '可用邮箱', value: data.account_count, unit: '个', icon: Mail, to: 'accounts' },
     { label: '编辑', value: data.editor_count, unit: '位', icon: Users, to: 'editors' },
     { label: '投稿计划', value: data.manuscript_count, unit: '个', icon: BookOpenText, to: 'plans' },
     { label: '发送中', value: data.running_tasks, unit: '个', icon: Activity, to: 'plans' },
     { label: '今日成功', value: data.sent_today, unit: '封', icon: CheckCircle2, cls: 'pos', to: 'logs' },
     { label: '今日失败', value: data.failed_today, unit: '封', icon: AlertCircle, cls: 'neg', to: 'logs' },
-    { label: '人工回复', value: data.human_replies, unit: '封', icon: UserRound, cls: 'pos', to: 'replies' },
-    { label: '自动回复', value: data.auto_replies, unit: '封', icon: Inbox, to: 'replies' },
+    { label: '人工回复', value: data.human_replies, unit: '封', icon: UserRound, cls: 'pos', to: 'replies', replyKind: 'human' },
+    { label: '自动回复', value: data.auto_replies, unit: '封', icon: Inbox, to: 'replies', replyKind: 'auto' },
+    { label: '过稿回复', value: data.accepted_replies, unit: '封', icon: CheckCircle2, cls: 'pos', to: 'replies', replyKind: 'accepted' },
   ]
 
   const activeTasks = data.tasks.filter((t) => t.status === 'running' || t.status === 'paused')
+  const recentReplies = useMemo(() => data.recent_replies.filter((reply) => (
+    replyKind === 'accepted' ? reply.accepted : replyKind ? reply.kind === replyKind : true
+  )), [data.recent_replies, replyKind])
   const setupDone = data.account_count > 0 && data.manuscript_count > 0
   const nextStep = data.account_count === 0 ? 'accounts' as const
     : data.editor_count === 0 ? 'editors' as const
@@ -140,8 +159,8 @@ export function DashboardView() {
       )}
 
       <section className="stat-strip" aria-label="今日概览">
-        {stats.map(({ label, value, unit, icon: Icon, cls, to }) => (
-          <button type="button" className="stat stat-click" key={label} onClick={() => go(to)}>
+        {stats.map(({ label, value, unit, icon: Icon, cls, to, replyKind: targetReplyKind }) => (
+          <button type="button" className="stat stat-click" key={label} onClick={() => void go(to, targetReplyKind ? { replyKind: targetReplyKind } : undefined)}>
             <div className="stat-top">
               <span className="stat-label">{label}</span>
               <Icon size={16} className={`stat-icon ${cls === 'pos' ? 'success' : cls === 'neg' ? 'danger' : ''}`} />
@@ -168,93 +187,62 @@ export function DashboardView() {
       ))}
 
       <section className="workspace">
-        <div className="panel">
+        <div className="panel dashboard-replies-panel">
           <div className="panel-heading">
-            <div><h2>最近计划</h2><p>关掉窗口也不会中断正在发送的计划</p></div>
+            <div><h2>最近回复</h2><p>默认展示人工回复，可切换其他类型</p></div>
             <div className="heading-actions">
+              <Select value={replyKind} onChange={setReplyKind} ariaLabel="回复类型" className="filter-select"
+                options={[
+                  { value: 'human', label: '人工回复' },
+                  { value: 'accepted', label: '过稿回复' },
+                  { value: 'auto', label: '自动回复' },
+                  { value: 'bounce', label: '退信' },
+                  { value: '', label: '全部回复' },
+                ]} />
               <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
-              <Button variant="ghost" onClick={() => go('plans')}>查看全部</Button>
+              <Button variant="ghost" onClick={() => go('replies')}>查看全部</Button>
             </div>
           </div>
           <Table
             rowKey="id"
-            dataSource={data.manuscripts}
-            empty={loading ? '正在读取…' : '还没有投稿计划。到「投稿计划」里创建。'}
+            dataSource={recentReplies}
+            empty={loading ? '正在读取…' : '没有符合条件的回复。'}
             columns={[
               {
-                key: 'title',
-                title: '计划',
-                render: (_value, m) => {
-                  const task = latestTask(m.id, data.tasks)
-                  return (
-                    <>
-                      <b>{m.title.trim() || '未命名计划'}</b>
-                      <small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || (task?.schedule_type === 'loop' ? '循环发送' : task?.schedule_type === 'scheduled' ? '定时发送' : '投稿计划')}</small>
-                    </>
-                  )
-                },
+                key: 'kind',
+                title: '类型',
+                width: 104,
+                render: (_value, reply) => (
+                  <Badge tone={reply.accepted ? 'success' : 'success'} dot>
+                    {reply.accepted ? '过稿回复' : '人工回复'}
+                  </Badge>
+                ),
               },
               {
-                key: 'progress',
-                title: '进度',
-                width: 160,
-                render: (_value, m) => {
-                  const task = latestTask(m.id, data.tasks)
-                  return task
-                    ? <RuntimeTrack sent={task.sent} total={task.total} status={task.status}
-                        meta={task.schedule_type === 'loop' ? `已成功 ${task.sent} 封` : `${task.sent} / ${task.total || '—'}`} />
-                    : <span className="hint">草稿</span>
-                },
+                key: 'body',
+                title: '回复内容',
+                ellipsis: { rows: 2 },
+                render: (_value, reply) => reply.body || reply.snippet || '（无正文）',
               },
               {
-                key: 'status',
-                title: '状态',
-                width: 92,
-                render: (_value, m) => {
-                  const task = latestTask(m.id, data.tasks)
-                  return task
-                    ? <Badge tone={taskTone[task.status]} dot>{statusLabel(task.status)}</Badge>
-                    : <Badge tone="neutral">草稿</Badge>
-                },
+                key: 'delivery',
+                title: '来源 / 计划',
+                width: 240,
+                render: (_value, reply) => (
+                  <div className="reply-delivery">
+                    <b title={reply.from_email}>{reply.from_email || '—'}</b>
+                    <small title={reply.task_name}>{reply.task_name || '未关联计划'}</small>
+                  </div>
+                ),
               },
               {
                 key: 'time',
-                title: '创建时间',
+                title: '时间',
                 width: 120,
-                render: (_value, m) => formatTime(m.updated_at),
-              },
-              {
-                key: 'actions',
-                title: '',
-                width: 168,
-                render: (_value, m) => {
-                  const task = latestTask(m.id, data.tasks)
-                  return (
-                    <div className="row-actions">
-                      {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
-                      {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
-                      {(task?.status === 'running' || task?.status === 'paused') && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
-                    </div>
-                  )
-                },
+                render: (_value, reply) => formatTime(reply.received_at),
               },
             ]}
           />
-        </div>
-
-        <div className="panel">
-          <div className="panel-heading">
-            <div><h2>最近记录</h2><p>后台正在发生的事</p></div>
-            <span className="live"><i /> 实时</span>
-          </div>
-          <div className="logs">
-            {data.logs.map((log) => (
-              <div className="log" key={log.id}>
-                <time>{formatClock(log.created_at)}</time><i className={log.level} /><p>{log.message}</p>
-              </div>
-            ))}
-            {!data.logs.length && <p className="empty">还没有发送记录</p>}
-          </div>
         </div>
       </section>
     </>

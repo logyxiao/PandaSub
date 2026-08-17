@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 
 type ToastTone = 'info' | 'success' | 'warning' | 'error'
 interface ToastItem { id: number; message: string; tone: ToastTone }
@@ -40,26 +40,35 @@ export function useConfirm() { return useContext(ConfirmCtx) }
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const [pending, setPending] = useState<{ opts: ConfirmOptions; resolve: (v: boolean) => void } | null>(null)
+  const queue = useRef<Array<{ opts: ConfirmOptions; resolve: (v: boolean) => void }>>([])
 
-  const confirm = useCallback((opts: ConfirmOptions) =>
-    new Promise<boolean>((resolve) => setPending({ opts, resolve })), [])
+  const confirm = useCallback((opts: ConfirmOptions) => new Promise<boolean>((resolve) => {
+    setPending((current) => {
+      if (current) {
+        queue.current.push({ opts, resolve })
+        return current
+      }
+      return { opts, resolve }
+    })
+  }), [])
 
-  const close = (v: boolean) => {
-    pending?.resolve(v)
-    setPending(null)
-  }
+  const close = useCallback((v: boolean) => {
+    setPending((current) => {
+      current?.resolve(v)
+      return queue.current.shift() ?? null
+    })
+  }, [])
 
   useEffect(() => {
     if (!pending) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        pending.resolve(false)
-        setPending(null)
+        close(false)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [pending])
+  }, [pending, close])
 
   return (
     <ConfirmCtx.Provider value={confirm}>

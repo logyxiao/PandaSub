@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileText, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { api, onLog } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
@@ -33,15 +33,21 @@ export function LogsView() {
   const [emailQuery, setEmailQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
   const [notice, setNotice] = useState('')
+  const [loading, setLoading] = useState(true)
+  const requestSeq = useRef(0)
   const toast = useToast()
   const confirm = useConfirm()
   const { go } = useNav()
 
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current
+    setLoading(true)
     try {
       const [l, t, a] = await Promise.all([api.listLogs(taskFilter || undefined), api.listTasks(), api.listAccounts()])
+      if (seq !== requestSeq.current) return
       setLogs(l); setTasks(t); setAccounts(a); setNotice('')
-    } catch (e) { setNotice(String(e)) }
+    } catch (e) { if (seq === requestSeq.current) setNotice(String(e)) }
+    finally { if (seq === requestSeq.current) setLoading(false) }
   }, [taskFilter])
   useEffect(() => { void load() }, [load])
 
@@ -135,7 +141,7 @@ export function LogsView() {
       </div>
       {notice && <div className="notice notice-error">{notice}</div>}
 
-      {!filtered.length ? (
+      {!loading && !filtered.length ? (
         <div className="panel">
           {logs.length ? (
             <EmptyState icon={Search} title="没有匹配的记录"
@@ -152,6 +158,7 @@ export function LogsView() {
             className="logs-table"
             rowKey="id"
             dataSource={filtered}
+            empty={loading ? '正在加载记录…' : '暂无记录'}
             resetKey={`${emailQuery}\0${taskFilter}\0${levelFilter}`}
             pagination={{ pageSize: 20 }}
             columns={[

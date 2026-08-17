@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Inbox, RefreshCw, Search, Star, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Heart, Inbox, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { api, onReply } from '../api'
 import { Table } from '../components/Table'
 import { useConfirm, useToast } from '../components/feedback'
@@ -44,34 +44,43 @@ function ReplyFavStar({ editor, onToggle }: {
   const on = isEditorFavorited(editor)
   return (
     <IconButton
-      className={on ? 'is-fav' : ''}
+      className={`favorite-toggle ${on ? 'on' : ''}`}
       title={on ? '取消收藏这位编辑' : '收藏这位编辑'}
       onClick={() => onToggle(editor)}>
-      <Star size={15} fill={on ? 'currentColor' : 'none'} />
+      <Heart size={13} fill={on ? 'currentColor' : 'none'} />
     </IconButton>
   )
 }
 
-export function RepliesView() {
+export function RepliesView({ initialKind }: { initialKind?: string }) {
   const [items, setItems] = useState<Reply[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
-  const [kind, setKind] = useState('')
+  const [kind, setKind] = useState(initialKind ?? '')
   const [query, setQuery] = useState('')
   const [notice, setNotice] = useState('')
+  const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
   const [preview, setPreview] = useState<Reply | null>(null)
   const [reclassifying, setReclassifying] = useState(false)
+  const requestSeq = useRef(0)
   const toast = useToast()
   const confirm = useConfirm()
   const { go } = useNav()
 
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current
+    setLoading(true)
     try {
-      setItems(await api.listReplies(kind || undefined))
-      setNotice('')
-    } catch (e) { setNotice(String(e)) }
+      const next = await api.listReplies(kind || undefined)
+      if (seq !== requestSeq.current) return
+      setItems(next); setNotice('')
+    } catch (e) { if (seq === requestSeq.current) setNotice(String(e)) }
+    finally { if (seq === requestSeq.current) setLoading(false) }
   }, [kind])
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    setKind(initialKind ?? '')
+  }, [initialKind])
   useEffect(() => {
     void api.listEditors().then(setEditors).catch((e) => setNotice(String(e)))
   }, [])
@@ -81,7 +90,7 @@ export function RepliesView() {
     let un: (() => void) | undefined
     onReply((reply) => {
       if (cancelled) return
-      if (kind && reply.kind !== kind) return
+      if (kind === 'accepted' ? !reply.accepted : kind && reply.kind !== kind) return
       setItems((prev) => [reply, ...prev.filter((r) => r.id !== reply.id)].slice(0, 300))
     }).then((u) => {
       if (cancelled) u()
@@ -173,6 +182,7 @@ export function RepliesView() {
               { value: '', label: '全部回复' },
               { value: 'human', label: '人工回复' },
               { value: 'auto', label: '自动回复' },
+              { value: 'accepted', label: '过稿回复' },
               { value: 'bounce', label: '退信' },
             ]} />
         </div>
@@ -191,7 +201,7 @@ export function RepliesView() {
         主题包含「自动回复 / 自動回覆 / AutoReply」判为自动回复，其余按人工回复；退信按投递失败标记识别。
       </p>
 
-      {!items.length ? (
+      {!loading && !items.length ? (
         <div className="panel">
           <EmptyState icon={Inbox} title="还没有识别到回复"
             desc="发出投稿后，后台会定期检查收件箱，并把回复分成人工、自动或退信。"
@@ -204,23 +214,16 @@ export function RepliesView() {
             dataSource={visible}
             resetKey={`${kind}\0${query}`}
             pagination={{ pageSize: 10 }}
-            empty="没有匹配的回复，换个内容或邮箱关键词试试。"
+            empty={loading ? '正在加载回复…' : '没有匹配的回复，换个内容或邮箱关键词试试。'}
             columns={[
               {
                 key: 'kind',
                 title: '类型',
                 width: 92,
                 render: (_value, r) => (
-                  <Badge tone={replyKindTone[r.kind] ?? 'neutral'} dot>{replyKindLabel[r.kind] ?? r.kind}</Badge>
-                ),
-              },
-              {
-                key: 'accepted',
-                title: '过稿',
-                width: 52,
-                align: 'center',
-                render: (_value, r) => (
-                  r.kind === 'human' && r.accepted ? <span className="reply-accepted-mark">过稿</span> : null
+                  <Badge tone={r.accepted ? 'success' : (replyKindTone[r.kind] ?? 'neutral')} dot>
+                    {r.accepted ? '过稿回复' : (replyKindLabel[r.kind] ?? r.kind)}
+                  </Badge>
                 ),
               },
               {

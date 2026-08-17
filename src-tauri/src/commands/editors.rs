@@ -293,9 +293,7 @@ fn spreadsheet_cell(value: &calamine::Data) -> String {
 fn read_text_rows(data: &[u8]) -> Result<Vec<Vec<String>>, String> {
     let text = decode_import_text(data);
     let delim = detect_delim(&text);
-    let rows: Vec<Vec<String>> = text
-        .lines()
-        .map(|line| parse_delimited_line(line, delim))
+    let rows: Vec<Vec<String>> = parse_delimited_text(&text, delim)
         .filter(|row| row.iter().any(|c| !c.is_empty()))
         .collect();
     if rows.is_empty() {
@@ -304,11 +302,50 @@ fn read_text_rows(data: &[u8]) -> Result<Vec<Vec<String>>, String> {
     Ok(rows)
 }
 
+fn parse_delimited_text(text: &str, delim: char) -> impl Iterator<Item = Vec<String>> + '_ {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if quoted && chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    quoted = !quoted;
+                }
+            }
+            c if c == delim && !quoted => {
+                row.push(std::mem::take(&mut field));
+            }
+            '\n' if !quoted => {
+                row.push(std::mem::take(&mut field));
+                rows.push(std::mem::take(&mut row));
+            }
+            '\r' if !quoted => {}
+            c => field.push(c),
+        }
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(field);
+        rows.push(row);
+    }
+    rows.into_iter()
+}
+
 fn decode_import_text(data: &[u8]) -> String {
     if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return String::from_utf8_lossy(&data[3..]).into_owned();
     }
-    String::from_utf8_lossy(data).into_owned()
+    if let Ok(text) = std::str::from_utf8(data) {
+        return text.to_string();
+    }
+    // Chinese CSV exports commonly use GBK/GB18030 instead of UTF-8.
+    let (decoded, _, _) = encoding_rs::GBK.decode(data);
+    decoded.into_owned()
 }
 
 fn detect_delim(text: &str) -> char {
@@ -323,30 +360,6 @@ fn detect_delim(text: &str) -> char {
     } else {
         ','
     }
-}
-
-fn parse_delimited_line(line: &str, delim: char) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut quoted = false;
-    let mut chars = line.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '"' {
-            if quoted && chars.peek() == Some(&'"') {
-                chars.next();
-                cur.push('"');
-            } else {
-                quoted = !quoted;
-            }
-        } else if ch == delim && !quoted {
-            out.push(cur.trim().to_string());
-            cur.clear();
-        } else if ch != '\r' {
-            cur.push(ch);
-        }
-    }
-    out.push(cur.trim().to_string());
-    out
 }
 
 fn rows_to_editors(table: Vec<Vec<String>>) -> Vec<(usize, EditorInput)> {
@@ -467,4 +480,3 @@ fn split_tags(raw: &str) -> Vec<String> {
     }
     out
 }
-

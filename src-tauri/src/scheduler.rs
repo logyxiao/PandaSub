@@ -13,10 +13,10 @@ use crate::store;
 
 #[derive(Clone)]
 struct SendTarget {
-    manuscript: Manuscript,
+    manuscript: Arc<Manuscript>,
     recipient: String,
     /// 附件（文件名 + 内容），无附件时为 None。
-    attachment: Option<(String, Vec<u8>)>,
+    attachment: Option<Arc<(String, Vec<u8>)>>,
 }
 
 enum SendOutcome {
@@ -28,14 +28,15 @@ enum SendOutcome {
 fn build_queue(
     _task: &Task,
     manuscripts: &[Manuscript],
-    attachments: &HashMap<i64, Option<(String, Vec<u8>)>>,
+    attachments: &HashMap<i64, Option<Arc<(String, Vec<u8>)>>>,
 ) -> VecDeque<SendTarget> {
     let mut queue = VecDeque::new();
     for manuscript in manuscripts {
+        let shared_manuscript = Arc::new(manuscript.clone());
         let attachment = attachments.get(&manuscript.id).cloned().flatten();
         for recipient in &manuscript.recipients {
             queue.push_back(SendTarget {
-                manuscript: manuscript.clone(),
+                manuscript: shared_manuscript.clone(),
                 recipient: recipient.clone(),
                 attachment: attachment.clone(),
             });
@@ -200,12 +201,14 @@ async fn run_task_worker(
     };
 
     // 发送时按需读取各稿件的附件（文件名 + 内容），列表加载不带附件。
-    let attachments: HashMap<i64, Option<(String, Vec<u8>)>> = {
+    let attachments: HashMap<i64, Option<Arc<(String, Vec<u8>)>>> = {
         let conn = db.lock().unwrap();
         manuscripts
             .iter()
             .map(|m| {
-                let att = store::load_manuscript_attachment(&conn, m.id).unwrap_or(None);
+                let att = store::load_manuscript_attachment(&conn, m.id)
+                    .unwrap_or(None)
+                    .map(Arc::new);
                 (m.id, att)
             })
             .collect()
@@ -269,7 +272,7 @@ async fn run_task_worker(
                 let mut emails = std::collections::HashSet::new();
                 for manuscript in &manuscripts {
                     emails.extend(
-                        store::delivered_emails_for_manuscript(&conn, manuscript.id).unwrap_or_default(),
+                        store::delivered_emails_for_task_manuscript(&conn, task_id, manuscript.id).unwrap_or_default(),
                     );
                 }
                 emails
@@ -334,6 +337,7 @@ async fn run_task_worker(
     }
 
     let mut cursor: usize = 0;
+    let mut had_failure = false;
     let allowed_accounts: std::collections::HashSet<i64> = task.account_ids.iter().copied().collect();
 
     loop {
@@ -376,20 +380,21 @@ async fn run_task_worker(
                     continue;
                 }
             } else {
+                let completion_message = if had_failure { "任务投递结束，但有邮件发送失败" } else { "任务全部投递完成" };
                 let log = store::insert_log(
                     &db.lock().unwrap(),
                     Some(task_id),
                     None,
-                    "success",
+                    if had_failure { "warning" } else { "success" },
                     "task",
-                    "任务全部投递完成",
+                    completion_message,
                 );
                 if let Ok(log) = log {
                     emit_log(&app, &log);
                 }
                 {
                     let conn = db.lock().unwrap();
-                    let _ = store::mark_task_finished(&conn, task_id, "completed");
+                    let _ = store::mark_task_finished(&conn, task_id, if had_failure { "stopped" } else { "completed" });
                 }
                 emit_task(&app, &db, task_id);
                 registry.lock().unwrap().remove(&task_id);
@@ -482,7 +487,7 @@ async fn run_task_worker(
                 queue.push_front(target);
                 interruptible_sleep(30, &handle).await;
             }
-            SendOutcome::Failed => {}
+            SendOutcome::Failed => { had_failure = true; }
         }
 
         if handle.is_stopped() {
@@ -554,7 +559,7 @@ async fn send_with_retry(
             subject,
             body,
             &target.manuscript.content_type,
-            target.attachment.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
+            target.attachment.as_ref().map(|attachment| (attachment.0.as_str(), attachment.1.as_slice())),
         )
         .await
         {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Database, Download, Plus, RotateCcw, Search, Star, Trash2, Upload, Users } from 'lucide-react'
+import { ChevronDown, Database, Download, Heart, Plus, RotateCcw, Search, Trash2, Upload, Users } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
@@ -225,10 +225,10 @@ export function EditorsList({
           const on = isEditorFavorited(e)
           return (
             <IconButton
-              className={`editor-star ${on ? 'on' : ''}`}
+              className={`favorite-toggle editor-star ${on ? 'on' : ''}`}
               title={on ? '取消收藏' : '收藏'}
               onClick={() => void toggleFavorite(e)}>
-              <Star size={15} fill={on ? 'currentColor' : 'none'} />
+              <Heart size={13} fill={on ? 'currentColor' : 'none'} />
             </IconButton>
           )
         },
@@ -329,7 +329,7 @@ export function EditorsList({
           }))]} />
         <button type="button" className={`field-chip editor-fav-filter ${favoritedOnly ? 'on' : ''}`}
           onClick={() => setFilters({ favoritedOnly: !favoritedOnly })}>
-          <Star size={12} fill={favoritedOnly ? 'currentColor' : 'none'} />收藏
+          <Heart size={11} fill={favoritedOnly ? 'currentColor' : 'none'} />收藏
         </button>
         <div className="editor-toolbar-actions">
           <IconButton title="重置筛选" className="editor-tool-icon" disabled={!query && !platform && !source && !workTypes.length && !excludedWorkTypes.length && !favoritedOnly}
@@ -546,7 +546,7 @@ function PlatformPeersPop({ top, left, width, current, peers, onPick, onClose }:
             className={`editor-peer-item ${on ? 'on' : ''}`}
             onClick={() => onPick(editor)}>
             <b>
-              {isEditorFavorited(editor) && <Star size={12} className="editor-star-mark" fill="currentColor" />}
+              {isEditorFavorited(editor) && <Heart size={10} className="editor-star-mark" fill="currentColor" />}
               {editor.name.trim() || '佚名'}
             </b>
             <small>{editor.email}</small>
@@ -797,4 +797,3 @@ export function EditorsView() {
     </>
   )
 }
-

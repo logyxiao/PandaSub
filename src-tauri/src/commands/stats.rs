@@ -26,7 +26,11 @@ pub fn get_stats(
 
     let key = |col: &str| -> String {
         match group.as_str() {
-            "week" => format!("strftime('%Y-W%W', {col})"),
+            // SQLite's %W emits a locale-style week 00. Use the Thursday of
+            // the ISO week to derive both the ISO year and week number.
+            "week" => format!(
+                "strftime('%Y', date({col}, '-3 days', 'weekday 4')) || '-W' || printf('%02d', (CAST(strftime('%j', date({col}, '-3 days', 'weekday 4')) AS INTEGER) - 1) / 7 + 1)"
+            ),
             "month" => format!("strftime('%Y-%m', {col})"),
             _ => format!("date({col})"),
         }
@@ -145,6 +149,9 @@ fn normalize_range(conn: &rusqlite::Connection, start: Option<String>, end: Opti
         .unwrap_or(0);
     if valid == 0 {
         return Err("统计日期格式应为 YYYY-MM-DD".into());
+    }
+    if start > end {
+        return Err("统计开始日期不能晚于结束日期".into());
     }
     Ok((start, end))
 }

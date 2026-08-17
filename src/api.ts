@@ -62,14 +62,26 @@ export const api = {
   importDefaultEditors: () => invoke<EditorImportResult>('import_default_editors'),
 }
 
+function safeListen<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
+  return listen<T>(event, (e) => cb(e.payload)).then((unlisten) => {
+    return () => {
+      try {
+        void Promise.resolve(unlisten()).catch(() => {})
+      } catch {
+        // The web fallback and hot-reload teardown may already have removed it.
+      }
+    }
+  }).catch(() => () => {})
+}
+
 export function onLog(cb: (log: TaskLog) => void): Promise<UnlistenFn> {
-  return listen<TaskLog>('log', (e) => cb(e.payload))
+  return safeListen('log', cb)
 }
 
 export function onTask(cb: (task: Task) => void): Promise<UnlistenFn> {
-  return listen<Task>('task', (e) => cb(e.payload))
+  return safeListen('task', cb)
 }
 
 export function onReply(cb: (reply: Reply) => void): Promise<UnlistenFn> {
-  return listen<Reply>('reply', (e) => cb(e.payload))
+  return safeListen('reply', cb)
 }

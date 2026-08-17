@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Copy, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, onTask } from '../api'
 import { Modal } from '../components/Modal'
@@ -53,12 +53,18 @@ export function PlansView() {
   useEffect(() => {
     let cancelled = false
     let un: (() => void) | undefined
+    const lastTaskProgress = new Map<number, number>()
     onTask((task) => {
       if (cancelled) return
       setTasks((prev) => [task, ...prev.filter((x) => x.id !== task.id)])
-      void api.listDeliveries().then((d) => {
-        if (!cancelled) setDeliveries(d)
-      })
+      const previousSent = lastTaskProgress.get(task.id)
+      lastTaskProgress.set(task.id, task.sent)
+      const terminal = ['completed', 'stopped'].includes(task.status)
+      if (previousSent === undefined || previousSent !== task.sent || terminal) {
+        void api.listDeliveries().then((d) => {
+          if (!cancelled) setDeliveries(d)
+        })
+      }
     }).then((u) => {
       if (cancelled) u()
       else un = u
@@ -74,6 +80,22 @@ export function PlansView() {
   }, [showEditor, setChrome])
 
   const enabledAccounts = accounts.filter((a) => a.enabled)
+
+  const taskByManuscript = useMemo(() => {
+    const map = new Map<number, Task>()
+    for (const task of tasks) {
+      for (const manuscriptId of task.manuscript_ids) {
+        const current = map.get(manuscriptId)
+        if (!current || task.id > current.id) map.set(manuscriptId, task)
+      }
+    }
+    return map
+  }, [tasks])
+
+  const progressByManuscript = useMemo(
+    () => new Map(manuscripts.map((m) => [m.id, planSendProgress(m, deliveries)])),
+    [manuscripts, deliveries],
+  )
 
   const openAdd = () => {
     setEditing(null)
@@ -144,7 +166,8 @@ export function PlansView() {
   const saveDraft = async () => {
     setSaving(true)
     try {
-      await persistManuscript(form)
+      const id = await persistManuscript(form)
+      if (!id) return
       setShowEditor(false)
       await load()
       toast('计划已保存', 'success')
@@ -359,9 +382,9 @@ export function PlansView() {
                 title: '进度',
                 width: 160,
                 render: (_value, m) => {
-                  const task = latestTask(m.id, tasks)
+                  const task = taskByManuscript.get(m.id)
                   const n = m.recipients.filter((r) => isValidEmail(r)).length
-                  const progress = planSendProgress(m, deliveries)
+                  const progress = progressByManuscript.get(m.id) ?? { sent: 0, total: 0 }
                   return task
                     ? <RuntimeTrack sent={progress.sent} total={progress.total || n} status={task.status}
                         meta={task.schedule_type === 'loop' ? `已成功 ${progress.sent} 封` : `${progress.sent} / ${progress.total || n || '—'}`} />
@@ -373,7 +396,7 @@ export function PlansView() {
                 title: '状态',
                 width: 92,
                 render: (_value, m) => {
-                  const task = latestTask(m.id, tasks)
+                  const task = taskByManuscript.get(m.id)
                   return task
                     ? <Badge tone={taskTone[task.status]} dot>{statusLabel(task.status)}</Badge>
                     : <Badge tone="neutral">草稿</Badge>
@@ -390,7 +413,7 @@ export function PlansView() {
                 title: '',
                 width: 220,
                 render: (_value, m) => {
-                  const task = latestTask(m.id, tasks)
+                  const task = taskByManuscript.get(m.id)
                   return (
                     <div className="row-actions plan-row-actions">
                       <div className="plan-row-actions-text">

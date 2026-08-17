@@ -75,7 +75,8 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
       work_type: profile?.work_type ?? [],
       sent: sent.length > 0,
       sentCount: sent.length,
-      lastSentAt: sent.length ? sent[sent.length - 1].sent_at : null,
+      // API returns deliveries newest-first; the first row is the latest send.
+      lastSentAt: sent.length ? sent[0].sent_at : null,
     }
   }), [recipients, editors, sentByEmail])
 
@@ -136,7 +137,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
 
   const resend = async (row: DetailRow) => {
     const sent = sentByEmail.get(row.email.toLowerCase()) ?? []
-    const latest = sent[sent.length - 1]
+    const latest = sent[0]
     if (!latest) { toast('没有找到可重发的投递记录', 'warning'); return }
     const ok = await confirm({
       title: '重新发送？',

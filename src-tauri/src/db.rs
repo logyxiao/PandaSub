@@ -104,6 +104,10 @@ CREATE TABLE IF NOT EXISTS replies (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS replies_account_uid ON replies(account_id, imap_uid);
+CREATE INDEX IF NOT EXISTS deliveries_task_manuscript ON deliveries(task_id, manuscript_id);
+CREATE INDEX IF NOT EXISTS deliveries_manuscript_recipient ON deliveries(manuscript_id, recipient);
+CREATE INDEX IF NOT EXISTS task_logs_task_id ON task_logs(task_id, id DESC);
+CREATE INDEX IF NOT EXISTS tasks_schedule_due ON tasks(schedule_type, status, scheduled_at);
 
 CREATE TABLE IF NOT EXISTS editors (
   id INTEGER PRIMARY KEY,

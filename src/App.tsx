@@ -52,19 +52,24 @@ const groups: Array<{ label?: string; items: NavItem[] }> = [
 
 export default function App() {
   const [active, setActive] = useState<ViewId>('dashboard')
+  const [replyKind, setReplyKind] = useState<string | undefined>(undefined)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('novelsub.sidebar') === '1')
   const [hideChrome, setHideChrome] = useState(false)
   const [running, setRunning] = useState(0)
   const [engineError, setEngineError] = useState(false)
 
   useEffect(() => {
+    let inFlight = false
     const refresh = () => {
+      if (inFlight) return
+      inFlight = true
       api.dashboard()
         .then((d) => { setRunning(d.running_tasks); setEngineError(false) })
         .catch(() => setEngineError(true))
+        .finally(() => { inFlight = false })
     }
     refresh()
-    const timer = window.setInterval(refresh, 6000)
+    const timer = window.setInterval(refresh, 15000)
     let cancelled = false
     let un: (() => void) | undefined
     onTask(() => { if (!cancelled) refresh() }).then((u) => {
@@ -95,7 +100,14 @@ export default function App() {
   return (
     <ToastProvider>
       <ConfirmProvider>
-        <NavContext.Provider value={{ go: (id) => { setHideChrome(false); setActive(id) }, setChrome: setHideChrome }}>
+        <NavContext.Provider value={{
+          go: (id, options) => {
+            setHideChrome(false)
+            setActive(id)
+            setReplyKind(id === 'replies' ? options?.replyKind : undefined)
+          },
+          setChrome: setHideChrome,
+        }}>
           <div className={`app-shell ${hideChrome ? 'focus-mode' : ''}`}>
             <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
               <div className="brand">
@@ -112,7 +124,7 @@ export default function App() {
                     {!collapsed && g.label && <div className="nav-group-label">{g.label}</div>}
                     {g.items.map(({ id, label, icon: Icon }) => (
                       <button key={id} className={`nav-item ${active === id ? 'active' : ''}`}
-                        onClick={() => setActive(id)}
+                        onClick={() => { setReplyKind(undefined); setActive(id) }}
                         title={collapsed ? label : undefined}
                         aria-current={active === id ? 'page' : undefined}>
                         <Icon size={18} />
@@ -136,7 +148,7 @@ export default function App() {
                 {active === 'dashboard' && <DashboardView />}
                 {active === 'plans' && <PlansView />}
                 {active === 'logs' && <LogsView />}
-                {active === 'replies' && <RepliesView />}
+                {active === 'replies' && <RepliesView initialKind={replyKind} />}
                 {active === 'stats' && <StatsView />}
                 {active === 'accounts' && <AccountsView />}
                 {active === 'editors' && <EditorsView />}

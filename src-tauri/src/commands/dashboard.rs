@@ -44,12 +44,11 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
         )
         .map_err(|e| e.to_string())?;
     let _ = store::prune_orphan_tasks(&conn);
-    let mut manuscripts = store::load_all_manuscripts(&conn)?;
-    manuscripts.truncate(20);
     let tasks = store::load_tasks(&conn)?;
-    let logs = store::load_logs(&conn, None, 50, 0)?;
+    let recent_replies = store::load_replies(&conn, None, 30)?;
     let human_replies = store::count_replies(&conn, "human").unwrap_or(0);
     let auto_replies = store::count_replies(&conn, "auto").unwrap_or(0);
+    let accepted_replies = store::count_accepted_replies(&conn).unwrap_or(0);
     Ok(Dashboard {
         account_count,
         manuscript_count: count("manuscripts")?,
@@ -59,9 +58,8 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
         running_tasks,
         human_replies,
         auto_replies,
+        accepted_replies,
         tasks,
-        manuscripts,
-        logs,
+        recent_replies,
     })
 }
-

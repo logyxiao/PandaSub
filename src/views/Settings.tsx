@@ -64,7 +64,9 @@ export function SettingsView() {
   const checkUpdate = async () => {
     try {
       const u = await api.checkUpdate()
-      toast(u.feed ? `当前版本 ${u.current}，更新源：${u.feed}` : `当前版本 ${u.current}，还没填写更新源`, 'info')
+      if (!u.feed) toast(`当前版本 ${u.current}，还没填写更新源`, 'info')
+      else if (u.has_update) toast(`发现新版本 ${u.latest}，当前版本 ${u.current}`, 'success')
+      else toast(`当前已是最新版本 ${u.current}`, 'success')
     } catch (e) { toast(String(e), 'error') }
   }
 

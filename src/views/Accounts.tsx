@@ -43,8 +43,9 @@ const normalizeForm = (form: AccountInput): AccountInput => {
     smtp_port: preset.port,
     imap_host: preset.imap_host || customImap,
     imap_port: preset.imap_port,
-    enabled: true,
-    check_replies: true,
+    // Preserve these flags while editing; only the add form uses the defaults.
+    enabled: form.enabled,
+    check_replies: form.check_replies,
   }
 }
 

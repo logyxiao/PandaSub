@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Clock3, Eye, FileUp, Pencil, Plus, Send, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, Clock3, Eye, FileUp, Heart, HeartOff, Pencil, Plus, Send, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/feedback'
@@ -10,7 +10,7 @@ import {
   GENRES, LENGTH_TAGS, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
   fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
   defaultMailTemplates, editorPlatformKey, groupMatchingByPlatform, isDroppedMailTemplate,
-  mergeEditorSelectionByPlatform,
+  isEditorFavorited, mergeEditorSelectionByPlatform,
 } from './planShared'
 import { EditorsList, emptyEditorListFilters, type EditorListFilters } from './Editors'
 
@@ -45,6 +45,7 @@ export function PlanEditor({
   const [orphans, setOrphans] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
   const [listCount, setListCount] = useState<number | null>(null)
+  const [visibleEditors, setVisibleEditors] = useState<Editor[]>([])
   const [listFilters, setListFilters] = useState<EditorListFilters>(() =>
     emptyEditorListFilters(form.genres, form.excluded_types ?? []),
   )
@@ -79,7 +80,7 @@ export function PlanEditor({
       ...extra.map((tag) => [tag, 0] as const),
     ]
   }, [workTypeOptions, form.genres])
-  const excluded = form.excluded_types ?? []
+  const excluded = useMemo(() => form.excluded_types ?? [], [form.excluded_types])
 
   // 初始选中：编辑已有计划 → 恢复保存的收件人；新建 → 进入第二步时自动匹配（见 goToStep2）。
   useEffect(() => {
@@ -150,7 +151,6 @@ export function PlanEditor({
 
   useEffect(() => {
     const suggested = lengthTagsFromWords(form.word_count)
-    if (!suggested.length) return
     setForm((f) => {
       const { genres } = splitPlanTags(f.genres)
       const next = [...suggested, ...genres]
@@ -196,6 +196,39 @@ export function PlanEditor({
     })
   }
 
+  const favoriteEditors = useMemo(
+    () => visibleEditors.filter(isEditorFavorited),
+    [visibleEditors],
+  )
+  const hasSelectedFavorite = favoriteEditors.some((editor) => selectedIds.has(editor.id))
+
+  const selectFavoriteEditors = () => {
+    setSelectedIds((prev) => {
+      const pickByPlatform = new Map<string, Editor>()
+      for (const editor of favoriteEditors) {
+        const key = editorPlatformKey(editor)
+        const current = pickByPlatform.get(key)
+        if (!current || (prev.has(editor.id) && !prev.has(current.id))) pickByPlatform.set(key, editor)
+      }
+
+      const next = new Set(prev)
+      for (const item of editors) {
+        if (pickByPlatform.has(editorPlatformKey(item))) next.delete(item.id)
+      }
+      for (const editor of pickByPlatform.values()) next.add(editor.id)
+      return next
+    })
+  }
+
+  const deselectFavoriteEditors = () => {
+    const visibleFavoriteIds = new Set(favoriteEditors.map((editor) => editor.id))
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      for (const id of visibleFavoriteIds) next.delete(id)
+      return next
+    })
+  }
+
   const togglePlanTag = (tag: string) => {
     setForm((f) => {
       const excludedTypes = (f.excluded_types ?? []).filter((item) => item !== tag)
@@ -214,10 +247,11 @@ export function PlanEditor({
     }))
   }
 
-  const platformGroups = useMemo(
-    () => groupMatchingByPlatform(editors, form.genres, excluded),
-    [editors, form.genres, excluded],
-  )
+  const platformGroups = useMemo(() => {
+    const selectedGenres = step === 2 ? listFilters.workTypes : form.genres
+    const selectedExcluded = step === 2 ? listFilters.excludedWorkTypes : excluded
+    return groupMatchingByPlatform(editors, selectedGenres, selectedExcluded)
+  }, [editors, step, listFilters.workTypes, listFilters.excludedWorkTypes, form.genres, excluded])
 
   const matchKey = `${form.genres.join('\0')}::${excluded.join('\0')}`
 
@@ -306,12 +340,30 @@ export function PlanEditor({
       if (editingEditor) {
         await api.updateEditor(editingEditor.id, payload)
         await onReloadEditors()
+        setSelectedIds((prev) => {
+          if (!prev.has(editingEditor.id)) return prev
+          const next = new Set(prev)
+          for (const item of editors) {
+            if (item.id !== editingEditor.id && next.has(item.id) && editorPlatformKey(item) === editorPlatformKey(payload)) {
+              next.delete(item.id)
+            }
+          }
+          next.add(editingEditor.id)
+          return next
+        })
         setShowEditorForm(false)
         toast('编辑资料已更新', 'success')
       } else {
         const id = await api.addEditor(payload)
         await onReloadEditors()
-        setSelectedIds((prev) => new Set(prev).add(id))
+        setSelectedIds((prev) => {
+          const next = new Set(prev)
+          for (const item of editors) {
+            if (next.has(item.id) && editorPlatformKey(item) === editorPlatformKey(payload)) next.delete(item.id)
+          }
+          next.add(id)
+          return next
+        })
         setShowEditorForm(false)
         toast('编辑已加入资料库', 'success')
       }
@@ -593,6 +645,7 @@ export function PlanEditor({
               selectedIds={selectedIds}
               onToggleSelect={toggleSelect}
               onTotalChange={setListCount}
+              onVisibleChange={setVisibleEditors}
               platformPeersOf={platformPeersOf}
               onReplaceEditor={replacePlatformEditor}
               onFavoriteChange={onFavoriteChange}
@@ -609,6 +662,18 @@ export function PlanEditor({
                 }
               }}
               pageSize={6}
+              actions={
+                <>
+                  <Button size="sm" className="favorite-action" disabled={!favoriteEditors.length}
+                    onClick={selectFavoriteEditors}>
+                    <Heart size={12} />选择收藏编辑
+                  </Button>
+                  <Button size="sm" className="favorite-action is-remove" disabled={!hasSelectedFavorite}
+                    onClick={deselectFavoriteEditors}>
+                    <HeartOff size={12} />取消选择收藏编辑
+                  </Button>
+                </>
+              }
               emptyText="没有符合筛选的编辑。可调整筛选，或点右上角从编辑库添加。"
             />
             {!!orphans.length && (

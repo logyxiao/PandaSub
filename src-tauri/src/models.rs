@@ -349,9 +349,9 @@ pub struct Dashboard {
     pub running_tasks: i64,
     pub human_replies: i64,
     pub auto_replies: i64,
+    pub accepted_replies: i64,
     pub tasks: Vec<Task>,
-    pub manuscripts: Vec<Manuscript>,
-    pub logs: Vec<TaskLog>,
+    pub recent_replies: Vec<Reply>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

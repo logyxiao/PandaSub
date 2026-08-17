@@ -71,6 +71,16 @@ pub fn run() {
                 tray: Mutex::new(None),
             });
 
+            let auto_backup = {
+                let conn = db.lock().unwrap();
+                store::load_settings(&conn).map(|s| s.auto_backup).unwrap_or(false)
+            };
+            if auto_backup {
+                if let Err(error) = commands::backup_database(&data_dir) {
+                    log::warn!("自动备份失败：{error}");
+                }
+            }
+
             build_tray(app)?;
 
             // 任务 worker 不跨进程存活：重启后数据库里还标着 running / paused 的任务

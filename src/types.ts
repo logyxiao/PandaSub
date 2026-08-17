@@ -165,9 +165,9 @@ export interface Dashboard {
   running_tasks: number
   human_replies: number
   auto_replies: number
+  accepted_replies: number
   tasks: Task[]
-  manuscripts: Manuscript[]
-  logs: TaskLog[]
+  recent_replies: Reply[]
 }
 
 export interface Delivery {

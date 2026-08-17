@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BarChart3, RefreshCw } from 'lucide-react'
 import { api } from '../api'
 import { EmptyState, IconButton, Select } from '../components/ui'
@@ -33,14 +33,17 @@ export function StatsView() {
   const [report, setReport] = useState<StatsReport | null>(null)
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState('')
+  const requestSeq = useRef(0)
 
   const load = useCallback(async (s: string, e: string, g: GroupMode) => {
+    const seq = ++requestSeq.current
     setLoading(true)
     try {
-      setReport(await api.getStats(s || undefined, e || undefined, g))
-      setNotice('')
-    } catch (err) { setNotice(String(err)) }
-    finally { setLoading(false) }
+      const next = await api.getStats(s || undefined, e || undefined, g)
+      if (seq !== requestSeq.current) return
+      setReport(next); setNotice('')
+    } catch (err) { if (seq === requestSeq.current) setNotice(String(err)) }
+    finally { if (seq === requestSeq.current) setLoading(false) }
   }, [])
 
   useEffect(() => { void load(start, end, group) }, [load, start, end, group])
