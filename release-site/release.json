@@ -7,6 +7,12 @@
     "优化工作台回复分类、筛选跳转和编辑选择体验。"
   ],
   "downloads": {
+    "windows": {
+      "label": "64 位版",
+      "detail": "Windows 10 / 11 · 64 位 · 5.2 MB",
+      "url": "releases/pandasub-0.1.5-windows-x64-setup.exe",
+      "sha256": "5a37919ff9e320d1b1fdf37422f08a139234cd13b69bb70ed03092fff9d31cb5"
+    },
     "macos": {
       "label": "Apple 芯片版",
       "detail": "Apple 芯片 · macOS 11 及以上 · 13 MB",

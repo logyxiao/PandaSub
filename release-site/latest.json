@@ -3,6 +3,10 @@
   "notes": "新增收藏编辑快捷操作，修复同平台编辑列表滚动，并优化回复工作流。",
   "pub_date": "2026-08-18T00:00:00Z",
   "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkRyUUFnUk1RUkEycGpZQ1hpZm8xWGg2bWtPUjc2cmwvd0lvMjBsbXYzNWgrTmJCMGo5MDkzU1hnbEZCYno5Q2lBbHljZlMwZzFMc1hIMDgwNnFHYXc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MDY2MTg3CWZpbGU654aK54yr5oqV56i/XzAuMS41X3g2NC1zZXR1cC5leGUKaEdHVURkTllLTmVFNGNmUjNGbnRJbTh5OVFEWlFUeU9OM2hGYlltRDl4NE9zVU1hTnFjTFdHcTZZc2orS0hiNDRkRllQUkhtMkd4dFlVTTgxSmFXQ0E9PQo=",
+      "url": "https://pandasub.zhudot.com/releases/pandasub-0.1.5-windows-x64-setup.exe"
+    },
     "darwin-aarch64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkg1MmdsRkZFN082VFpROS93Ylg5TjB4bldwTWtKQmdBdkxtMU0xWFY0VWpJdTV0OHJsR0I3VFlzMFl1M1JWTzYvVEhLeUx4K3VxUUZHY205KzBSaWcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MDYzNjI2CWZpbGU654aK54yr5oqV56i/LmFwcC50YXIuZ3oKaXgxYmFLbUZramF2UlBqY2U4WHg4SHpqRXFxTjd3eTBuNndkb1B4c3p3Q1c2RGlHbW5vWnRWcVdXMm12ZndqVlRPODVhN3hZREI2ckVEa3FON20vQmc9PQo=",
       "url": "https://pandasub.zhudot.com/releases/novelsub-0.1.5-darwin-aarch64.app.tar.gz"
