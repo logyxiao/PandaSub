@@ -103,6 +103,18 @@ npm run tauri build
 
 支持的 Tauri 构建目标包括 macOS App/DMG 和 Windows NSIS。
 
+## 一键发布
+
+在 `main` 分支运行，当前未提交的修改也会一起纳入本次版本：
+
+```bash
+npm run release:publish -- 0.1.6 "更新说明一；更新说明二"
+```
+
+该命令会更新应用版本，提交并推送 `main` 和版本标签，等待 GitHub 自动构建
+macOS 与 Windows 安装包，然后生成更新清单并部署到 `pandasub.zhudot.com`。
+本机需要已登录 GitHub CLI，并能通过 `ssh tx` 连接部署服务器。
+
 ## 项目结构
 
 ```text

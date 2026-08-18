@@ -1,11 +1,9 @@
 name: 构建安装包
 
-# 推送 main 分支 / 打 v 开头 tag / 手动触发时，自动构建 macOS 和 Windows 安装包。
-# 普通推送：安装包作为本次运行的 artifacts 可下载，版本用 tauri.conf.json。
+# 打 v 开头 tag / 手动触发时，自动构建 macOS 和 Windows 安装包。
 # 打 tag（如 v0.1.2）：把 tag 写入应用版本后再构建，并发布 GitHub Release（草稿）。
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 
