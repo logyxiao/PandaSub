@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Copy, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Check, Copy, FileX2, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, onTask } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
@@ -10,7 +10,11 @@ import { useNav } from '../nav'
 import type { Account, Delivery, Editor, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
 import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
-import { categoryFromWords, countChars, createEmptyManuscript, latestTask, planSendProgress, syncMailFromTemplates, toInput } from './planShared'
+import {
+  categoryFromWords, countChars, createEmptyManuscript, DEFAULT_SEND_INTERVAL_MIN,
+  latestTask, normalizeSendIntervalMin, planSendProgress, SEND_INTERVAL_OPTIONS,
+  syncMailFromTemplates, toInput,
+} from './planShared'
 
 const emptyTask: TaskInput = {
   name: '', manuscript_ids: [], account_ids: [], schedule_type: 'immediate', scheduled_at: null,
@@ -30,6 +34,8 @@ export function PlansView() {
   const [showEditor, setShowEditor] = useState(false)
   const [accountFor, setAccountFor] = useState<Manuscript | null>(null)
   const [draftIds, setDraftIds] = useState<number[]>([])
+  const [draftSendIntervalMin, setDraftSendIntervalMin] = useState(DEFAULT_SEND_INTERVAL_MIN)
+  const [creatingWasteFor, setCreatingWasteFor] = useState<number | null>(null)
   const [detail, setDetail] = useState<Manuscript | null>(null)
   const [form, setForm] = useState<ManuscriptInput>(() => createEmptyManuscript())
   const [taskForm, setTaskForm] = useState<TaskInput>(emptyTask)
@@ -283,6 +289,7 @@ export function PlansView() {
   const openAccountFor = (m: Manuscript) => {
     setAccountFor(m)
     setDraftIds(planAccounts(m))
+    setDraftSendIntervalMin(normalizeSendIntervalMin(m.send_interval_min))
   }
 
   const toggleDraftAccount = (accountId: number) => {
@@ -295,16 +302,54 @@ export function PlansView() {
     try {
       const ids = draftIds.slice()
       const cur = planAccounts(accountFor)
-      await api.updateManuscript(accountFor.id, { ...toInput(accountFor), account_ids: ids })
+      await api.updateManuscript(accountFor.id, {
+        ...toInput(accountFor),
+        account_ids: ids,
+        send_interval_min: draftSendIntervalMin,
+      })
       const task = latestTask(accountFor.id, tasks)
       if (task && (cur.length !== ids.length || cur.some((x, i) => x !== ids[i]))) {
         await api.updateTaskAccounts(task.id, ids)
       }
       await load()
       setAccountFor(null)
-      toast('邮箱配置已保存', 'success')
+      toast('邮箱和发送频率已保存', 'success')
     } catch (e) { toast(String(e), 'error') }
     finally { setSaving(false) }
+  }
+
+  const createWasteDraft = async (manuscript: Manuscript) => {
+    const wasteEditors = new Set(
+      editors
+        .filter((editor) => editor.enabled && editor.work_type.includes('废稿'))
+        .map((editor) => editor.email.trim().toLowerCase())
+        .filter(Boolean),
+    )
+    if (!wasteEditors.size) {
+      toast('没有启用且带有「废稿」标签的编辑', 'warning')
+      return
+    }
+    if (!enabledAccounts.length) {
+      toast('请先添加并启用至少一个投稿邮箱', 'warning')
+      return
+    }
+    const ok = await confirm({
+      title: '创建废稿计划？',
+      message: `将复制《${manuscript.title}》的正文、邮件模板和附件，并立即发送给 ${wasteEditors.size} 位废稿编辑。`,
+      confirmLabel: '创建并发送',
+    })
+    if (!ok) return
+
+    setCreatingWasteFor(manuscript.id)
+    try {
+      const count = await api.createWasteDraftTask(manuscript.id)
+      await load()
+      toast(`废稿计划已创建，开始发送给 ${count} 位编辑`, 'success')
+    } catch (error) {
+      toast(String(error), 'error')
+    } finally {
+      setCreatingWasteFor(null)
+    }
   }
 
   if (showEditor) {
@@ -361,20 +406,22 @@ export function PlansView() {
               {
                 key: 'title',
                 title: '计划',
-                render: (_value, m) => (
-                  <>
-                    <b>{m.title}</b>
-                    <small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || '未填写分类'}</small>
-                  </>
-                ),
-              },
-              {
-                key: 'recipients',
-                title: '收件人',
-                width: 88,
                 render: (_value, m) => {
-                  const n = m.recipients.filter((r) => isValidEmail(r)).length
-                  return n ? `${n} 家` : <span className="warn-text">未设置</span>
+                  const task = taskByManuscript.get(m.id)
+                  const isWastePlan = m.title.trim().endsWith('（废稿）') || task?.name.trim().endsWith('（废稿）')
+                  const wasteLabel = task?.status === 'running' ? '废稿发送中'
+                    : task?.status === 'paused' ? '废稿已暂停'
+                    : task?.status === 'completed' ? '废稿已完成'
+                    : '废稿计划'
+                  return (
+                    <>
+                      <div className="plan-list-title">
+                        <b>{m.title}</b>
+                        {isWastePlan && <Badge tone={task ? taskTone[task.status] : 'neutral'} dot>{wasteLabel}</Badge>}
+                      </div>
+                      <small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || '未填写分类'}</small>
+                    </>
+                  )
                 },
               },
               {
@@ -414,6 +461,11 @@ export function PlansView() {
                 width: 220,
                 render: (_value, m) => {
                   const task = taskByManuscript.get(m.id)
+                  const isWastePlan = m.title.trim().endsWith('（废稿）') || task?.name.trim().endsWith('（废稿）')
+                  const wasteActionLabel = task?.status === 'running' ? '废稿发送中'
+                    : task?.status === 'paused' ? '废稿已暂停'
+                    : task?.status === 'completed' ? '废稿已完成'
+                    : '废稿计划'
                   return (
                     <div className="row-actions plan-row-actions">
                       <div className="plan-row-actions-text">
@@ -432,6 +484,14 @@ export function PlansView() {
                         <Button size="sm" onClick={() => openEdit(m)}>编辑</Button>
                       </div>
                       <div className="plan-row-actions-icons">
+                        {isWastePlan ? (
+                          <Button size="sm" disabled><FileX2 size={14} />{wasteActionLabel}</Button>
+                        ) : (
+                          <Button size="sm" disabled={creatingWasteFor === m.id}
+                            onClick={() => void createWasteDraft(m)}>
+                            <FileX2 size={14} />{creatingWasteFor === m.id ? '废稿发送中' : '一键废稿'}
+                          </Button>
+                        )}
                         <IconButton title="复制计划" onClick={() => openCopy(m)}><Copy size={15} /></IconButton>
                         <IconButton title="配置投稿邮箱" onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
                         {!(task && ['running', 'paused'].includes(task.status)) && (
@@ -463,16 +523,17 @@ export function PlansView() {
       )}
 
       {accountFor && (
-        <Modal title="配置投稿邮箱" width={560} onClose={() => setAccountFor(null)}
+        <Modal title="配置投稿邮箱" width={640} onClose={() => setAccountFor(null)}
           footer={
             <>
               <Button variant="ghost" onClick={() => setAccountFor(null)}>取消</Button>
               <Button variant="primary" disabled={saving} onClick={() => void saveAccount()}>保存</Button>
             </>
           }>
-          <p className="plan-acct-hint">为《{accountFor.title || '未命名'}》指定使用的投稿邮箱；留空表示使用全部启用邮箱。已发送的计划会同时更新对应的发送任务。</p>
+          <p className="plan-acct-hint">为《{accountFor.title || '未命名'}》指定投稿邮箱和发送频率；邮箱留空表示使用全部启用邮箱。已发送的计划会同时更新对应的发送任务。</p>
           <div className="plan-acct-list">
             <div className="plan-acct-row">
+              <div className="plan-acct-title"><b>投稿邮箱</b><small>可多选</small></div>
               <div className="plan-accounts-list">
                 {enabledAccounts.map((a) => {
                   const on = draftIds.includes(a.id)
@@ -485,6 +546,31 @@ export function PlansView() {
                 })}
                 {!enabledAccounts.length && <span className="hint">还没有启用邮箱，去「邮箱」页添加并启用</span>}
               </div>
+            </div>
+            <div className="plan-acct-row">
+              <div className="plan-acct-title"><b>发送频率</b><small>每封邮件之间的间隔</small></div>
+              <div className="plan-acct-frequency" role="radiogroup" aria-label="发送频率">
+                {SEND_INTERVAL_OPTIONS.map((item) => {
+                  const on = draftSendIntervalMin === item.minutes
+                  return (
+                    <button key={item.minutes} type="button" role="radio" aria-checked={on}
+                      className={`send-interval-row ${on ? 'on' : ''}`}
+                      onClick={() => setDraftSendIntervalMin(item.minutes)}>
+                      <span className="send-interval-main">
+                        <b>{item.minutes} 分钟/次</b>
+                        <small>{item.hint}</small>
+                      </span>
+                      {on && <Check size={16} />}
+                    </button>
+                  )
+                })}
+              </div>
+              {draftSendIntervalMin === 1 && (draftIds.length || enabledAccounts.length) < 3 && (
+                <p className="warn-text">1 分钟/次建议至少配置 3 个投稿邮箱。</p>
+              )}
+              {draftSendIntervalMin === 2 && (draftIds.length || enabledAccounts.length) < 2 && (
+                <p className="warn-text">2 分钟/次建议至少配置 2 个投稿邮箱。</p>
+              )}
             </div>
           </div>
         </Modal>

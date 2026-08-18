@@ -105,6 +105,131 @@ pub fn create_task(app: AppHandle, state: State<'_, AppState>, input: TaskInput)
 }
 
 #[tauri::command]
+pub fn create_waste_draft_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    manuscript_id: i64,
+) -> Result<usize, String> {
+    let (task_id, cloned_manuscript_id, recipient_count) = {
+        let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+        let manuscript = store::load_manuscript(&conn, manuscript_id)?
+            .ok_or("原计划不存在，请刷新后重试")?;
+        let latest_task = store::load_tasks(&conn)?
+            .into_iter()
+            .find(|task| task.manuscript_ids.contains(&manuscript_id));
+        if manuscript.title.trim().ends_with("（废稿）")
+            || latest_task
+                .as_ref()
+                .is_some_and(|task| task.name.trim().ends_with("（废稿）"))
+        {
+            return Err("当前已经是废稿计划，无需再次创建".into());
+        }
+
+        let mut excluded_emails = store::delivered_emails_for_manuscript(&conn, manuscript_id)?;
+        excluded_emails.extend(manuscript.recipients.iter().filter_map(|recipient| {
+            let email = crate::smtp::parse_recipient(recipient).1.trim().to_lowercase();
+            (!email.is_empty()).then_some(email)
+        }));
+
+        let mut seen = std::collections::HashSet::new();
+        let mut waste_editor_count = 0usize;
+        let recipients: Vec<String> = store::load_editors(&conn)?
+            .into_iter()
+            .filter(|editor| {
+                editor.enabled && editor.work_type.iter().any(|tag| tag.trim() == "废稿")
+            })
+            .filter_map(|editor| {
+                waste_editor_count += 1;
+                let email = editor.email.trim().to_lowercase();
+                if email.is_empty()
+                    || !email.contains('@')
+                    || excluded_emails.contains(&email)
+                    || !seen.insert(email.clone())
+                {
+                    return None;
+                }
+                let name = editor.name.trim();
+                Some(if name.is_empty() {
+                    email
+                } else {
+                    format!("{name} <{email}>")
+                })
+            })
+            .collect();
+        if recipients.is_empty() {
+            return Err(if waste_editor_count == 0 {
+                "没有启用且带有「废稿」标签的编辑".into()
+            } else {
+                "所有废稿编辑都已在原计划中或已有成功投递记录，无需重复发送".into()
+            });
+        }
+
+        let account_ids = if manuscript.account_ids.is_empty() {
+            latest_task
+                .as_ref()
+                .map(|task| task.account_ids.clone())
+                .unwrap_or_default()
+        } else {
+            manuscript.account_ids.clone()
+        };
+        let has_account = store::load_accounts(&conn)?.into_iter().any(|account| {
+            account.enabled && (account_ids.is_empty() || account_ids.contains(&account.id))
+        });
+        if !has_account {
+            return Err("原计划没有可用的投稿邮箱，请先配置并启用邮箱".into());
+        }
+
+        let retry_max = latest_task
+            .as_ref()
+            .map(|task| task.retry_max)
+            .unwrap_or(store::load_settings(&conn)?.default_retry_max);
+        let manuscript_title = manuscript.title.trim();
+        let task_name = format!("{manuscript_title}（废稿）");
+        let recipients_json = json!(recipients).to_string();
+        let account_ids_json = json!(account_ids).to_string();
+        let recipient_count = recipients.len();
+
+        let transaction = conn.transaction().map_err(|e| e.to_string())?;
+        transaction.execute(
+            "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
+                word_count, category, reader_category, reader_emotion, style, genres,
+                excluded_types, account_ids, send_interval_min, subject, mail_templates,
+                file_name, file_data)
+             SELECT ?1, body, content_type, ?2, sender_name,
+                word_count, category, reader_category, reader_emotion, style, genres,
+                excluded_types, ?3, send_interval_min, subject, mail_templates,
+                file_name, file_data
+             FROM manuscripts WHERE id = ?4",
+            rusqlite::params![manuscript_title, recipients_json, account_ids_json, manuscript_id],
+        )
+        .map_err(|e| e.to_string())?;
+        let cloned_manuscript_id = transaction.last_insert_rowid();
+        transaction.execute(
+            "INSERT INTO tasks (name, manuscript_ids, account_ids, status, schedule_type, scheduled_at, retry_max)
+             VALUES (?1, ?2, ?3, 'stopped', 'immediate', NULL, ?4)",
+            rusqlite::params![
+                task_name,
+                json!([cloned_manuscript_id]).to_string(),
+                json!(account_ids).to_string(),
+                retry_max,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let task_id = transaction.last_insert_rowid();
+        transaction.commit().map_err(|e| e.to_string())?;
+        (task_id, cloned_manuscript_id, recipient_count)
+    };
+
+    if let Err(error) = start_task(app, state.clone(), task_id) {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let _ = conn.execute("DELETE FROM tasks WHERE id = ?1", [task_id]);
+        let _ = conn.execute("DELETE FROM manuscripts WHERE id = ?1", [cloned_manuscript_id]);
+        return Err(error);
+    }
+    Ok(recipient_count)
+}
+
+#[tauri::command]
 pub fn delete_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     {
         let registry = state.tasks.lock().map_err(|e| e.to_string())?;
@@ -185,4 +310,3 @@ pub fn stop_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     }
     Ok(())
 }
-

@@ -549,6 +549,25 @@ pub fn delivered_emails_for_task_manuscript(
         .map_err(|e| e.to_string())
 }
 
+/// Returns every recipient successfully delivered for this manuscript,
+/// regardless of which task performed the delivery.
+pub fn delivered_emails_for_manuscript(
+    conn: &Connection,
+    manuscript_id: i64,
+) -> Result<std::collections::HashSet<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT recipient FROM deliveries WHERE manuscript_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([manuscript_id], |r| {
+            let raw: String = r.get(0)?;
+            Ok(crate::smtp::parse_recipient(&raw).1.trim().to_lowercase())
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<std::collections::HashSet<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
 pub fn task_delivery_count(conn: &Connection, task_id: i64) -> Result<i64, String> {
     conn.query_row(
         "SELECT COUNT(*) FROM deliveries WHERE task_id = ?1",

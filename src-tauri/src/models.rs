@@ -341,8 +341,24 @@ pub struct EditorInput {
 }
 
 pub fn default_editor_inputs() -> Result<Vec<EditorInput>, String> {
-    serde_json::from_str(include_str!("data/default_editors.json"))
-        .map_err(|e| format!("内置编辑库损坏：{e}"))
+    let mut editors: Vec<EditorInput> = serde_json::from_str(include_str!("data/default_editors.json"))
+        .map_err(|e| format!("内置编辑库损坏：{e}"))?;
+    let waste_draft_editors: Vec<EditorInput> =
+        serde_json::from_str(include_str!("data/waste_draft_editors.json"))
+            .map_err(|e| format!("内置废稿编辑库损坏：{e}"))?;
+
+    for editor in waste_draft_editors {
+        let email = editor.email.trim();
+        if let Some(existing) = editors
+            .iter_mut()
+            .find(|item| item.email.trim().eq_ignore_ascii_case(email))
+        {
+            *existing = editor;
+        } else {
+            editors.push(editor);
+        }
+    }
+    Ok(editors)
 }
 
 #[derive(Serialize, Clone, Debug)]

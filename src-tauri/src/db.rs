@@ -672,7 +672,7 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-16-local-2";
+const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-19-waste-draft-2";
 
 fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
     let current: String = conn
