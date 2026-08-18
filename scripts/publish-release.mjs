@@ -147,10 +147,8 @@ function prepareDeployment(version, notes, date, assetsDir) {
   const windowsSource = onlyAsset(files, '.exe', 'Windows 安装包')
   const macDmgSource = onlyAsset(files, '.dmg', 'macOS 安装包')
   const macUpdaterSource = onlyAsset(files, '.app.tar.gz', 'macOS 更新包')
-  const windowsSignatureSource = `${windowsSource}.sig`
-  const macSignatureSource = `${macUpdaterSource}.sig`
-  if (!fs.existsSync(windowsSignatureSource)) fail('Windows 安装包缺少更新签名')
-  if (!fs.existsSync(macSignatureSource)) fail('macOS 更新包缺少更新签名')
+  const windowsSignatureSource = onlyAsset(files, '.exe.sig', 'Windows 更新签名')
+  const macSignatureSource = onlyAsset(files, '.app.tar.gz.sig', 'macOS 更新签名')
 
   const deployDir = fs.mkdtempSync(path.join(os.tmpdir(), `pandasub-${version}-`))
   const releasesDir = path.join(deployDir, 'releases')
@@ -236,19 +234,36 @@ async function main() {
   run('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', sshTarget, 'true'])
   run('git', ['fetch', 'origin', '--tags'])
   const existingTag = run('git', ['tag', '--list', tag], { capture: true })
-  if (existingTag) fail(`版本标签 ${tag} 已存在`)
-
-  console.log(`\n准备发布熊猫投稿 ${tag}`)
-  const pending = run('git', ['status', '--short'], { capture: true })
-  if (pending) console.log(`\n本次会一并发布这些修改：\n${pending}`)
-  updateVersionFiles(version, notes, date)
-  run('git', ['add', '-A'])
-  run('git', ['commit', '-m', `release: prepare ${tag}`])
-  run('git', ['tag', '-a', tag, '-m', `熊猫投稿 ${tag}`])
-  run('git', ['push', 'origin', 'main', `refs/tags/${tag}`])
-
-  const commit = run('git', ['rev-parse', 'HEAD'], { capture: true })
-  const runId = waitForReleaseBuild(tag, commit)
+  let commit
+  let runId
+  if (existingTag) {
+    const currentVersion = readJson('package.json').version
+    if (currentVersion !== version) {
+      fail(`版本标签 ${tag} 已存在，但当前项目版本是 ${currentVersion}`)
+    }
+    console.log(`\n继续上次未完成的 ${tag} 发布`)
+    const pending = run('git', ['status', '--short'], { capture: true })
+    if (pending) {
+      console.log(`\n本次会提交这些发布修复：\n${pending}`)
+      run('git', ['add', '-A'])
+      run('git', ['commit', '-m', `fix: repair ${tag} release pipeline`])
+    }
+    run('git', ['push', 'origin', 'main'])
+    commit = run('git', ['rev-parse', 'HEAD'], { capture: true })
+    run('gh', ['workflow', 'run', 'build.yml', '--ref', 'main'])
+    runId = waitForReleaseBuild('', commit)
+  } else {
+    console.log(`\n准备发布熊猫投稿 ${tag}`)
+    const pending = run('git', ['status', '--short'], { capture: true })
+    if (pending) console.log(`\n本次会一并发布这些修改：\n${pending}`)
+    updateVersionFiles(version, notes, date)
+    run('git', ['add', '-A'])
+    run('git', ['commit', '-m', `release: prepare ${tag}`])
+    run('git', ['tag', '-a', tag, '-m', `熊猫投稿 ${tag}`])
+    run('git', ['push', 'origin', 'main', `refs/tags/${tag}`])
+    commit = run('git', ['rev-parse', 'HEAD'], { capture: true })
+    runId = waitForReleaseBuild(tag, commit)
+  }
 
   const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), `pandasub-assets-${version}-`))
   run('gh', ['run', 'download', runId, '--dir', downloadDir])
@@ -265,10 +280,26 @@ async function main() {
   const deployed = await response.json()
   if (deployed.version !== version) fail(`下载站仍显示 ${deployed.version}，期望 ${version}`)
 
-  run('git', ['add', 'release-site/release.json', 'release-site/latest.json'])
-  run('git', ['commit', '-m', `release: publish ${tag} [skip ci]`])
-  run('git', ['push', 'origin', 'main'])
-  run('gh', ['release', 'edit', tag, '--draft=false', '--latest'])
+  const metadataChanges = run('git', [
+    'status', '--porcelain', '--', 'release-site/release.json', 'release-site/latest.json',
+  ], { capture: true })
+  if (metadataChanges) {
+    run('git', ['add', 'release-site/release.json', 'release-site/latest.json'])
+    run('git', ['commit', '-m', `release: publish ${tag} [skip ci]`])
+    run('git', ['push', 'origin', 'main'])
+  }
+
+  const releaseExists = run('gh', ['release', 'view', tag, '--json', 'tagName'], {
+    capture: true, allowFailure: true,
+  })
+  if (!releaseExists) {
+    run('gh', ['release', 'create', tag, '--draft', '--title', `熊猫投稿 ${tag}`,
+      '--notes', notes.join('\n')])
+  }
+  const releaseFiles = allFiles(path.join(deployDir, 'releases'))
+  run('gh', ['release', 'upload', tag, ...releaseFiles, '--clobber'])
+  run('gh', ['release', 'edit', tag, '--title', `熊猫投稿 ${tag}`,
+    '--notes', notes.join('\n'), '--draft=false', '--latest'])
 
   console.log(`\n发布完成：${siteUrl}/`)
   console.log(`GitHub Release：https://github.com/logyxiao/PandaSub/releases/tag/${tag}`)
