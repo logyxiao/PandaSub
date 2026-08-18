@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "熊猫投稿",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "identifier": "com.novelsub.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -36,7 +36,11 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["app", "dmg", "nsis"],
+    "targets": [
+      "app",
+      "dmg",
+      "nsis"
+    ],
     "macOS": {
       "signingIdentity": "-"
     },

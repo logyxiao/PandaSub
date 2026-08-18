@@ -1,8 +1,12 @@
 const fallback = {
-  version: "0.1.5",
-  date: "2026-08-18",
-  notes: ["优化编辑选择、收藏操作和回复工作流。"],
-  downloads: {},
+  "version": "0.1.6",
+  "date": "2026-08-19",
+  "notes": [
+    "新增一键废稿",
+    "修复废稿编辑重复发送",
+    "优化废稿计划状态显示"
+  ],
+  "downloads": {}
 }
 
 const $ = (id) => document.getElementById(id)

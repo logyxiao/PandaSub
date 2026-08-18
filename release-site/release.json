@@ -1,23 +1,21 @@
 {
-  "version": "0.1.5",
-  "date": "2026-08-18",
+  "version": "0.1.6",
+  "date": "2026-08-19",
   "notes": [
-    "新增收藏编辑的快捷选择与取消选择，并统一收藏状态显示。",
-    "修复同平台编辑列表无法使用滚轮或拖动滚动条的问题。",
-    "优化工作台回复分类、筛选跳转和编辑选择体验。"
+    "新增一键废稿",
+    "修复废稿编辑重复发送",
+    "优化废稿计划状态显示"
   ],
   "downloads": {
     "windows": {
       "label": "64 位版",
-      "detail": "Windows 10 / 11 · 64 位 · 5.2 MB",
-      "url": "releases/pandasub-0.1.5-windows-x64-setup.exe",
-      "sha256": "5a37919ff9e320d1b1fdf37422f08a139234cd13b69bb70ed03092fff9d31cb5"
+      "detail": "Windows 10 / 11 · 64 位",
+      "url": "releases/pandasub-0.1.6-windows-x64-setup.exe"
     },
     "macos": {
-      "label": "Apple 芯片版",
-      "detail": "Apple 芯片 · macOS 11 及以上 · 13 MB",
-      "url": "releases/pandasub-0.1.5-macos-aarch64-r2.dmg",
-      "sha256": "0862a9143997b2e52223a2a854a4693663fe239f1a2c69fd0a8ad4390dd702b1"
+      "label": "通用版",
+      "detail": "Apple 芯片 / Intel · macOS 11 及以上",
+      "url": "releases/pandasub-0.1.6-macos-universal.dmg"
     }
   }
 }
