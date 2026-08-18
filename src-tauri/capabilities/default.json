@@ -8,6 +8,8 @@
   "permissions": [
     "core:default",
     "core:event:default",
-    "dialog:default"
+    "dialog:default",
+    "process:allow-restart",
+    "updater:default"
   ]
 }

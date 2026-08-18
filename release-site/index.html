@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="熊猫投稿桌面版官方下载与更新页面。" />
+    <meta name="theme-color" content="#f5f7f4" />
+    <title>熊猫投稿｜官方下载</title>
+    <link rel="icon" href="assets/logo.png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-head">
+      <a class="brand" href="./" aria-label="熊猫投稿下载首页">
+        <img src="assets/logo.png" alt="" />
+        <span>熊猫投稿</span>
+      </a>
+      <a class="head-link" href="#downloads">全部版本</a>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-mark" aria-hidden="true">
+          <img src="assets/logo.png" alt="" />
+        </div>
+        <div class="hero-copy">
+          <p class="eyebrow">桌面投稿工作台</p>
+          <h1 id="hero-title">熊猫投稿</h1>
+          <p class="hero-lead">把编辑库、投稿计划、发送记录和回复整理在一处。数据保存在你的电脑上。</p>
+          <div class="hero-actions">
+            <a id="primary-download" class="download-primary is-disabled" href="#downloads" aria-disabled="true">
+              <span id="primary-label">正在读取最新版</span>
+              <small id="primary-meta">请稍候</small>
+            </a>
+            <a class="version-link" href="#release-notes"><span id="hero-version">最新版本</span> · 查看更新内容</a>
+          </div>
+        </div>
+        <div class="hero-status" aria-label="产品说明">
+          <span><i class="status-dot"></i>官方发布</span>
+          <span>Windows / macOS</span>
+          <span>本地数据</span>
+        </div>
+      </section>
+
+      <section id="downloads" class="downloads" aria-labelledby="downloads-title">
+        <div class="section-heading">
+          <p class="eyebrow">选择你的电脑</p>
+          <h2 id="downloads-title">下载最新版</h2>
+          <p>安装新版不会删除已有的邮箱、计划和发送记录。</p>
+        </div>
+
+        <div class="platform-grid">
+          <article class="platform-row" data-platform="windows">
+            <div class="platform-icon windows-icon" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <div class="platform-copy">
+              <h3>Windows</h3>
+              <p id="windows-detail">Windows 10 / 11 · 64 位</p>
+            </div>
+            <a id="windows-download" class="platform-download is-disabled" aria-disabled="true">准备中</a>
+          </article>
+
+          <article class="platform-row" data-platform="macos">
+            <div class="platform-icon apple-icon" aria-hidden="true">●</div>
+            <div class="platform-copy">
+              <h3>macOS</h3>
+              <p id="macos-detail">Apple 芯片 · macOS 11 及以上</p>
+            </div>
+            <a id="macos-download" class="platform-download is-disabled" aria-disabled="true">准备中</a>
+          </article>
+        </div>
+      </section>
+
+      <section id="release-notes" class="release-notes" aria-labelledby="release-title">
+        <div class="release-label">
+          <span>RELEASE</span>
+          <strong id="release-version">—</strong>
+          <time id="release-date"></time>
+        </div>
+        <div class="release-body">
+          <h2 id="release-title">本次更新</h2>
+          <ul id="release-list"><li>正在读取更新内容</li></ul>
+        </div>
+      </section>
+
+      <section class="install-note" aria-label="安装说明">
+        <h2>安装前知道这些</h2>
+        <div>
+          <p><strong>升级安装</strong><span>直接运行新版安装包即可，已有数据会保留。</span></p>
+          <p><strong>系统提示</strong><span>首次打开时如出现安全提示，请确认文件来自本站。</span></p>
+          <p><strong>应用内更新</strong><span>新版支持在「设置 → 更新」里检查、下载并安装。</span></p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>熊猫投稿</span>
+      <span id="footer-version">桌面版</span>
+      <a href="https://github.com/logyxiao/NovelSub" target="_blank" rel="noreferrer">源代码</a>
+    </footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

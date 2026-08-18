@@ -1172,6 +1172,18 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   border-radius: 0 0 var(--r-lg) var(--r-lg);
 }
 .version { margin: 0; padding: 2px 18px 16px; font-size: 12px; color: var(--muted); }
+.update-status {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: var(--brand-strong);
+}
+.update-status > svg { flex: none; }
+.update-status > div { min-width: 0; display: grid; gap: 3px; }
+.update-status b { font-size: 13px; font-weight: 600; color: var(--ink); }
+.update-status span { color: var(--muted); font-size: 11.5px; }
+.is-spinning { animation: update-spin .8s linear infinite; }
+@keyframes update-spin { to { transform: rotate(360deg); } }
 
 /* ==========================================================================
    关于 / 支持作者

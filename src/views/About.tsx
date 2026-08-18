@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react'
 import { Code2, ExternalLink, HardDrive, Shield } from 'lucide-react'
-import { api } from '../api'
 import logo from '../assets/logo.png'
 import { SupportAuthor } from '../components/SupportAuthor'
+import { currentVersion } from '../update'
 
-const PROJECT_URL = 'https://github.com/logyxiao/PandaSub'
+const PROJECT_URL = 'https://github.com/logyxiao/NovelSub'
 
 export function AboutView() {
   const [version, setVersion] = useState('')
 
   useEffect(() => {
-    api.checkUpdate().then((u) => setVersion(u.current)).catch(() => {})
+    currentVersion().then(setVersion).catch(() => {})
   }, [])
 
   return (

@@ -1,0 +1,17 @@
+{
+  "version": "0.1.5",
+  "date": "2026-08-18",
+  "notes": [
+    "新增收藏编辑的快捷选择与取消选择，并统一收藏状态显示。",
+    "修复同平台编辑列表无法使用滚轮或拖动滚动条的问题。",
+    "优化工作台回复分类、筛选跳转和编辑选择体验。"
+  ],
+  "downloads": {
+    "macos": {
+      "label": "Apple 芯片版",
+      "detail": "Apple 芯片 · macOS 11 及以上 · 13 MB",
+      "url": "releases/novelsub-0.1.5-macos-aarch64.dmg",
+      "sha256": "4b83e361f40a6fe3d17203d339acfa546b9f43b4669c85dca42502d7133dc508"
+    }
+  }
+}

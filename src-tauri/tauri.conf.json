@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "熊猫投稿",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "identifier": "com.novelsub.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -25,8 +25,17 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://pandasub.zhudot.com/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDQTEwNDM5OEVBQ0IwNzkKUldSNXNLeU9PUVNoZkJGZkNka1o4ZlFVWHF5bFJYUDFtMW1YUUNSSnBFdG1WdnN4clVRTGorMGEK"
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["app", "dmg", "nsis"],
     "icon": [
       "icons/32x32.png",

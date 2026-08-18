@@ -6,6 +6,7 @@ import logo from './assets/logo.png'
 import './App.css'
 import { api, onTask } from './api'
 import { ConfirmProvider, ToastProvider } from './components/feedback'
+import { UpdateManager } from './components/UpdateManager'
 import { NavContext, type ViewId } from './nav'
 import { DashboardView } from './views/Dashboard'
 import { AccountsView } from './views/Accounts'
@@ -100,6 +101,7 @@ export default function App() {
   return (
     <ToastProvider>
       <ConfirmProvider>
+        <UpdateManager />
         <NavContext.Provider value={{
           go: (id, options) => {
             setHideChrome(false)

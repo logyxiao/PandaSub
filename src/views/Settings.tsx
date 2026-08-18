@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
-import { Coffee, DatabaseBackup, Inbox, Power, RefreshCw, Save, Search, Send, ShieldCheck } from 'lucide-react'
+import { Coffee, DatabaseBackup, Download, Inbox, Power, RefreshCw, Save, Send, ShieldCheck } from 'lucide-react'
 import { api } from '../api'
 import { SupportAuthor } from '../components/SupportAuthor'
-import { useToast } from '../components/feedback'
+import { useConfirm, useToast } from '../components/feedback'
 import { Button, Switch } from '../components/ui'
 import type { Settings } from '../types'
+import { availableUpdate, currentVersion, installUpdate, restartApp } from '../update'
 
 const defaults: Settings = {
   default_retry_max: 3,
@@ -29,12 +30,15 @@ export function SettingsView() {
   const [saved, setSaved] = useState<Settings>(defaults)
   const [notice, setNotice] = useState('')
   const [version, setVersion] = useState('')
+  const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'downloading' | 'installed'>('idle')
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null)
   const [section, setSection] = useState<SectionId>('send')
   const toast = useToast()
+  const confirm = useConfirm()
 
   useEffect(() => {
     api.getSettings().then((s) => { setForm(s); setSaved(s) }).catch((e) => setNotice(String(e)))
-    api.checkUpdate().then((u) => setVersion(u.current)).catch(() => {})
+    currentVersion().then(setVersion).catch(() => {})
   }, [])
 
   const dirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(saved), [form, saved])
@@ -62,12 +66,39 @@ export function SettingsView() {
   }
 
   const checkUpdate = async () => {
+    if (updateState !== 'idle') return
+    setUpdateState('checking')
     try {
-      const u = await api.checkUpdate()
-      if (!u.feed) toast(`当前版本 ${u.current}，还没填写更新源`, 'info')
-      else if (u.has_update) toast(`发现新版本 ${u.latest}，当前版本 ${u.current}`, 'success')
-      else toast(`当前已是最新版本 ${u.current}`, 'success')
-    } catch (e) { toast(String(e), 'error') }
+      const update = await availableUpdate()
+      if (!update) {
+        toast(`当前已是最新版本 ${version ? `v${version}` : ''}`.trim(), 'success')
+        return
+      }
+      const accepted = await confirm({
+        title: `发现新版本 v${update.version}`,
+        message: update.body?.trim() || '下载并安装后，已有数据会继续保留。',
+        confirmLabel: '下载并安装',
+      })
+      if (!accepted) {
+        await update.close()
+        return
+      }
+      setUpdateState('downloading')
+      await installUpdate(update, setUpdateProgress)
+      setUpdateState('installed')
+      const restart = await confirm({
+        title: '更新安装完成',
+        message: '重启熊猫投稿后即可使用新版本。正在发送的计划会在重启时停止。',
+        confirmLabel: '立即重启',
+        cancelLabel: '稍后重启',
+      })
+      if (restart) await restartApp()
+    } catch (e) {
+      toast(`更新失败：${String(e)}`, 'error')
+    } finally {
+      setUpdateState((state) => state === 'installed' ? state : 'idle')
+      setUpdateProgress(null)
+    }
   }
 
   const num = (key: keyof Settings) => ({
@@ -163,14 +194,21 @@ export function SettingsView() {
 
           {section === 'update' && (
             <div className="panel settings-section">
-              <div className="panel-heading"><div><h2>更新</h2><p>不填更新源就不会检查新版本。</p></div></div>
-              <div className="form-grid pad">
-                <label className="field span2">更新源地址
-                  <input value={form.update_feed_url} onChange={(e) => setForm({ ...form, update_feed_url: e.target.value })} placeholder="https://example.com/latest.json" /></label>
+              <div className="panel-heading"><div><h2>更新</h2><p>自动检查官方版本，安装前会验证发布签名。</p></div></div>
+              <div className="update-status pad">
+                <Download size={18} />
+                <div>
+                  <b>{updateState === 'checking' ? '正在检查更新'
+                    : updateState === 'downloading' ? `正在下载${updateProgress === null ? '' : ` ${updateProgress}%`}`
+                      : updateState === 'installed' ? '更新已安装，等待重启'
+                        : '熊猫投稿桌面版'}</b>
+                  <span>{version ? `当前版本 v${version}` : '正在读取当前版本'}</span>
+                </div>
               </div>
               <div className="settings-actions">
-                {version && <p className="version">当前版本 v{version}</p>}
-                <Button variant="ghost" onClick={() => void checkUpdate()}><Search size={15} />检查更新</Button>
+                <Button variant="ghost" disabled={updateState !== 'idle'} onClick={() => void checkUpdate()}>
+                  <RefreshCw size={15} className={updateState === 'checking' ? 'is-spinning' : ''} />检查更新
+                </Button>
               </div>
             </div>
           )}

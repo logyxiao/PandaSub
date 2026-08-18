@@ -53,6 +53,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -168,7 +170,6 @@ pub fn run() {
             commands::export_logs,
             commands::get_settings,
             commands::update_settings,
-            commands::check_update,
             commands::set_autostart,
             commands::backup_data,
             commands::show_main_window,

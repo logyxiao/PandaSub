@@ -40,7 +40,6 @@ export const api = {
   getSettings: () => invoke<Settings>('get_settings'),
   updateSettings: (settings: Settings) => invoke('update_settings', { settings }),
   setAutostart: (enabled: boolean) => invoke('set_autostart', { enabled }),
-  checkUpdate: () => invoke<{ current: string; has_update: boolean; latest: string; feed: string }>('check_update'),
   backup: () => invoke<string>('backup_data'),
   listReplies: (kind?: string) => invoke<Reply[]>('list_replies', { kind: kind || null }),
   scanReplies: () => invoke<number>('scan_replies'),
