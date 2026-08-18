@@ -78,7 +78,7 @@ export function SettingsView() {
   return (
     <>
       <div className="toolbar">
-        <p className="hint">{dirty ? '有未保存的修改。' : '发送间隔固定为 2–4 分钟随机（平均约 3 分钟），无需设置节奏。'}</p>
+        <p className="hint">{dirty ? '有未保存的修改。' : '默认发送间隔仍是 2–4 分钟随机。每个计划也可以在选择邮箱时改频率。'}</p>
         <div className="toolbar-actions">
           <Button variant="primary" disabled={!dirty} onClick={() => void save()}><Save size={15} />保存设置</Button>
         </div>
@@ -98,7 +98,7 @@ export function SettingsView() {
         <div className="settings-content">
           {section === 'send' && (
             <div className="panel settings-section">
-              <div className="panel-heading"><div><h2>发送</h2><p>每封邮件间隔 2–4 分钟随机发送，时间点偏向 3 分钟，更像人工投稿节奏。</p></div></div>
+              <div className="panel-heading"><div><h2>发送</h2><p>默认每封间隔 2–4 分钟随机，偏向 3 分钟。单个计划可在「选择邮箱」里改成 1 / 2 / 5 / 8 分钟。</p></div></div>
               <div className="form-grid pad">
                 <label className="field span2">发送失败后重试几次
                   <input type="number" min={1} {...num('default_retry_max')} />

@@ -2425,21 +2425,84 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 }
 .plan-tpl-hint { margin: 0; color: var(--faint); font-size: 11.5px; }
 .plan-step-2 { flex: 1; min-height: 0; overflow-y: auto; max-width: 1080px; width: 100%; margin: 0 auto; }
-.plan-step-3 { flex: 1; min-height: 0; overflow-y: auto; max-width: 720px; width: 100%; margin: 0 auto; display: grid; align-content: start; gap: 14px; }
+.plan-step-3 {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(340px, 1.15fr);
+  gap: 12px;
+}
+.plan-step-3-left,
+.plan-step-3-right {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
 .plan-send-desc { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
 .plan-send-title { margin: 0 0 10px; font-size: 14px; font-weight: 650; }
-.plan-send-actions { display: flex; gap: 8px; }
+.plan-step-3 .plan-send-head { align-items: flex-start; margin: 0; gap: 10px; }
+.plan-step-3 .plan-send-head .btn { flex: none; }
+.plan-step-3 .plan-send-head .plan-send-title,
+.plan-step-3-right .plan-send-title { margin: 0; }
+.plan-step-3 .plan-send-head .plan-send-desc,
+.plan-step-3-right .plan-send-desc { margin: 4px 0 0; }
+.plan-copy-hint { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.send-interval-list { flex: 1; min-height: 0; display: grid; align-content: start; gap: 6px; overflow: hidden; }
+.send-interval-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .12s, background .12s, color .12s;
+}
+.send-interval-row:hover { border-color: #B9C9CB; background: var(--surface-2); }
+.send-interval-row.on { border-color: #ABD4D1; background: var(--brand-soft); color: var(--brand-strong); }
+.send-interval-row svg { color: var(--brand-strong); }
+.send-interval-main { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.send-interval-main b { font-size: 13px; font-weight: 650; }
+.send-interval-main small { color: var(--muted); font-size: 12px; font-weight: 400; }
+.send-interval-row.on .send-interval-main small { color: var(--brand); }
+.plan-send-actions { display: flex; align-items: center; gap: 8px; }
 .plan-send-actions .btn-primary { margin-left: auto; }
-.plan-send-summary-card { display: grid; gap: 12px; }
-.plan-send-summary-card .plan-send-summary { display: grid; gap: 8px; }
+.plan-step-3 .plan-send-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-top: auto;
+}
+.plan-step-3 .plan-send-summary .plan-estimate { min-width: 0; padding: 8px 10px; }
+.plan-step-3 .plan-send-summary .plan-estimate span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-step-3 .warn-text { margin: 0; }
 
-.account-pick-list { display: grid; gap: 8px; }
+.account-pick-list {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  align-content: start;
+  gap: 8px;
+  overflow: hidden;
+}
 .account-pick-row {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
@@ -2463,7 +2526,7 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   transition: background .12s, color .12s;
 }
 .account-pick-row.on .account-pick-check { background: var(--brand); color: #fff; }
-.account-pick-empty { padding: 26px 12px; color: var(--muted); font-size: 12.5px; text-align: center; }
+.account-pick-empty { grid-column: 1 / -1; padding: 18px 12px; color: var(--muted); font-size: 12.5px; text-align: center; }
 
 .step-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .step-meta { color: var(--muted); font-size: 12.5px; }
@@ -2484,6 +2547,7 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   .plan-step-1-split { grid-template-columns: 1fr; overflow: visible; }
   .plan-step-1-left, .plan-step-1-right { overflow: visible; }
   .plan-step-1 .plan-body { min-height: 220px; }
+  .plan-step-3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
 }
 
 @media (max-width: 760px) {

@@ -64,9 +64,34 @@ export function normalizeEditorTags<T extends Pick<Editor, 'work_type'>>(editor:
   return { ...editor, work_type }
 }
 
-// 发送节奏：每封邮件间隔 2–4 分钟随机，偏向 3 分钟（平均按 3 分钟估算）。
-export function estimateAutoMinutes(count: number) {
-  return Math.max(1, Math.round((count * 3 * 60) / 60))
+// 发送节奏：默认 3 分钟/次，沿用 2–4 分钟随机、偏向 3 分钟；其余选项按所选分钟数。
+export const DEFAULT_SEND_INTERVAL_MIN = 3
+
+export const SEND_INTERVAL_OPTIONS = [
+  { minutes: 1, hint: '需配置3个投稿邮箱，同时投不同作品' },
+  { minutes: 2, hint: '需配置2个投稿邮箱' },
+  { minutes: 3, hint: '新邮箱第2篇作品开始可以3分钟' },
+  { minutes: 5, hint: '新邮箱第1篇作品选5分钟预热邮箱' },
+  { minutes: 8, hint: '邮箱被风控时，换成8分钟' },
+] as const
+
+export function normalizeSendIntervalMin(value: number | undefined | null) {
+  return SEND_INTERVAL_OPTIONS.some((item) => item.minutes === value)
+    ? value as (typeof SEND_INTERVAL_OPTIONS)[number]['minutes']
+    : DEFAULT_SEND_INTERVAL_MIN
+}
+
+export function estimateAutoMinutes(count: number, intervalMin = DEFAULT_SEND_INTERVAL_MIN) {
+  const minutes = normalizeSendIntervalMin(intervalMin)
+  return Math.max(1, Math.round(count * minutes))
+}
+
+export function recipientEmailsForCopy(recipients: string[]) {
+  return [...new Set(
+    recipients
+      .map((row) => parseRecipient(row).email.trim().toLowerCase())
+      .filter((email) => isValidEmail(email)),
+  )]
 }
 
 export const SCHEDULE_OPTIONS = [
@@ -200,7 +225,7 @@ export function createEmptyManuscript(): ManuscriptInput {
   return {
     title: '', body: mail_templates[0].body, content_type: 'text/plain', recipients: [], sender_name: '',
     word_count: 0, category: '', reader_emotion: '', style: '',
-    genres: [], excluded_types: [], account_ids: [],
+    genres: [], excluded_types: [], account_ids: [], send_interval_min: DEFAULT_SEND_INTERVAL_MIN,
     subject: mail_templates[0].subject, mail_templates, file_name: '',
   }
 }
@@ -273,6 +298,7 @@ export function toInput(m: Manuscript): ManuscriptInput {
     sender_name: m.sender_name, word_count: m.word_count, category: m.category,
     reader_emotion: m.reader_emotion, style: m.style,
     genres: m.genres ?? [], excluded_types: m.excluded_types ?? [], account_ids: m.account_ids ?? [],
+    send_interval_min: normalizeSendIntervalMin(m.send_interval_min),
     subject: m.subject, mail_templates: hydrateMailTemplates(m.mail_templates, m.subject, m.body),
     file_name: m.file_name, has_file: m.has_file,
   }

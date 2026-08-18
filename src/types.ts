@@ -77,6 +77,7 @@ export interface Manuscript {
   genres: string[]
   excluded_types?: string[]
   account_ids: number[]
+  send_interval_min?: number
   subject: string
   mail_templates?: MailTemplate[]
   file_name: string
@@ -98,6 +99,7 @@ export interface ManuscriptInput {
   genres: string[]
   excluded_types?: string[]
   account_ids: number[]
+  send_interval_min?: number
   subject: string
   mail_templates: MailTemplate[]
   file_name: string

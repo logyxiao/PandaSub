@@ -141,13 +141,23 @@ fn emit_task(app: &AppHandle, db: &Arc<Mutex<Connection>>, task_id: i64) {
     }
 }
 
-/// 每封邮件之间的等待时间：2–4 分钟随机，且偏向 3 分钟。
-/// 用两个均匀随机数相加取平均（三角分布），范围 [120, 240] 秒，峰值在 180 秒。
-fn send_delay_secs() -> u64 {
+/// 3 分钟沿用现在的节奏：2–4 分钟随机，偏向 3 分钟。其余选项按所选分钟数，略加抖动。
+fn send_delay_secs(interval_min: i64) -> u64 {
     let mut rng = rand::rng();
-    let a = rng.random_range(0..=120);
-    let b = rng.random_range(0..=120);
-    (120 + (a + b) / 2) as u64
+    match crate::models::normalize_send_interval_min(interval_min) {
+        3 => {
+            let a = rng.random_range(0..=120);
+            let b = rng.random_range(0..=120);
+            (120 + (a + b) / 2) as u64
+        }
+        minutes => {
+            let base = (minutes as u64).saturating_mul(60);
+            let jitter = 12u64.min(base / 6).max(4);
+            let lo = base.saturating_sub(jitter).max(30);
+            let hi = base.saturating_add(jitter);
+            rng.random_range(lo..=hi)
+        }
+    }
 }
 
 fn pick_available_account(
@@ -234,6 +244,11 @@ async fn run_task_worker(
         emit_log(&app, &log);
     }
     emit_task(&app, &db, task_id);
+
+    let send_interval_min = manuscripts
+        .first()
+        .map(|item| item.send_interval_min)
+        .unwrap_or(3);
 
     if manuscripts.is_empty() {
         let log = store::insert_log(
@@ -404,7 +419,7 @@ async fn run_task_worker(
 
         let target = queue.pop_front().unwrap();
 
-        let delay = send_delay_secs();
+        let delay = send_delay_secs(send_interval_min);
         let account = match pick_available_account(&db, &mut cursor, &allowed_accounts) {
             Some(a) => a,
             None => {

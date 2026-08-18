@@ -61,6 +61,9 @@ pub struct Manuscript {
     /// 计划指定的投稿邮箱（留空表示使用全部启用邮箱）。
     #[serde(default)]
     pub account_ids: Vec<i64>,
+    /// 发送间隔（分钟）。3 表示沿用默认 2–4 分钟随机节奏。
+    #[serde(default = "default_send_interval_min")]
+    pub send_interval_min: i64,
     #[serde(default)]
     pub subject: String,
     /// 多套邮件标题/正文。发送时从中随机选用一套。
@@ -107,6 +110,9 @@ pub struct ManuscriptInput {
     /// 计划指定的投稿邮箱（留空表示使用全部启用邮箱）。
     #[serde(default)]
     pub account_ids: Vec<i64>,
+    /// 发送间隔（分钟）。3 表示沿用默认 2–4 分钟随机节奏。
+    #[serde(default = "default_send_interval_min")]
+    pub send_interval_min: i64,
     #[serde(default)]
     pub subject: String,
     /// 多套邮件标题/正文。发送时从中随机选用一套。
@@ -189,6 +195,14 @@ fn default_true() -> bool { true }
 fn default_editor_source() -> String { EDITOR_SOURCE_MANUAL.to_string() }
 fn default_imap_port() -> u16 { 993 }
 fn default_reply_poll() -> i64 { 2 }
+fn default_send_interval_min() -> i64 { 3 }
+
+pub fn normalize_send_interval_min(value: i64) -> i64 {
+    match value {
+        1 | 2 | 3 | 5 | 8 => value,
+        _ => 3,
+    }
+}
 
 impl Default for Settings {
     fn default() -> Self {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Clock3, Eye, FileUp, Heart, HeartOff, Pencil, Plus, Send, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, Clock3, Copy, Eye, FileUp, Heart, HeartOff, Pencil, Plus, Send, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/feedback'
@@ -10,7 +10,8 @@ import {
   GENRES, LENGTH_TAGS, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
   fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
   defaultMailTemplates, editorPlatformKey, groupMatchingByPlatform, isDroppedMailTemplate,
-  isEditorFavorited, mergeEditorSelectionByPlatform,
+  isEditorFavorited, mergeEditorSelectionByPlatform, normalizeSendIntervalMin,
+  recipientEmailsForCopy, SEND_INTERVAL_OPTIONS,
 } from './planShared'
 import { EditorsList, emptyEditorListFilters, type EditorListFilters } from './Editors'
 
@@ -120,7 +121,8 @@ export function PlanEditor({
     if (!taskForm.account_ids.length) return enabledAccounts
     return enabledAccounts.filter((account) => taskForm.account_ids.includes(account.id))
   }, [enabledAccounts, taskForm.account_ids])
-  const minutes = estimateAutoMinutes(sendCount)
+  const sendIntervalMin = normalizeSendIntervalMin(form.send_interval_min)
+  const minutes = estimateAutoMinutes(sendCount, sendIntervalMin)
   const mailTemplates = (form.mail_templates?.length ? form.mail_templates : defaultMailTemplates())
     .filter((item) => !isDroppedMailTemplate(item))
   const activeTpl = mailTemplates.find((item) => item.id === activeTplId) ?? mailTemplates[0]
@@ -449,6 +451,33 @@ export function PlanEditor({
     })
   }
 
+  const copyEditorList = async () => {
+    const emails = recipientEmailsForCopy(recipients)
+    if (!emails.length) {
+      toast('还没有可复制的编辑邮箱', 'warning')
+      return
+    }
+    const text = emails.join('; ')
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const area = document.createElement('textarea')
+      area.value = text
+      area.setAttribute('readonly', '')
+      area.style.position = 'fixed'
+      area.style.left = '-9999px'
+      document.body.appendChild(area)
+      area.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(area)
+      if (!ok) {
+        toast('复制失败，请检查系统剪贴板权限', 'error')
+        return
+      }
+    }
+    toast(`已复制 ${emails.length} 个收稿邮箱，可粘贴到 QQ 邮箱群发`, 'success')
+  }
+
   const steps = [
     { n: 1, label: '填写投稿内容' },
     { n: 2, label: '选择编辑' },
@@ -688,9 +717,16 @@ export function PlanEditor({
 
         {step === 3 && (
           <section className="plan-step-3">
-            <div className="plan-work-card">
-              <h3 className="plan-send-title">选择发送邮箱</h3>
-              <p className="plan-send-desc">勾选参与发送的邮箱，多选时按顺序轮流使用。</p>
+            <div className="plan-work-card plan-step-3-left">
+              <div className="plan-send-head">
+                <div>
+                  <h3 className="plan-send-title">选择发送邮箱</h3>
+                  <p className="plan-send-desc">勾选参与发送的邮箱，多选时按顺序轮流使用。</p>
+                </div>
+                <Button size="sm" disabled={!sendCount} onClick={() => void copyEditorList()}>
+                  <Copy size={14} />复制编辑列表
+                </Button>
+              </div>
               <div className="account-pick-list">
                 {enabledAccounts.map((account) => {
                   const on = !taskForm.account_ids.length || taskForm.account_ids.includes(account.id)
@@ -710,9 +746,36 @@ export function PlanEditor({
                   <p className="account-pick-empty">还没有启用邮箱，去「邮箱」页添加并启用后再来。</p>
                 )}
               </div>
+              <p className="plan-copy-hint">复制后是分号分隔的收稿邮箱，可粘贴到 QQ 邮箱「群发」收件人里，不必用本软件发送。</p>
             </div>
 
-            <div className="plan-work-card plan-send-summary-card">
+            <div className="plan-work-card plan-step-3-right">
+              <div>
+                <h3 className="plan-send-title">发送频率</h3>
+                <p className="plan-send-desc">默认 3 分钟/次，仍按现在的 2–4 分钟随机节奏。其他档位按所选分钟数发送。</p>
+              </div>
+              <div className="send-interval-list" role="radiogroup" aria-label="发送频率">
+                {SEND_INTERVAL_OPTIONS.map((item) => {
+                  const on = sendIntervalMin === item.minutes
+                  return (
+                    <button key={item.minutes} type="button" role="radio" aria-checked={on}
+                      className={`send-interval-row ${on ? 'on' : ''}`}
+                      onClick={() => setForm((f) => ({ ...f, send_interval_min: item.minutes }))}>
+                      <span className="send-interval-main">
+                        <b>{item.minutes} 分钟/次</b>
+                        <small>({item.hint})</small>
+                      </span>
+                      {on && <Check size={16} />}
+                    </button>
+                  )
+                })}
+              </div>
+              {sendIntervalMin === 1 && selectedAccounts.length < 3 && (
+                <p className="warn-text">1 分钟/次建议至少 3 个投稿邮箱，并同时投不同作品。</p>
+              )}
+              {sendIntervalMin === 2 && selectedAccounts.length < 2 && (
+                <p className="warn-text">2 分钟/次建议至少配置 2 个投稿邮箱。</p>
+              )}
               <div className="plan-send-summary">
                 <div className="plan-estimate">
                   <Clock3 size={15} />
@@ -723,18 +786,12 @@ export function PlanEditor({
                   <span>{sendCount > 0 ? `约 ${minutes} 分钟发完 ${sendCount} 封` : '等待选择编辑'}</span>
                 </div>
               </div>
-              <div className="plan-rhythm">
-                <Clock3 size={15} />
-                <div>
-                  <strong>固定节奏</strong>
-                  <p>每封邮件间隔 2–4 分钟随机发送，时间点偏向 3 分钟，更像人工投稿。无需设置频次。</p>
-                </div>
-              </div>
               {!enabledAccounts.length && <p className="warn-text">还没有可用发件邮箱，只能先存草稿。</p>}
               {!ready && blockers.length > 0 && (
                 <p className="warn-text">还不能发送：{blockers.join('、')}。测试发送会把一封预览邮件发到你的发件邮箱（勾选的第一个邮箱），不会发给编辑。</p>
               )}
               <div className="plan-send-actions">
+                <Button onClick={() => setStep(2)}>上一步</Button>
                 <Button variant="ghost" disabled={saving || testing} onClick={() => void testSend()}>
                   {testing ? '发送中…' : '测试发送'}
                 </Button>
@@ -742,9 +799,6 @@ export function PlanEditor({
                   <Send size={15} />开始发送
                 </Button>
               </div>
-            </div>
-            <div className="step-actions">
-              <Button onClick={() => setStep(2)}>上一步</Button>
             </div>
           </section>
         )}

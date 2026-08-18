@@ -1,7 +1,7 @@
 use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::models::Manuscript;
+use crate::models::{normalize_send_interval_min, Manuscript};
 use crate::smtp;
 use crate::state::AppState;
 use crate::store;
@@ -235,8 +235,8 @@ pub fn add_manuscript(
     };
     conn.execute(
         "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
-            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, subject, file_name, file_data, mail_templates)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, send_interval_min, subject, file_name, file_data, mail_templates)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         rusqlite::params![
             input.title.trim(),
             body,
@@ -251,6 +251,7 @@ pub fn add_manuscript(
             genres,
             excluded_types,
             json!(input.account_ids).to_string(),
+            normalize_send_interval_min(input.send_interval_min),
             input.subject.trim(),
             input.file_name.trim(),
             input.file_data,
@@ -276,6 +277,7 @@ pub fn update_manuscript(
         "UPDATE manuscripts SET title = ?1, body = ?2, content_type = ?3, recipients = ?4,
                 sender_name = ?5, word_count = ?6, category = ?7, reader_category = ?8,
                 reader_emotion = ?9, style = ?10, genres = ?11, excluded_types = ?16, account_ids = ?17,
+                send_interval_min = ?19,
                 subject = ?12, file_name = ?13,
                 file_data = COALESCE(?15, file_data),
                 mail_templates = ?18,
@@ -300,6 +302,7 @@ pub fn update_manuscript(
             excluded_types,
             json!(input.account_ids).to_string(),
             mail_templates,
+            normalize_send_interval_min(input.send_interval_min),
         ],
     )
     .map_err(|e| e.to_string())?;

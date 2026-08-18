@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS manuscripts (
   genres TEXT NOT NULL DEFAULT '[]',
   excluded_types TEXT NOT NULL DEFAULT '[]',
   account_ids TEXT NOT NULL DEFAULT '[]',
+  send_interval_min INTEGER NOT NULL DEFAULT 3,
   subject TEXT NOT NULL DEFAULT '',
   mail_templates TEXT NOT NULL DEFAULT '[]',
   file_name TEXT NOT NULL DEFAULT '',
@@ -155,6 +156,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_file_column(&connection)?;
     add_manuscript_account_ids_column(&connection)?;
     add_manuscript_mail_templates_column(&connection)?;
+    add_manuscript_send_interval_column(&connection)?;
     add_reply_accepted_column(&connection)?;
     add_reply_accepted_column(&connection)?;
     reclassify_autoreply_history(&connection)?;
@@ -889,6 +891,27 @@ fn add_manuscript_account_ids_column(conn: &Connection) -> Result<(), String> {
     if table_lacks_column(conn, "manuscripts", "account_ids") {
         conn.execute(
             "ALTER TABLE manuscripts ADD COLUMN account_ids TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn add_manuscript_send_interval_column(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'manuscripts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "manuscripts", "send_interval_min") {
+        conn.execute(
+            "ALTER TABLE manuscripts ADD COLUMN send_interval_min INTEGER NOT NULL DEFAULT 3",
             [],
         )
         .map_err(|e| e.to_string())?;
