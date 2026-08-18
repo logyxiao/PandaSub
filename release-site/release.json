@@ -16,8 +16,8 @@
     "macos": {
       "label": "Apple 芯片版",
       "detail": "Apple 芯片 · macOS 11 及以上 · 13 MB",
-      "url": "releases/novelsub-0.1.5-macos-aarch64.dmg",
-      "sha256": "4b83e361f40a6fe3d17203d339acfa546b9f43b4669c85dca42502d7133dc508"
+      "url": "releases/pandasub-0.1.5-macos-aarch64-r2.dmg",
+      "sha256": "0862a9143997b2e52223a2a854a4693663fe239f1a2c69fd0a8ad4390dd702b1"
     }
   }
 }
