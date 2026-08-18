@@ -2,20 +2,20 @@
   "version": "0.1.6",
   "date": "2026-08-19",
   "notes": [
-    "新增一键废稿",
-    "修复废稿编辑重复发送",
-    "优化废稿计划状态显示"
+    "你的更新说明"
   ],
   "downloads": {
     "windows": {
       "label": "64 位版",
-      "detail": "Windows 10 / 11 · 64 位",
-      "url": "releases/pandasub-0.1.6-windows-x64-setup.exe"
+      "detail": "Windows 10 / 11 · 64 位 · 5.2 MB",
+      "url": "releases/pandasub-0.1.6-windows-x64-setup.exe",
+      "sha256": "4608c1ea39e87f7b00ce6e708f52e829ef4901994354bb1c68bae9d41aff5e59"
     },
     "macos": {
       "label": "通用版",
-      "detail": "Apple 芯片 / Intel · macOS 11 及以上",
-      "url": "releases/pandasub-0.1.6-macos-universal.dmg"
+      "detail": "Apple 芯片 / Intel · macOS 11 及以上 · 20 MB",
+      "url": "releases/pandasub-0.1.6-macos-universal.dmg",
+      "sha256": "ad0b99a5f0dc9a91b5f052de1f9b947603f94b4eac90bae4795d58be70686acf"
     }
   }
 }
