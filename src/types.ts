@@ -13,6 +13,7 @@ export interface Account {
   check_replies: boolean
   imap_uid: number
   created_at: string
+  sent_today?: number
 }
 
 export interface AccountInput {
@@ -34,6 +35,7 @@ export interface Editor {
   name: string
   email: string
   work_type: string[]
+  rejected_types?: string[]
   notes: string
   source: string
   enabled: boolean
@@ -47,6 +49,7 @@ export interface EditorInput {
   name: string
   email: string
   work_type: string[]
+  rejected_types?: string[]
   notes: string
 }
 

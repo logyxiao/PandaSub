@@ -1424,6 +1424,7 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   cursor: pointer;
 }
 .chip.on { background: var(--brand-soft); border-color: #D4DDF2; color: var(--brand-strong); }
+.chip.is-rejected { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
 
 .plan-mail { display: grid; gap: 10px; }
 .plan-mail-row { display: grid; grid-template-columns: 1fr 160px; gap: 10px; }
@@ -1922,17 +1923,20 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 27px;
-  padding: 0 10px;
+  min-height: 27px;
+  padding: 5px 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
+  border-radius: 12px;
+  background: #fff;
   color: var(--ink-2);
-  font: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
-  transition: border-color .12s, background .12s, color .12s;
 }
+.plan-account-chip-text { display: grid; gap: 1px; min-width: 0; }
+.plan-account-chip-text b { font-size: 12px; font-weight: 600; }
+.plan-account-chip-text small { color: var(--muted); font-size: 10.5px; font-weight: 500; }
+.plan-account-chip.is-over { border-color: var(--warning-border); background: var(--warning-soft); }
+.plan-account-chip.is-over .plan-account-chip-text small { color: #8F5A0E; }
 .plan-account-chip input { accent-color: var(--brand); }
 .plan-account-chip:hover { border-color: #B9C9CB; }
 .plan-account-chip.on { border-color: #ABD4D1; background: var(--brand-soft); color: var(--brand-strong); font-weight: 600; }
@@ -2077,6 +2081,12 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   pointer-events: none;
 }
 .editor-row-tags .chip.tone, .editor-more-tags .chip.tone { border-color: var(--info-border); background: var(--info-soft); color: #2B5BB2; }
+.editor-row-tags .chip.is-rejected, .editor-more-tags .chip.is-rejected,
+.chip-picks .chip.is-rejected {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
 .editor-chip-more {
   display: inline-flex;
   align-items: center;
@@ -2525,10 +2535,13 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 }
 .account-pick-row:hover { border-color: #B9C9CB; background: var(--surface-2); }
 .account-pick-row.on { border-color: #ABD4D1; background: var(--brand-soft); }
+.account-pick-row.is-over { border-color: var(--warning-border); }
+.account-pick-row.on.is-over { background: var(--warning-soft); }
 .account-pick-row input { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
 .account-pick-main { min-width: 0; display: grid; gap: 2px; }
 .account-pick-main b { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .account-pick-main small { color: var(--muted); font-size: 11.5px; }
+.account-quota-warn { color: #8F5A0E !important; font-weight: 600; }
 .account-pick-check {
   display: grid;
   place-items: center;
@@ -2541,6 +2554,11 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 }
 .account-pick-row.on .account-pick-check { background: var(--brand); color: #fff; }
 .account-pick-empty { grid-column: 1 / -1; padding: 18px 12px; color: var(--muted); font-size: 12.5px; text-align: center; }
+.account-today-quota { display: grid; gap: 1px; min-width: 0; }
+.account-today-quota b { font-variant-numeric: tabular-nums; font-size: 13px; }
+.account-today-quota small { color: var(--muted); }
+.account-today-quota.is-over b,
+.account-today-quota.is-over small { color: var(--danger); }
 
 .step-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .step-meta { color: var(--muted); font-size: 12.5px; }

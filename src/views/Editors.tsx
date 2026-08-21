@@ -15,7 +15,7 @@ import { GENRES, SOURCES, compareEditorsByFavorite, editorMatchesPlan, editorPla
 const UNASSIGNED = '未填平台'
 
 const emptyForm: EditorInput = {
-  platform: '', name: '', email: '', work_type: [], notes: '',
+  platform: '', name: '', email: '', work_type: [], rejected_types: [], notes: '',
 }
 
 export interface EditorListFilters {
@@ -111,7 +111,7 @@ export function EditorsList({
     if (platform && e.platform !== platform) return false
     const q = query.trim().toLowerCase()
     if (!q) return true
-    return [e.name, e.email, e.platform, e.source, e.notes, ...(e.work_type ?? [])].join(' ').toLowerCase().includes(q)
+    return [e.name, e.email, e.platform, e.source, e.notes, ...(e.work_type ?? []), ...(e.rejected_types ?? [])].join(' ').toLowerCase().includes(q)
   }), [list, platform, query])
 
   const workTypeCounts = useMemo(() => {
@@ -273,6 +273,7 @@ export function EditorsList({
         render: (_value, e) => (
           <EditorTypeChips
             workTypes={e.work_type}
+            rejectedTypes={e.rejected_types}
             open={more?.id === e.id}
             onToggle={(el) => {
               const next = moreRect(el)
@@ -382,7 +383,8 @@ export function EditorsList({
           left={more.left}
           width={more.width}
           workTypes={moreWorkTypes}
-          skip={2}
+          rejectedTypes={moreEditor.rejected_types ?? []}
+          skip={moreWorkTypes.length && (moreEditor.rejected_types ?? []).length ? 1 : 2}
           onClose={() => setMore(null)}
         />
       )}
@@ -422,24 +424,32 @@ export function EditorIdentity({ name, platform, email, fallbackPlatform = UNASS
   )
 }
 
-export function EditorTypeChips({ workTypes, open, onToggle }: {
+export function EditorTypeChips({ workTypes, rejectedTypes = [], open, onToggle }: {
   workTypes: string[]
+  rejectedTypes?: string[]
   open?: boolean
-  onToggle?: (el: HTMLElement, tags: string[]) => void
+  onToggle?: (el: HTMLElement, tags: string[], rejected: string[]) => void
 }) {
   const tags = editorRowTags(workTypes)
-  const shown = tags.slice(0, 2)
+  const rejected = editorRowTags(rejectedTypes)
+  const shown = tags.slice(0, rejected.length ? 1 : 2)
+  const shownRejected = rejected.slice(0, tags.length ? 1 : 2)
   const rest = tags.slice(shown.length)
-  if (!tags.length) return <span className="hint">未设标签</span>
+  const restRejected = rejected.slice(shownRejected.length)
+  const restCount = rest.length + restRejected.length
+  if (!tags.length && !rejected.length) return <span className="hint">未设标签</span>
   return (
     <div className="editor-row-tags">
       {shown.map((d, i) => (
         <span key={`${i}-${d}`} className="chip on tone">{d}</span>
       ))}
-      {rest.length > 0 && (
+      {shownRejected.map((d, i) => (
+        <span key={`r-${i}-${d}`} className="chip is-rejected" title={`拒收 ${d}`}>{d}</span>
+      ))}
+      {restCount > 0 && (
         <button type="button" className={`editor-chip-more ${open ? 'on' : ''}`}
-          onClick={(ev) => onToggle?.(ev.currentTarget, tags)}>
-          +{rest.length}
+          onClick={(ev) => onToggle?.(ev.currentTarget, tags, rejected)}>
+          +{restCount}
         </button>
       )}
     </div>
@@ -459,11 +469,12 @@ export function moreRect(el: HTMLElement, minWidth = 180, estimate = 88) {
     : { top: rect.bottom + gap, left, width }
 }
 
-export function EditorTagsPop({ top, left, width, workTypes, skip, onClose }: {
+export function EditorTagsPop({ top, left, width, workTypes, rejectedTypes = [], skip, onClose }: {
   top: number
   left: number
   width: number
   workTypes: string[]
+  rejectedTypes?: string[]
   skip: number
   onClose: () => void
 }) {
@@ -471,6 +482,7 @@ export function EditorTagsPop({ top, left, width, workTypes, skip, onClose }: {
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
   const restWorkTypes = workTypes.slice(skip).map(String)
+  const restRejected = editorRowTags(rejectedTypes).slice(workTypes.length ? 1 : 2)
 
   useEffect(() => {
     const onDown = (ev: MouseEvent) => {
@@ -497,6 +509,7 @@ export function EditorTagsPop({ top, left, width, workTypes, skip, onClose }: {
     <div ref={ref} className="editor-more-pop" style={{ top, left, width }} role="tooltip">
       <div className="editor-more-tags">
         {restWorkTypes.map((d, i) => <span className="chip on tone" key={`w-${i}-${d}`}>{d}</span>)}
+        {restRejected.map((d, i) => <span className="chip is-rejected" key={`r-${i}-${d}`}>{d}</span>)}
       </div>
     </div>,
     document.body,
@@ -572,6 +585,7 @@ export function EditorsView() {
   const [showData, setShowData] = useState(false)
   const [form, setForm] = useState<EditorInput>(emptyForm)
   const [customWorkType, setCustomWorkType] = useState('')
+  const [customRejectedType, setCustomRejectedType] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const confirm = useConfirm()
@@ -579,31 +593,61 @@ export function EditorsView() {
 
   const refresh = () => setReloadSignal((n) => n + 1)
 
-  const openAdd = () => { setEditing(null); setForm(emptyForm); setCustomWorkType(''); setShowForm(true) }
+  const openAdd = () => { setEditing(null); setForm(emptyForm); setCustomWorkType(''); setCustomRejectedType(''); setShowForm(true) }
   const openEdit = (e: Editor) => {
     const next = normalizeEditorTags(e)
     setEditing(next)
     setForm({
       platform: next.platform, name: next.name, email: next.email,
       work_type: next.work_type,
+      rejected_types: next.rejected_types ?? [],
       notes: next.notes ?? '',
     })
     setCustomWorkType('')
+    setCustomRejectedType('')
     setShowForm(true)
   }
 
   const toggleTag = (tag: string) => {
-    setForm((f) => ({
-      ...f,
-      work_type: f.work_type.includes(tag) ? f.work_type.filter((x) => x !== tag) : [...f.work_type, tag],
-    }))
+    setForm((f) => {
+      const work_type = f.work_type.includes(tag) ? f.work_type.filter((x) => x !== tag) : [...f.work_type, tag]
+      const rejected_types = work_type.includes(tag)
+        ? (f.rejected_types ?? []).filter((x) => x !== tag)
+        : (f.rejected_types ?? [])
+      return { ...f, work_type, rejected_types }
+    })
+  }
+
+  const toggleRejectedTag = (tag: string) => {
+    setForm((f) => {
+      const current = f.rejected_types ?? []
+      const rejected_types = current.includes(tag) ? current.filter((x) => x !== tag) : [...current, tag]
+      const work_type = rejected_types.includes(tag) ? f.work_type.filter((x) => x !== tag) : f.work_type
+      return { ...f, work_type, rejected_types }
+    })
   }
 
   const addCustomWorkType = () => {
     const tag = customWorkType.trim()
     if (!tag) return
-    if (!form.work_type.includes(tag)) setForm((f) => ({ ...f, work_type: [...f.work_type, tag] }))
+    setForm((f) => {
+      const work_type = f.work_type.includes(tag) ? f.work_type : [...f.work_type, tag]
+      const rejected_types = (f.rejected_types ?? []).filter((x) => x !== tag)
+      return { ...f, work_type, rejected_types }
+    })
     setCustomWorkType('')
+  }
+
+  const addCustomRejectedType = () => {
+    const tag = customRejectedType.trim()
+    if (!tag) return
+    setForm((f) => {
+      const current = f.rejected_types ?? []
+      const rejected_types = current.includes(tag) ? current : [...current, tag]
+      const work_type = f.work_type.filter((x) => x !== tag)
+      return { ...f, work_type, rejected_types }
+    })
+    setCustomRejectedType('')
   }
 
   const save = async () => {
@@ -782,6 +826,21 @@ export function EditorsView() {
                 <Button size="sm" onClick={addCustomWorkType}>添加</Button>
               </div>
               <span className="field-hint">作品类型用于筛选收件人，可不填。</span>
+            </div>
+            <div className="field span2">拒收类型
+              <div className="chip-picks">
+                {[...new Set([...GENRES, ...(form.rejected_types ?? [])])].map((g) => (
+                  <button type="button" key={g} className={`chip ${(form.rejected_types ?? []).includes(g) ? 'is-rejected' : ''}`}
+                    onClick={() => toggleRejectedTag(g)}>{g}</button>
+                ))}
+              </div>
+              <div className="editor-custom-tag">
+                <input value={customRejectedType} onChange={(e) => setCustomRejectedType(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomRejectedType() } }}
+                  placeholder="自定义拒收类型，回车添加" />
+                <Button size="sm" onClick={addCustomRejectedType}>添加</Button>
+              </div>
+              <span className="field-hint">选中计划标签时，会自动排除拒收对应类型的编辑。</span>
             </div>
             <label className="field span2">收稿说明
               <textarea className="editor-notes" rows={4} value={form.notes}

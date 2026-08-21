@@ -16,6 +16,9 @@ pub struct Account {
     pub check_replies: bool,
     pub imap_uid: i64,
     pub created_at: String,
+    /// 今日已成功发出的邮件数（投递记录，不入库）。
+    #[serde(default)]
+    pub sent_today: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -245,6 +248,80 @@ pub fn normalize_editor_work_types(tags: &[String]) -> Vec<String> {
     types
 }
 
+const REJECTED_TYPE_ALIASES: &[(&str, &str)] = &[
+    ("纯世情", "世情"),
+    ("甜文", "甜宠"),
+    ("同人类型", "同人"),
+];
+
+const KNOWN_REJECTED_TYPES: &[&str] = &[
+    "短篇", "中短篇", "女频", "男频", "全品类", "追妻", "追夫", "世情", "爽文", "脑洞", "古言", "现言",
+    "悬疑", "年代", "情绪流", "都市", "亲情虐", "大女主", "玄幻", "重生", "打脸", "种田", "末世", "甜宠",
+    "宅斗", "宫斗", "萌宝", "校园", "仙侠", "穿越", "穿书", "总裁", "婚恋", "虐恋", "全员背叛", "言情",
+    "性转", "死人文学", "系统", "女强", "信息差", "散文", "童话", "诗歌", "耽美", "百合", "同人", "剧本",
+];
+
+const REJECTED_CLAUSE_STOPS: &[&str] = &[
+    "\n", "。", "；", ";", "全勤", "结算", "例文", "标签", "投稿需", "其他类型", "其余类型", "，收", "、收",
+];
+
+fn next_reject_marker(text: &str) -> Option<(usize, usize)> {
+    let a = text.find("不收").map(|i| (i, "不收".len()));
+    let b = text.find("拒收").map(|i| (i, "拒收".len()));
+    match (a, b) {
+        (Some(left), Some(right)) if left.0 <= right.0 => Some(left),
+        (Some(_), Some(right)) => Some(right),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn collect_rejected_tags(clause: &str, found: &mut Vec<String>, seen: &mut std::collections::BTreeSet<String>) {
+    for (from, mapped) in REJECTED_TYPE_ALIASES {
+        if clause.contains(from) && seen.insert((*mapped).to_string()) {
+            found.push((*mapped).to_string());
+        }
+    }
+    let hits: Vec<&str> = KNOWN_REJECTED_TYPES
+        .iter()
+        .copied()
+        .filter(|tag| clause.contains(tag))
+        .collect();
+    for tag in &hits {
+        if hits.iter().any(|other| *other != *tag && other.contains(tag)) {
+            continue;
+        }
+        if seen.insert((*tag).to_string()) {
+            found.push((*tag).to_string());
+        }
+    }
+}
+
+/// 从收稿说明里抽出「不收 / 拒收」后面的类型标签，供筛选和回填。
+pub fn extract_rejected_types_from_notes(notes: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let text = notes.replace('\r', "");
+    let mut search = text.as_str();
+    while let Some((pos, marker_len)) = next_reject_marker(search) {
+        let after = search[pos + marker_len..].trim_start_matches(['：', ':']);
+        let end = REJECTED_CLAUSE_STOPS
+            .iter()
+            .filter_map(|mark| after.find(mark))
+            .min()
+            .unwrap_or(after.len());
+        let clause = after[..end].trim_matches([' ', '，', ',', '、', '的', '（', '）', '(', ')', '\t']);
+        let consumed = search.len() - after.len() + end;
+        search = search.get(consumed..).unwrap_or("");
+        if clause.is_empty() {
+            continue;
+        }
+        collect_rejected_tags(clause, &mut found, &mut seen);
+    }
+    found
+}
+
 pub fn canonicalize_editor_platform(raw: &str) -> String {
     let value = raw
         .split_whitespace()
@@ -318,6 +395,8 @@ pub struct Editor {
     #[serde(default)]
     pub work_type: Vec<String>,
     #[serde(default)]
+    pub rejected_types: Vec<String>,
+    #[serde(default)]
     pub notes: String,
     #[serde(default = "default_editor_source")]
     pub source: String,
@@ -337,28 +416,14 @@ pub struct EditorInput {
     #[serde(default)]
     pub work_type: Vec<String>,
     #[serde(default)]
+    pub rejected_types: Vec<String>,
+    #[serde(default)]
     pub notes: String,
 }
 
 pub fn default_editor_inputs() -> Result<Vec<EditorInput>, String> {
-    let mut editors: Vec<EditorInput> = serde_json::from_str(include_str!("data/default_editors.json"))
-        .map_err(|e| format!("内置编辑库损坏：{e}"))?;
-    let waste_draft_editors: Vec<EditorInput> =
-        serde_json::from_str(include_str!("data/waste_draft_editors.json"))
-            .map_err(|e| format!("内置废稿编辑库损坏：{e}"))?;
-
-    for editor in waste_draft_editors {
-        let email = editor.email.trim();
-        if let Some(existing) = editors
-            .iter_mut()
-            .find(|item| item.email.trim().eq_ignore_ascii_case(email))
-        {
-            *existing = editor;
-        } else {
-            editors.push(editor);
-        }
-    }
-    Ok(editors)
+    serde_json::from_str(include_str!("data/default_editors.json"))
+        .map_err(|e| format!("内置编辑库损坏：{e}"))
 }
 
 #[derive(Serialize, Clone, Debug)]

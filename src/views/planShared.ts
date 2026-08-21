@@ -46,13 +46,13 @@ export const GENRES = [
   '悬疑', '年代', '情绪流', '都市', '亲情虐', '大女主', '玄幻', '重生',
   '打脸', '种田', '末世', '甜宠', '宅斗', '宫斗', '萌宝',
   '校园', '仙侠', '穿越', '穿书', '总裁', '婚恋', '虐恋',
-  '全员背叛', '言情', '性转', '死人文学', '系统', '女强', '信息差',
+  '全员背叛', '言情', '性转', '耽美', '百合', '同人', '死人文学', '系统', '女强', '信息差',
   '散文', '童话', '诗歌',
 ]
 export const SOURCES = ['初始数据', '手动数据', '导入数据'] as const
 const DROPPED_EDITOR_TAGS = new Set(['小程序', '知乎风', '番茄风'])
 
-export function normalizeEditorTags<T extends Pick<Editor, 'work_type'>>(editor: T): T {
+export function normalizeEditorTags<T extends Pick<Editor, 'work_type'> & Partial<Pick<Editor, 'rejected_types'>>>(editor: T): T {
   const work_type: string[] = []
   const seen = new Set<string>()
   for (const raw of editor.work_type ?? []) {
@@ -61,11 +61,47 @@ export function normalizeEditorTags<T extends Pick<Editor, 'work_type'>>(editor:
     seen.add(tag)
     work_type.push(tag)
   }
-  return { ...editor, work_type }
+  const rejected_types: string[] = []
+  const rejectedSeen = new Set<string>()
+  for (const raw of editor.rejected_types ?? []) {
+    const tag = raw.trim()
+    if (!tag || DROPPED_EDITOR_TAGS.has(tag) || rejectedSeen.has(tag)) continue
+    rejectedSeen.add(tag)
+    rejected_types.push(tag)
+  }
+  return { ...editor, work_type, rejected_types }
+}
+
+export function editorMatchesPlan(
+  editor: Editor,
+  selected: string[],
+  excluded: Iterable<string> = [],
+) {
+  const next = normalizeEditorTags(editor)
+  const tags = next.work_type
+  const banned = new Set([...excluded].map((tag) => tag.trim()).filter(Boolean))
+  if (tags.some((tag) => banned.has(tag))) return false
+  const rejected = new Set((next.rejected_types ?? []).map((tag) => tag.trim()).filter(Boolean))
+  if (selected.some((tag) => rejected.has(tag.trim()))) return false
+  const { lengths, genres } = splitPlanTags(selected)
+  if (lengths.length && !lengths.some((tag) => tags.includes(tag))) return false
+  if (genres.length && !genres.some((tag) => tags.includes(tag)) && !tags.includes('全品类')) return false
+  return true
 }
 
 // 发送节奏：默认 3 分钟/次，沿用 2–4 分钟随机、偏向 3 分钟；其余选项按所选分钟数。
 export const DEFAULT_SEND_INTERVAL_MIN = 3
+export const ACCOUNT_DAILY_SEND_LIMIT = 80
+
+export function accountTodayQuota(sentToday = 0) {
+  const sent = Math.max(0, Math.floor(sentToday) || 0)
+  return {
+    sent,
+    limit: ACCOUNT_DAILY_SEND_LIMIT,
+    over: sent >= ACCOUNT_DAILY_SEND_LIMIT,
+    label: `${sent}/${ACCOUNT_DAILY_SEND_LIMIT}`,
+  }
+}
 
 export const SEND_INTERVAL_OPTIONS = [
   { minutes: 1, hint: '需配置3个投稿邮箱，同时投不同作品' },
@@ -373,20 +409,6 @@ export function editorWorkTypeOptions(editors: Editor[]) {
     }
   }
   return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
-}
-
-export function editorMatchesPlan(
-  editor: Editor,
-  selected: string[],
-  excluded: Iterable<string> = [],
-) {
-  const tags = normalizeEditorTags(editor).work_type
-  const banned = new Set([...excluded].map((tag) => tag.trim()).filter(Boolean))
-  if (tags.some((tag) => banned.has(tag))) return false
-  const { lengths, genres } = splitPlanTags(selected)
-  if (lengths.length && !lengths.some((tag) => tags.includes(tag))) return false
-  if (genres.length && !genres.some((tag) => tags.includes(tag)) && !tags.includes('全品类')) return false
-  return true
 }
 
 export function editorPlatformKey(editor: Pick<Editor, 'platform' | 'email'>) {

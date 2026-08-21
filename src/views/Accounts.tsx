@@ -8,6 +8,7 @@ import { Table } from '../components/Table'
 import { formatTime, isValidEmail, providerName, type Tone } from '../format'
 import { useNav } from '../nav'
 import type { Account, AccountInput } from '../types'
+import { accountTodayQuota } from './planShared'
 
 const presets: Record<string, { host: string; port: number; imap_host: string; imap_port: number }> = {
   qq: { host: 'smtp.qq.com', port: 465, imap_host: 'imap.qq.com', imap_port: 993 },
@@ -181,7 +182,7 @@ export function AccountsView() {
               rowKey="id"
               dataSource={accounts}
               pagination={{ pageSize: 10, hideOnSinglePage: true }}
-              rowClassName={(a) => a.enabled ? '' : 'dim'}
+              rowClassName={(a) => [a.enabled ? '' : 'dim', accountTodayQuota(a.sent_today).over ? 'is-quota-over' : ''].filter(Boolean).join(' ')}
               columns={[
                 {
                   key: 'email',
@@ -218,6 +219,20 @@ export function AccountsView() {
                   title: '上次发送',
                   width: 120,
                   render: (_value, a) => formatTime(a.last_sent_at),
+                },
+                {
+                  key: 'today',
+                  title: '今日发送',
+                  width: 128,
+                  render: (_value, a) => {
+                    const quota = accountTodayQuota(a.sent_today)
+                    return (
+                      <div className={`account-today-quota ${quota.over ? 'is-over' : ''}`}>
+                        <b>{quota.label}</b>
+                        <small>{quota.over ? '建议今天不要再发' : '建议 80'}</small>
+                      </div>
+                    )
+                  },
                 },
                 {
                   key: 'actions',

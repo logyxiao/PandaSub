@@ -23,6 +23,7 @@ fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         check_replies: r.get::<_, i64>(11)? != 0,
         imap_uid: r.get(12)?,
         created_at: r.get(13)?,
+        sent_today: 0,
     })
 }
 
@@ -79,7 +80,31 @@ pub fn load_accounts(conn: &Connection) -> Result<Vec<Account>, String> {
     let rows = stmt
         .query_map([], map_account)
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    let mut accounts = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let counts = sent_today_by_account(conn)?;
+    for account in &mut accounts {
+        account.sent_today = counts.get(&account.id).copied().unwrap_or(0);
+    }
+    Ok(accounts)
+}
+
+fn sent_today_by_account(conn: &Connection) -> Result<std::collections::HashMap<i64, i64>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT account_id, COUNT(*) FROM deliveries
+             WHERE account_id IS NOT NULL AND date(sent_at) = date('now','localtime')
+             GROUP BY account_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (id, count) = row.map_err(|e| e.to_string())?;
+        map.insert(id, count);
+    }
+    Ok(map)
 }
 
 pub fn load_account(conn: &Connection, id: i64) -> Result<Option<Account>, String> {
@@ -143,23 +168,25 @@ pub fn load_manuscript_attachment(
     }
 }
 
-const EDITOR_COLS: &str = "id, platform, name, email, work_type, notes, source, created_at, updated_at, enabled, favorited";
+const EDITOR_COLS: &str = "id, platform, name, email, work_type, rejected_types, notes, source, created_at, updated_at, enabled, favorited";
 
 fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
     let raw_work_type: String = r.get(4)?;
-    let source: String = r.get(6)?;
+    let raw_rejected: String = r.get(5)?;
+    let source: String = r.get(7)?;
     Ok(Editor {
         id: r.get(0)?,
         platform: r.get(1)?,
         name: r.get(2)?,
         email: r.get(3)?,
         work_type: crate::models::normalize_editor_work_types(&parse_list(&raw_work_type)),
-        notes: r.get(5)?,
+        rejected_types: crate::models::normalize_editor_work_types(&parse_list(&raw_rejected)),
+        notes: r.get(6)?,
         source: crate::models::normalize_editor_source(&source),
-        created_at: r.get(7)?,
-        updated_at: r.get(8)?,
-        enabled: r.get::<_, i64>(9)? != 0,
-        favorited: r.get::<_, i64>(10)? != 0,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
+        enabled: r.get::<_, i64>(10)? != 0,
+        favorited: r.get::<_, i64>(11)? != 0,
     })
 }
 
@@ -167,6 +194,7 @@ pub fn upsert_editor(conn: &Connection, input: &EditorInput, source: &str) -> Re
     let email = input.email.trim().to_lowercase();
     let source = crate::models::normalize_editor_source(source);
     let work_type = serde_json::json!(crate::models::normalize_editor_work_types(&input.work_type)).to_string();
+    let rejected_types = serde_json::json!(crate::models::normalize_editor_work_types(&input.rejected_types)).to_string();
     let platform = crate::models::canonicalize_editor_platform(&input.platform);
     let existing: Option<i64> = conn
         .query_row("SELECT id FROM editors WHERE email = ?1", [&email], |r| r.get(0))
@@ -175,7 +203,7 @@ pub fn upsert_editor(conn: &Connection, input: &EditorInput, source: &str) -> Re
     if let Some(id) = existing {
         conn.execute(
             "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = '[]', work_type = ?4,
-                    notes = ?5, source = ?6, updated_at = datetime('now','localtime')
+                    rejected_types = ?8, notes = ?5, source = ?6, updated_at = datetime('now','localtime')
              WHERE id = ?7",
             rusqlite::params![
                 platform,
@@ -184,22 +212,24 @@ pub fn upsert_editor(conn: &Connection, input: &EditorInput, source: &str) -> Re
                 work_type,
                 input.notes.trim(),
                 source,
-                id
+                id,
+                rejected_types,
             ],
         )
         .map_err(|e| e.to_string())?;
         Ok("updated")
     } else {
         conn.execute(
-            "INSERT INTO editors (platform, name, email, style, work_type, notes, source)
-             VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?6)",
+            "INSERT INTO editors (platform, name, email, style, work_type, rejected_types, notes, source)
+             VALUES (?1, ?2, ?3, '[]', ?4, ?7, ?5, ?6)",
             rusqlite::params![
                 platform,
                 input.name.trim(),
                 email,
                 work_type,
                 input.notes.trim(),
-                source
+                source,
+                rejected_types,
             ],
         )
         .map_err(|e| e.to_string())?;

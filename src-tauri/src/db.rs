@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS editors (
   email TEXT NOT NULL UNIQUE,
   style TEXT NOT NULL DEFAULT '[]',
   work_type TEXT NOT NULL DEFAULT '[]',
+  rejected_types TEXT NOT NULL DEFAULT '[]',
   channel TEXT NOT NULL DEFAULT '',
   reader TEXT NOT NULL DEFAULT '',
   notes TEXT NOT NULL DEFAULT '',
@@ -139,6 +140,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_plan_columns(&connection)?;
     add_editor_enabled_column(&connection)?;
     add_editor_favorited_column(&connection)?;
+    add_editor_rejected_types_column(&connection)?;
     add_editor_tag_columns(&connection)?;
     add_editor_profile_columns(&connection)?;
     classify_builtin_editor_sources(&connection)?;
@@ -146,6 +148,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     normalize_editor_style_values(&connection)?;
     seed_default_editors(&connection)?;
     refresh_bundled_editor_library(&connection)?;
+    backfill_editor_rejected_types(&connection)?;
     backfill_missing_editor_types(&connection)?;
     repair_editor_types_and_platforms(&connection)?;
     drop_press_and_magazine_editors(&connection)?;
@@ -289,6 +292,27 @@ fn add_editor_favorited_column(conn: &Connection) -> Result<(), String> {
     if table_lacks_column(conn, "editors", "favorited") {
         conn.execute(
             "ALTER TABLE editors ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn add_editor_rejected_types_column(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+    if table_lacks_column(conn, "editors", "rejected_types") {
+        conn.execute(
+            "ALTER TABLE editors ADD COLUMN rejected_types TEXT NOT NULL DEFAULT '[]'",
             [],
         )
         .map_err(|e| e.to_string())?;
@@ -672,7 +696,7 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-19-waste-draft-2";
+const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-21-calibrated-only";
 
 fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
     let current: String = conn
@@ -744,6 +768,67 @@ fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn backfill_editor_rejected_types(conn: &Connection) -> Result<(), String> {
+    let done: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = 'editors.rejected_types_backfill'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if done > 0 {
+        return Ok(());
+    }
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'editors'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 || table_lacks_column(conn, "editors", "rejected_types") {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare("SELECT id, notes, rejected_types FROM editors")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut updates = Vec::new();
+    for row in rows {
+        let (id, notes, raw) = row.map_err(|e| e.to_string())?;
+        let current: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        if !current.is_empty() {
+            continue;
+        }
+        let next = crate::models::extract_rejected_types_from_notes(&notes);
+        if next.is_empty() {
+            continue;
+        }
+        updates.push((id, serde_json::json!(next).to_string()));
+    }
+    drop(stmt);
+    for (id, value) in updates {
+        conn.execute(
+            "UPDATE editors SET rejected_types = ?1 WHERE id = ?2",
+            rusqlite::params![value, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.rejected_types_backfill', '1')",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 fn add_manuscript_file_column(conn: &Connection) -> Result<(), String> {
     let exists: i64 = conn

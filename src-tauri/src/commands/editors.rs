@@ -17,6 +17,7 @@ fn normalize_editor_input(input: &crate::models::EditorInput) -> crate::models::
         name: input.name.clone(),
         email: input.email.clone(),
         work_type: crate::models::normalize_editor_work_types(&input.work_type),
+        rejected_types: crate::models::normalize_editor_work_types(&input.rejected_types),
         notes: input.notes.trim().to_string(),
     }
 }
@@ -43,16 +44,18 @@ pub fn add_editor(
     let input = validate_editor(&input)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let work_type = json!(input.work_type).to_string();
+    let rejected_types = json!(input.rejected_types).to_string();
     conn.execute(
-        "INSERT INTO editors (platform, name, email, style, work_type, notes, source)
-         VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?6)",
+        "INSERT INTO editors (platform, name, email, style, work_type, rejected_types, notes, source)
+         VALUES (?1, ?2, ?3, '[]', ?4, ?7, ?5, ?6)",
         rusqlite::params![
             input.platform.trim(),
             input.name.trim(),
             input.email.trim().to_lowercase(),
             work_type,
             input.notes.trim(),
-            EDITOR_SOURCE_MANUAL
+            EDITOR_SOURCE_MANUAL,
+            rejected_types,
         ],
     )
     .map_err(|e| {
@@ -74,9 +77,10 @@ pub fn update_editor(
     let input = validate_editor(&input)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let work_type = json!(input.work_type).to_string();
+    let rejected_types = json!(input.rejected_types).to_string();
     conn.execute(
         "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = '[]', work_type = ?4,
-                notes = ?5, source = ?6, updated_at = datetime('now','localtime')
+                rejected_types = ?8, notes = ?5, source = ?6, updated_at = datetime('now','localtime')
          WHERE id = ?7",
         rusqlite::params![
             input.platform.trim(),
@@ -85,7 +89,8 @@ pub fn update_editor(
             work_type,
             input.notes.trim(),
             EDITOR_SOURCE_MANUAL,
-            id
+            id,
+            rejected_types,
         ],
     )
     .map_err(|e| {
@@ -149,7 +154,7 @@ pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
-    let headers = ["平台", "名称", "邮箱", "作品类型", "收稿说明", "来源"];
+    let headers = ["平台", "名称", "邮箱", "作品类型", "拒收类型", "收稿说明", "来源"];
     for (col, h) in headers.iter().enumerate() {
         sheet
             .write_string(0, col as u16, *h)
@@ -170,10 +175,13 @@ pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String
             .write_string(row, 3, &editor.work_type.join("、"))
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 4, &editor.notes)
+            .write_string(row, 4, &editor.rejected_types.join("、"))
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 5, &editor.source)
+            .write_string(row, 5, &editor.notes)
+            .map_err(|e| e.to_string())?;
+        sheet
+            .write_string(row, 6, &editor.source)
             .map_err(|e| e.to_string())?;
     }
     workbook.save(&path).map_err(|e| e.to_string())?;
@@ -188,7 +196,7 @@ pub fn import_editors(
 ) -> Result<EditorImportResult, String> {
     let rows = parse_editor_import(&data, &file_name)?;
     if rows.is_empty() {
-        return Err("文件里没有可导入的行。请用列：平台、名称、邮箱、作品类型、收稿说明。".into());
+        return Err("文件里没有可导入的行。请用列：平台、名称、邮箱、作品类型、拒收类型、收稿说明。".into());
     }
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut added = 0i64;
@@ -388,6 +396,7 @@ struct EditorColumns {
     email: Option<usize>,
     work_type: Option<usize>,
     notes: Option<usize>,
+    rejected_types: Option<usize>,
 }
 
 fn detect_editor_columns(first: &[String]) -> (usize, EditorColumns) {
@@ -398,6 +407,7 @@ fn detect_editor_columns(first: &[String]) -> (usize, EditorColumns) {
             "名称" | "name" | "编辑" | "昵称" | "副刊" => map.name = Some(i),
             "邮箱" | "email" | "邮件" | "收稿邮箱" | "投稿邮箱" | "联系方式" => map.email = Some(i),
             "作品类型" | "类型" | "题材" | "work_type" | "收稿方向" | "方向" | "收稿类别" | "类别" | "标签" | "tags" | "收稿类型" => map.work_type = Some(i),
+            "拒收类型" | "拒收" | "不收" | "不收类型" | "rejected" | "rejected_types" => map.rejected_types = Some(i),
             "说明" | "notes" | "收稿说明" | "备注" | "审稿" | "投稿注意" => map.notes = Some(i),
             _ => {}
         }
@@ -450,11 +460,16 @@ fn editor_from_row(row: &[String], map: &EditorColumns) -> EditorInput {
     if notes.is_empty() && raw_work.chars().count() > 16 {
         notes = raw_work.clone();
     }
+    let mut rejected_types = split_tags(&cell_at(row, map.rejected_types));
+    if rejected_types.is_empty() {
+        rejected_types = crate::models::extract_rejected_types_from_notes(&notes);
+    }
     EditorInput {
         platform: cell_at(row, map.platform),
         name,
         email: extract_email(&email),
         work_type: split_tags(&raw_work),
+        rejected_types,
         notes,
     }
 }

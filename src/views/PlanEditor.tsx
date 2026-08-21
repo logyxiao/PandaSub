@@ -11,12 +11,12 @@ import {
   fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
   defaultMailTemplates, editorPlatformKey, groupMatchingByPlatform, isDroppedMailTemplate,
   isEditorFavorited, mergeEditorSelectionByPlatform, normalizeSendIntervalMin,
-  recipientEmailsForCopy, SEND_INTERVAL_OPTIONS,
+  recipientEmailsForCopy, SEND_INTERVAL_OPTIONS, accountTodayQuota,
 } from './planShared'
 import { EditorsList, emptyEditorListFilters, type EditorListFilters } from './Editors'
 
 const emptyEditor: EditorInput = {
-  platform: '', name: '', email: '', work_type: [], notes: '',
+  platform: '', name: '', email: '', work_type: [], rejected_types: [], notes: '',
 }
 
 export function PlanEditor({
@@ -57,6 +57,7 @@ export function PlanEditor({
   const [editingEditor, setEditingEditor] = useState<Editor | null>(null)
   const [editorForm, setEditorForm] = useState<EditorInput>(emptyEditor)
   const [customWorkType, setCustomWorkType] = useState('')
+  const [customRejectedType, setCustomRejectedType] = useState('')
   const [savingEditor, setSavingEditor] = useState(false)
   const [testing, setTesting] = useState(false)
   const initRef = useRef(false)
@@ -295,6 +296,7 @@ export function PlanEditor({
       work_type: [...form.genres],
     }))
     setCustomWorkType('')
+    setCustomRejectedType('')
     setShowEditorForm(true)
   }
 
@@ -306,26 +308,54 @@ export function PlanEditor({
       name: next.name,
       email: next.email,
       work_type: next.work_type,
+      rejected_types: next.rejected_types ?? [],
       notes: next.notes ?? '',
     })
     setCustomWorkType('')
+    setCustomRejectedType('')
     setShowEditorForm(true)
   }
 
   const toggleEditorTag = (tag: string) => {
-    setEditorForm((f) => ({
-      ...f,
-      work_type: f.work_type.includes(tag) ? f.work_type.filter((x) => x !== tag) : [...f.work_type, tag],
-    }))
+    setEditorForm((f) => {
+      const work_type = f.work_type.includes(tag) ? f.work_type.filter((x) => x !== tag) : [...f.work_type, tag]
+      const rejected_types = work_type.includes(tag)
+        ? (f.rejected_types ?? []).filter((x) => x !== tag)
+        : (f.rejected_types ?? [])
+      return { ...f, work_type, rejected_types }
+    })
+  }
+
+  const toggleEditorRejectedTag = (tag: string) => {
+    setEditorForm((f) => {
+      const current = f.rejected_types ?? []
+      const rejected_types = current.includes(tag) ? current.filter((x) => x !== tag) : [...current, tag]
+      const work_type = rejected_types.includes(tag) ? f.work_type.filter((x) => x !== tag) : f.work_type
+      return { ...f, work_type, rejected_types }
+    })
   }
 
   const addCustomEditorWorkType = () => {
     const tag = customWorkType.trim()
     if (!tag) return
-    if (!editorForm.work_type.includes(tag)) {
-      setEditorForm((f) => ({ ...f, work_type: [...f.work_type, tag] }))
-    }
+    setEditorForm((f) => {
+      const work_type = f.work_type.includes(tag) ? f.work_type : [...f.work_type, tag]
+      const rejected_types = (f.rejected_types ?? []).filter((x) => x !== tag)
+      return { ...f, work_type, rejected_types }
+    })
     setCustomWorkType('')
+  }
+
+  const addCustomEditorRejectedType = () => {
+    const tag = customRejectedType.trim()
+    if (!tag) return
+    setEditorForm((f) => {
+      const current = f.rejected_types ?? []
+      const rejected_types = current.includes(tag) ? current : [...current, tag]
+      const work_type = f.work_type.filter((x) => x !== tag)
+      return { ...f, work_type, rejected_types }
+    })
+    setCustomRejectedType('')
   }
 
   const saveEditor = async () => {
@@ -435,6 +465,8 @@ export function PlanEditor({
     } catch (e) { toast(String(e), 'error') }
     finally { setTesting(false) }
   }
+
+  const overQuotaAccounts = selectedAccounts.filter((account) => accountTodayQuota(account.sent_today).over)
 
   const blockers = [
     !form.title.trim() && '作品名称',
@@ -730,13 +762,15 @@ export function PlanEditor({
               <div className="account-pick-list">
                 {enabledAccounts.map((account) => {
                   const on = !taskForm.account_ids.length || taskForm.account_ids.includes(account.id)
+                  const quota = accountTodayQuota(account.sent_today)
                   return (
-                    <label key={account.id} className={`account-pick-row ${on ? 'on' : ''}`}>
+                    <label key={account.id} className={`account-pick-row ${on ? 'on' : ''} ${quota.over ? 'is-over' : ''}`}>
                       <input type="checkbox" checked={on} onChange={() => toggleAccount(account.id)}
                         aria-label={`${on ? '取消选择' : '选择'} ${account.email}`} />
                       <span className="account-pick-main">
                         <b>{account.email}</b>
-                        <small>{account.sender_name || '未设笔名'} · {providerName[account.provider] ?? account.provider}</small>
+                        <small>{account.sender_name || '未设笔名'} · {providerName[account.provider] ?? account.provider} · 今日 {quota.label}</small>
+                        {quota.over && <small className="account-quota-warn">已达建议 80 封，建议不要再用这封发送</small>}
                       </span>
                       <span className="account-pick-check"><Check size={15} /></span>
                     </label>
@@ -786,6 +820,11 @@ export function PlanEditor({
                   <span>{sendCount > 0 ? `约 ${minutes} 分钟发完 ${sendCount} 封` : '等待选择编辑'}</span>
                 </div>
               </div>
+              {overQuotaAccounts.length > 0 && (
+                <p className="warn-text">
+                  {overQuotaAccounts.map((account) => account.email).join('、')} 今日已达建议 80 封，建议今天不要再用这些邮箱发送。
+                </p>
+              )}
               {!enabledAccounts.length && <p className="warn-text">还没有可用发件邮箱，只能先存草稿。</p>}
               {!ready && blockers.length > 0 && (
                 <p className="warn-text">还不能发送：{blockers.join('、')}。测试发送会把一封预览邮件发到你的发件邮箱（勾选的第一个邮箱），不会发给编辑。</p>
@@ -839,6 +878,21 @@ export function PlanEditor({
                 <Button size="sm" onClick={addCustomEditorWorkType}>添加</Button>
               </div>
               <span className="field-hint">改完会写回编辑库，后面的计划也会用这份资料。</span>
+            </div>
+            <div className="field span2">拒收类型
+              <div className="chip-picks">
+                {[...new Set([...GENRES, ...(editorForm.rejected_types ?? [])])].map((g) => (
+                  <button type="button" key={g} className={`chip ${(editorForm.rejected_types ?? []).includes(g) ? 'is-rejected' : ''}`}
+                    onClick={() => toggleEditorRejectedTag(g)}>{g}</button>
+                ))}
+              </div>
+              <div className="editor-custom-tag">
+                <input value={customRejectedType} onChange={(e) => setCustomRejectedType(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomEditorRejectedType() } }}
+                  placeholder="自定义拒收类型，回车添加" />
+                <Button size="sm" onClick={addCustomEditorRejectedType}>添加</Button>
+              </div>
+              <span className="field-hint">选中计划标签时，会自动排除拒收对应类型的编辑。</span>
             </div>
             <label className="field span2">收稿说明
               <textarea className="editor-notes" rows={4} value={editorForm.notes}

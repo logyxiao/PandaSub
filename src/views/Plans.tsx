@@ -13,7 +13,7 @@ import { SendDetailModal } from './SendDetail'
 import {
   categoryFromWords, countChars, createEmptyManuscript, DEFAULT_SEND_INTERVAL_MIN,
   latestTask, normalizeSendIntervalMin, planSendProgress, SEND_INTERVAL_OPTIONS,
-  syncMailFromTemplates, toInput,
+  syncMailFromTemplates, toInput, accountTodayQuota,
 } from './planShared'
 
 const emptyTask: TaskInput = {
@@ -537,10 +537,14 @@ export function PlansView() {
               <div className="plan-accounts-list">
                 {enabledAccounts.map((a) => {
                   const on = draftIds.includes(a.id)
+                  const quota = accountTodayQuota(a.sent_today)
                   return (
-                    <label key={a.id} className={`plan-account-chip ${on ? 'on' : ''}`}>
+                    <label key={a.id} className={`plan-account-chip ${on ? 'on' : ''} ${quota.over ? 'is-over' : ''}`}>
                       <input type="checkbox" checked={on} onChange={() => toggleDraftAccount(a.id)} />
-                      <span>{a.email}</span>
+                      <span className="plan-account-chip-text">
+                        <b>{a.email}</b>
+                        <small>今日 {quota.label}{quota.over ? ' · 建议今天不要再发' : ''}</small>
+                      </span>
                     </label>
                   )
                 })}

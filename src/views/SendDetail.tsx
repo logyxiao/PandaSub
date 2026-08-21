@@ -19,6 +19,7 @@ interface DetailRow {
   email: string
   notes: string
   work_type: string[]
+  rejected_types: string[]
   sent: boolean
   sentCount: number
   lastSentAt: string | null
@@ -43,7 +44,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   const [showPicker, setShowPicker] = useState(false)
   const [pickQuery, setPickQuery] = useState('')
   const [resending, setResending] = useState<string | null>(null)
-  const [more, setMore] = useState<{ key: string; top: number; left: number; width: number; workTypes: string[] } | null>(null)
+  const [more, setMore] = useState<{ key: string; top: number; left: number; width: number; workTypes: string[]; rejectedTypes: string[] } | null>(null)
 
   // 只看这个计划自己的投递记录，按收件人邮箱归组。
   const sentByEmail = useMemo(() => {
@@ -73,6 +74,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
       email: parsed.email,
       notes: (profile?.notes ?? '').trim(),
       work_type: profile?.work_type ?? [],
+      rejected_types: profile?.rejected_types ?? [],
       sent: sent.length > 0,
       sentCount: sent.length,
       // API returns deliveries newest-first; the first row is the latest send.
@@ -87,7 +89,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     else if (filter === 'unsent') list = list.filter((r) => !r.sent)
     if (!q) return list
     return list.filter((r) =>
-      [r.name, r.platform, r.email, r.notes, r.raw, ...r.work_type].join(' ').toLowerCase().includes(q))
+      [r.name, r.platform, r.email, r.notes, r.raw, ...r.work_type, ...r.rejected_types].join(' ').toLowerCase().includes(q))
   }, [rows, query, filter])
 
   const sentCount = rows.filter((r) => r.sent).length
@@ -106,7 +108,7 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     if (!q) return candidates
     return candidates.filter((e) => {
       const next = normalizeEditorTags(e)
-      return [next.name, next.platform, next.email, next.notes, ...(next.work_type ?? [])].join(' ').toLowerCase().includes(q)
+      return [next.name, next.platform, next.email, next.notes, ...(next.work_type ?? []), ...(next.rejected_types ?? [])].join(' ').toLowerCase().includes(q)
     })
   }, [candidates, pickQuery])
 
@@ -243,10 +245,11 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
                 render: (_value, e) => (
                   <EditorTypeChips
                     workTypes={e.work_type}
+                    rejectedTypes={e.rejected_types}
                     open={more?.key === `pick-${e.id}`}
-                    onToggle={(el, tags) => {
+                    onToggle={(el, tags, rejected) => {
                       const next = moreRect(el)
-                      setMore(more?.key === `pick-${e.id}` ? null : { key: `pick-${e.id}`, ...next, workTypes: tags })
+                      setMore(more?.key === `pick-${e.id}` ? null : { key: `pick-${e.id}`, ...next, workTypes: tags, rejectedTypes: rejected })
                     }}
                   />
                 ),
@@ -308,10 +311,11 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
                   render: (_value, r) => (
                     <EditorTypeChips
                       workTypes={r.work_type}
+                      rejectedTypes={r.rejected_types}
                       open={more?.key === `row-${r.email}`}
-                      onToggle={(el, tags) => {
+                      onToggle={(el, tags, rejected) => {
                         const next = moreRect(el)
-                        setMore(more?.key === `row-${r.email}` ? null : { key: `row-${r.email}`, ...next, workTypes: tags })
+                        setMore(more?.key === `row-${r.email}` ? null : { key: `row-${r.email}`, ...next, workTypes: tags, rejectedTypes: rejected })
                       }}
                     />
                   ),
@@ -364,7 +368,8 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
           left={more.left}
           width={more.width}
           workTypes={more.workTypes}
-          skip={2}
+          rejectedTypes={more.rejectedTypes}
+          skip={more.workTypes.length && more.rejectedTypes.length ? 1 : 2}
           onClose={() => setMore(null)}
         />
       )}
