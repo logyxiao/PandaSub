@@ -1,8 +1,8 @@
 const fallback = {
-  "version": "0.1.8",
+  "version": "0.1.9",
   "date": "2026-08-22",
   "notes": [
-    "修复部分 bug 问题"
+    "新增编辑组功能"
   ],
   "downloads": {}
 }
