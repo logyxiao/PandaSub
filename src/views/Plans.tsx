@@ -202,16 +202,16 @@ export function PlansView() {
     try {
       const id = await persistManuscript(form)
       if (!id) return
-      if (current && current.status === 'stopped') {
-        if (taskForm.account_ids.length) await api.updateTaskAccounts(current.id, taskForm.account_ids)
-        await api.startTask(current.id)
+      const input = {
+        ...taskForm,
+        name: form.title.trim(),
+        manuscript_ids: [id],
+        scheduled_at: taskForm.schedule_type === 'scheduled' ? toDbTime(scheduledInput) : null,
+      }
+      if (current && ['stopped', 'scheduled'].includes(current.status)) {
+        await api.updateTask(current.id, input)
       } else {
-        await api.createTask({
-          ...taskForm,
-          name: form.title.trim(),
-          manuscript_ids: [id],
-          scheduled_at: taskForm.schedule_type === 'scheduled' ? toDbTime(scheduledInput) : null,
-        })
+        await api.createTask(input)
       }
       setShowEditor(false)
       await load()

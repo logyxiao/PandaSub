@@ -146,7 +146,7 @@ pub async fn send_manual_delivery(
         manuscript.sender_name.clone()
     };
 
-    let message_id = smtp::send_email(
+    let send_result = smtp::send_email(
         &account,
         &recipient_email,
         &sender_name,
@@ -155,11 +155,29 @@ pub async fn send_manual_delivery(
         &manuscript.content_type,
         attachment.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
     )
-    .await
-    .map_err(|err| {
-        let (_, msg) = smtp::classify_error(&err);
-        msg
-    })?;
+    .await;
+    let message_id = match send_result {
+        Ok(message_id) => message_id,
+        Err(err) => {
+            let (category, message) = smtp::classify_error(&err);
+            let log = {
+                let conn = state.db.lock().map_err(|e| e.to_string())?;
+                store::insert_send_log(
+                    &conn,
+                    None,
+                    Some(account.id),
+                    "error",
+                    &category,
+                    &format!("手动发送失败（发件：{}）：{}", account.email, message),
+                    &recipient,
+                )
+            };
+            if let Ok(log) = log {
+                let _ = app.emit("log", &log);
+            }
+            return Err(format!("{}（发件邮箱：{}）", message, account.email));
+        }
+    };
 
     {
         let conn = state.db.lock().map_err(|e| e.to_string())?;

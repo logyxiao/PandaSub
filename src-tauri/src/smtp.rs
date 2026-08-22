@@ -97,10 +97,10 @@ fn plan_tag_values(manuscript: &Manuscript) -> (String, String, String) {
             continue;
         }
         if tag == "短篇" || tag == "中短篇" {
-            if !lengths.iter().any(|item| *item == tag) {
+            if !lengths.contains(&tag) {
                 lengths.push(tag);
             }
-        } else if !genres.iter().any(|item| *item == tag) {
+        } else if !genres.contains(&tag) {
             genres.push(tag);
         }
     }
@@ -266,14 +266,17 @@ pub async fn send_email(
     Ok(message_id)
 }
 
-fn extract_code(text: &str) -> Option<u16> {
-    text.split_whitespace().find_map(|w| {
-        if w.len() == 3 && w.bytes().all(|b| b.is_ascii_digit()) {
-            w.parse().ok()
-        } else {
-            None
-        }
-    })
+fn smtp_error_detail(text: &str) -> Option<&str> {
+    text.split_once(": ")
+        .map(|(_, detail)| detail.trim())
+        .filter(|detail| !detail.is_empty())
+}
+
+fn smtp_message(prefix: String, text: &str) -> String {
+    match smtp_error_detail(text) {
+        Some(detail) => format!("{prefix}：{detail}"),
+        None => prefix,
+    }
 }
 
 /// Returns (category, friendly message).
@@ -282,20 +285,43 @@ pub fn classify_error(err: &SendError) -> (String, String) {
         SendError::Build(m) => ("send".into(), m.clone()),
         SendError::Smtp(smtp_err) => {
             let text = smtp_err.to_string();
-            match extract_code(&text) {
+            let code = smtp_err.status().map(u16::from);
+            match code {
                 Some(535) | Some(530) | Some(534) => (
                     "auth".into(),
                     "认证失败：SMTP 授权码错误或未开启 SMTP 服务".into(),
                 ),
                 Some(550) | Some(551) | Some(552) | Some(553) | Some(554) => (
-                    "limit".into(),
-                    format!("服务端拒绝投递（{}）", extract_code(&text).unwrap_or(550)),
+                    "send".into(),
+                    smtp_message(format!("服务端拒绝投递（{}）", code.unwrap_or(550)), &text),
                 ),
                 Some(421) | Some(450) | Some(451) | Some(452) => (
                     "limit".into(),
-                    "临时限流：服务器繁忙，稍后自动重试".into(),
+                    smtp_message(
+                        format!("SMTP 服务器临时拒绝（{}），请稍后重试", code.unwrap_or(421)),
+                        &text,
+                    ),
                 ),
-                _ => ("network".into(), "网络错误或无法连接 SMTP 服务器".into()),
+                Some(code) if smtp_err.is_permanent() => (
+                    "send".into(),
+                    smtp_message(format!("SMTP 服务器拒绝请求（{code}）"), &text),
+                ),
+                Some(code) if smtp_err.is_transient() => (
+                    "limit".into(),
+                    smtp_message(format!("SMTP 服务器暂时不可用（{code}）"), &text),
+                ),
+                _ if smtp_err.is_timeout() => (
+                    "network".into(),
+                    "连接 SMTP 服务器超时，请检查网络后重试".into(),
+                ),
+                _ if smtp_err.is_tls() => (
+                    "network".into(),
+                    smtp_message("SMTP 安全连接失败".into(), &text),
+                ),
+                _ => (
+                    "network".into(),
+                    smtp_message("无法连接 SMTP 服务器".into(), &text),
+                ),
             }
         }
     }

@@ -194,22 +194,21 @@ fn fetch_new_mail(account: &Account) -> Result<Vec<FetchedMail>, String> {
         let _ = session.logout();
         return Ok(Vec::new());
     }
-    if uid_list.len() > 80 {
-        uid_list = uid_list.split_off(uid_list.len() - 80);
-    }
-    let set = uid_list
-        .iter()
-        .map(|u| u.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let fetches = session
-        .uid_fetch(&set, "BODY.PEEK[]")
-        .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
-    for fetch in fetches.iter() {
-        let Some(uid) = fetch.uid else { continue };
-        let Some(bytes) = fetch.body() else { continue };
-        out.push(parse_message(uid, bytes));
+    for batch in uid_list.chunks(80) {
+        let set = batch
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let fetches = session
+            .uid_fetch(&set, "BODY.PEEK[]")
+            .map_err(|e| e.to_string())?;
+        for fetch in fetches.iter() {
+            let Some(uid) = fetch.uid else { continue };
+            let Some(bytes) = fetch.body() else { continue };
+            out.push(parse_message(uid, bytes));
+        }
     }
     let _ = session.logout();
     Ok(out)
@@ -390,6 +389,19 @@ fn emails_equal(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
 }
 
+fn normalize_subject(value: &str) -> String {
+    let mut subject = value.trim().to_lowercase();
+    loop {
+        let trimmed = subject.trim_start();
+        let prefix = ["re:", "re：", "回复:", "回复：", "答复:", "答复：", "fw:", "fwd:"]
+            .into_iter()
+            .find(|prefix| trimmed.starts_with(prefix));
+        let Some(prefix) = prefix else { break };
+        subject = trimmed[prefix.len()..].trim_start().to_string();
+    }
+    subject.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn match_delivery<'a>(mail: &FetchedMail, deliveries: &'a [Delivery]) -> Option<&'a Delivery> {
     let reply_ids = format!("{} {}", mail.in_reply_to, mail.references);
     let reply_norm = normalize_id(&reply_ids);
@@ -401,12 +413,91 @@ fn match_delivery<'a>(mail: &FetchedMail, deliveries: &'a [Delivery]) -> Option<
             return Some(found);
         }
     }
-    let subj = mail.subject.to_lowercase();
-    deliveries.iter().find(|d| {
+    let subject = normalize_subject(&mail.subject);
+    if subject.is_empty() {
+        return None;
+    }
+    let mut matches = deliveries.iter().filter(|d| {
         if !emails_equal(&mail.from, &d.recipient) {
             return false;
         }
-        let orig = d.subject.to_lowercase();
-        orig.is_empty() || subj.contains(&orig) || subj.contains("re:")
-    })
+        let original = normalize_subject(&d.subject);
+        !original.is_empty() && subject == original
+    });
+    let matched = matches.next()?;
+    matches.next().is_none().then_some(matched)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delivery(id: i64, recipient: &str, subject: &str) -> Delivery {
+        Delivery {
+            id,
+            task_id: Some(id),
+            account_id: Some(1),
+            manuscript_id: Some(id),
+            recipient: recipient.into(),
+            subject: subject.into(),
+            message_id: String::new(),
+            sent_at: String::new(),
+        }
+    }
+
+    fn reply(from: &str, subject: &str) -> FetchedMail {
+        FetchedMail {
+            uid: 1,
+            from: from.into(),
+            subject: subject.into(),
+            body: String::new(),
+            message_id: String::new(),
+            in_reply_to: String::new(),
+            references: String::new(),
+            content_type: String::new(),
+            extra_headers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn fallback_match_uses_subject_not_only_re_prefix() {
+        let deliveries = vec![
+            delivery(2, "editor@example.com", "投稿：《新稿》"),
+            delivery(1, "editor@example.com", "投稿：《旧稿》"),
+        ];
+        let matched = match_delivery(
+            &reply("editor@example.com", "Re: 投稿：《旧稿》"),
+            &deliveries,
+        );
+        assert_eq!(matched.map(|item| item.id), Some(1));
+    }
+
+    #[test]
+    fn fallback_match_rejects_unrelated_reply() {
+        let deliveries = vec![delivery(1, "editor@example.com", "投稿：《旧稿》")];
+        assert!(match_delivery(
+            &reply("editor@example.com", "Re: 完全无关的主题"),
+            &deliveries,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn fallback_match_rejects_ambiguous_short_subject() {
+        let deliveries = vec![delivery(1, "editor@example.com", "投稿：《旧稿》")];
+        assert!(match_delivery(&reply("editor@example.com", "Re: 投稿"), &deliveries).is_none());
+    }
+
+    #[test]
+    fn fallback_match_rejects_multiple_exact_candidates() {
+        let deliveries = vec![
+            delivery(2, "editor@example.com", "投稿：《同名稿》"),
+            delivery(1, "editor@example.com", "投稿：《同名稿》"),
+        ];
+        assert!(match_delivery(
+            &reply("editor@example.com", "Re: 投稿：《同名稿》"),
+            &deliveries,
+        )
+        .is_none());
+    }
 }

@@ -33,7 +33,7 @@ fn validate_editor(input: &crate::models::EditorInput) -> Result<crate::models::
 #[tauri::command]
 pub fn list_editors(state: State<'_, AppState>) -> Result<Vec<crate::models::Editor>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    Ok(store::load_editors(&conn)?)
+    store::load_editors(&conn)
 }
 
 #[tauri::command]
@@ -172,10 +172,10 @@ pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String
             .write_string(row, 2, &editor.email)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 3, &editor.work_type.join("、"))
+            .write_string(row, 3, editor.work_type.join("、"))
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 4, &editor.rejected_types.join("、"))
+            .write_string(row, 4, editor.rejected_types.join("、"))
             .map_err(|e| e.to_string())?;
         sheet
             .write_string(row, 5, &editor.notes)
@@ -267,7 +267,9 @@ fn skip_import_sheet(name: &str) -> bool {
         || name.contains("短剧")
 }
 
-fn read_spreadsheet_sheets(data: &[u8]) -> Result<Vec<(String, Vec<Vec<String>>)>, String> {
+type SpreadsheetSheets = Vec<(String, Vec<Vec<String>>)>;
+
+fn read_spreadsheet_sheets(data: &[u8]) -> Result<SpreadsheetSheets, String> {
     let mut workbook = calamine::open_workbook_auto_from_rs(std::io::Cursor::new(data))
         .map_err(|e| format!("无法读取表格：{e}"))?;
     let names = workbook.sheet_names().to_vec();

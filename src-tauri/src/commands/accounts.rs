@@ -118,6 +118,7 @@ pub async fn test_account(state: State<'_, AppState>, id: i64) -> Result<String,
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_test_email(
     state: State<'_, AppState>,
     account_id: i64,
@@ -195,4 +196,3 @@ fn validate_account(input: &AccountInput) -> Result<(), String> {
     }
     Ok(())
 }
-

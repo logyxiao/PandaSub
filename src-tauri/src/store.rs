@@ -1,5 +1,4 @@
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json;
 
 use crate::models::{Account, Delivery, Editor, EditorInput, Manuscript, Reply, Settings, Task, TaskLog};
 
@@ -559,6 +558,30 @@ pub fn insert_delivery(
     Ok(conn.last_insert_rowid())
 }
 
+pub fn record_successful_delivery(
+    conn: &mut Connection,
+    task_id: i64,
+    account_id: i64,
+    manuscript_id: i64,
+    recipient: &str,
+    subject: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    increment_task_sent(&transaction, task_id)?;
+    record_account_send(&transaction, account_id)?;
+    insert_delivery(
+        &transaction,
+        task_id,
+        account_id,
+        manuscript_id,
+        recipient,
+        subject,
+        message_id,
+    )?;
+    transaction.commit().map_err(|e| e.to_string())
+}
+
 /// Returns recipients delivered by this task for this manuscript only.
 /// Delivery history from other tasks must not make a newly-created task skip recipients.
 pub fn delivered_emails_for_task_manuscript(
@@ -679,6 +702,7 @@ pub fn reply_exists(conn: &Connection, account_id: i64, imap_uid: i64) -> Result
     Ok(n > 0)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_reply(
     conn: &Connection,
     delivery_id: Option<i64>,

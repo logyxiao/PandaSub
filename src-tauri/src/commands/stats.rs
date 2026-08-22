@@ -97,7 +97,8 @@ pub fn get_stats(
         let col = "created_at";
         let sql = format!(
             "SELECT {} AS k, COUNT(*) AS c FROM task_logs
-             WHERE level = 'error' AND category IN ('send', 'network') AND {} GROUP BY k",
+             WHERE level = 'error' AND category IN ('send', 'network', 'limit', 'auth')
+             AND TRIM(COALESCE(recipient, '')) <> '' AND {} GROUP BY k",
             key(col),
             range(col),
         );

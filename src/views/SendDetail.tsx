@@ -93,6 +93,10 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   }, [rows, query, filter])
 
   const sentCount = rows.filter((r) => r.sent).length
+  const manualAccounts = useMemo(() => {
+    if (!manuscript.account_ids.length) return enabledAccounts
+    return enabledAccounts.filter((account) => manuscript.account_ids.includes(account.id))
+  }, [enabledAccounts, manuscript.account_ids])
 
   // 添加编辑：编辑库中还没进这个计划的编辑。
   const existingEmails = useMemo(
@@ -165,16 +169,19 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
 
   const manualSend = async (row: DetailRow) => {
     if (locked) { toast('这个计划正在发送，请先停止', 'warning'); return }
-    if (!enabledAccounts.length) { toast('没有可用的发件邮箱，请先启用', 'warning'); return }
+    if (!manualAccounts.length) { toast('计划配置的发件邮箱不可用，请先检查邮箱设置', 'warning'); return }
+    const accountLabel = manualAccounts.length === 1
+      ? manualAccounts[0].email
+      : `计划配置的 ${manualAccounts.length} 个发件邮箱中的可用邮箱`
     const ok = await confirm({
       title: '手动发送？',
-      message: `将把「${row.name}」的稿件邮件手动发送到 ${row.email}，使用已启用的发件邮箱。`,
+      message: `将把「${row.name}」的稿件邮件手动发送到 ${row.email}，使用 ${accountLabel}。`,
       confirmLabel: '手动发送',
     })
     if (!ok) return
     setResending(row.email.toLowerCase())
     try {
-      await api.sendManualDelivery(manuscript.id, row.raw, enabledAccounts.map((a) => a.id))
+      await api.sendManualDelivery(manuscript.id, row.raw, manualAccounts.map((a) => a.id))
       toast('已手动发送', 'success')
       onChanged()
     } catch (e) { toast(String(e), 'error') }

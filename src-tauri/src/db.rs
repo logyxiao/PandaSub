@@ -161,7 +161,6 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_mail_templates_column(&connection)?;
     add_manuscript_send_interval_column(&connection)?;
     add_reply_accepted_column(&connection)?;
-    add_reply_accepted_column(&connection)?;
     reclassify_autoreply_history(&connection)?;
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
@@ -169,21 +168,57 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     Ok(connection)
 }
 
-/// Recreate tables when coming from a legacy/partial schema. Drops child tables
-/// before parents to avoid foreign-key constraint failures.
+/// Bring legacy/partial schemas forward without deleting user data.
 fn migrate(connection: &Connection) -> Result<(), String> {
-    let needs_recreate = table_lacks_column(connection, "accounts", "password")
-        || table_lacks_column(connection, "tasks", "manuscript_ids");
-    if needs_recreate {
-        connection
-            .execute_batch(
-                "DROP TABLE IF EXISTS task_logs;
-                 DROP TABLE IF EXISTS tasks;
-                 DROP TABLE IF EXISTS manuscripts;
-                 DROP TABLE IF EXISTS accounts;
-                 DROP TABLE IF EXISTS settings;",
-            )
-            .map_err(|e| e.to_string())?;
+    ensure_columns(
+        connection,
+        "accounts",
+        &[
+            ("password", "password TEXT NOT NULL DEFAULT ''"),
+            ("smtp_host", "smtp_host TEXT NOT NULL DEFAULT ''"),
+            ("smtp_port", "smtp_port INTEGER NOT NULL DEFAULT 465"),
+            ("sender_name", "sender_name TEXT NOT NULL DEFAULT ''"),
+            ("provider", "provider TEXT NOT NULL DEFAULT 'qq'"),
+            ("enabled", "enabled INTEGER NOT NULL DEFAULT 1"),
+            ("last_sent_at", "last_sent_at TEXT"),
+            ("imap_host", "imap_host TEXT NOT NULL DEFAULT ''"),
+            ("imap_port", "imap_port INTEGER NOT NULL DEFAULT 993"),
+            ("check_replies", "check_replies INTEGER NOT NULL DEFAULT 1"),
+            ("imap_uid", "imap_uid INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "created_at TEXT NOT NULL DEFAULT ''"),
+        ],
+    )?;
+    ensure_columns(
+        connection,
+        "tasks",
+        &[
+            ("manuscript_ids", "manuscript_ids TEXT NOT NULL DEFAULT '[]'"),
+            ("account_ids", "account_ids TEXT NOT NULL DEFAULT '[]'"),
+            ("status", "status TEXT NOT NULL DEFAULT 'stopped'"),
+            ("schedule_type", "schedule_type TEXT NOT NULL DEFAULT 'immediate'"),
+            ("scheduled_at", "scheduled_at TEXT"),
+            ("retry_max", "retry_max INTEGER NOT NULL DEFAULT 3"),
+            ("sent", "sent INTEGER NOT NULL DEFAULT 0"),
+            ("total", "total INTEGER NOT NULL DEFAULT 0"),
+            ("created_at", "created_at TEXT NOT NULL DEFAULT ''"),
+            ("started_at", "started_at TEXT"),
+            ("finished_at", "finished_at TEXT"),
+        ],
+    )?;
+    Ok(())
+}
+
+fn ensure_columns(
+    connection: &Connection,
+    table: &str,
+    columns: &[(&str, &str)],
+) -> Result<(), String> {
+    for (name, declaration) in columns {
+        if table_lacks_column(connection, table, name) {
+            connection
+                .execute(&format!("ALTER TABLE {table} ADD COLUMN {declaration}"), [])
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -1023,4 +1058,56 @@ fn add_task_account_columns(conn: &Connection) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn legacy_migration_preserves_existing_rows() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "novelsub-legacy-{}-{nonce}.sqlite",
+            std::process::id()
+        ));
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE accounts (id INTEGER PRIMARY KEY, email TEXT NOT NULL);
+                 INSERT INTO accounts (id, email) VALUES (1, 'author@example.com');
+                 CREATE TABLE tasks (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+                 INSERT INTO tasks (id, name) VALUES (7, '旧任务');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let connection = open_database(path.clone()).unwrap();
+
+        let account: (String, String) = connection
+            .query_row(
+                "SELECT email, password FROM accounts WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let task: (String, String) = connection
+            .query_row(
+                "SELECT name, manuscript_ids FROM tasks WHERE id = 7",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(account, ("author@example.com".into(), String::new()));
+        assert_eq!(task, ("旧任务".into(), "[]".into()));
+        drop(connection);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+        let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    }
 }

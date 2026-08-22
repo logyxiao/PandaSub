@@ -73,20 +73,20 @@ pub fn export_logs(
             .write_number(row, 0, log.id as f64)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 1, &log.task_id.map(|v| v.to_string()).unwrap_or_default())
+            .write_string(row, 1, log.task_id.map(|v| v.to_string()).unwrap_or_default())
             .map_err(|e| e.to_string())?;
         sheet
             .write_string(
                 row,
                 2,
-                &log
+                log
                     .account_id
                     .and_then(|id| accounts.iter().find(|a| a.id == id).map(|a| a.email.clone()))
                     .unwrap_or_default(),
             )
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 3, &log.recipient.clone().unwrap_or_default())
+            .write_string(row, 3, log.recipient.clone().unwrap_or_default())
             .map_err(|e| e.to_string())?;
         sheet
             .write_string(row, 4, &log.level)
@@ -104,4 +104,3 @@ pub fn export_logs(
     workbook.save(&path).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
 }
-

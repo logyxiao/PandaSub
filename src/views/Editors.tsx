@@ -27,6 +27,7 @@ export interface EditorListFilters {
   favoritedOnly: boolean
 }
 
+// eslint-disable-next-line react/only-export-components
 export const emptyEditorListFilters = (workTypes: string[] = [], excludedWorkTypes: string[] = []): EditorListFilters => ({
   query: '',
   platform: '',
@@ -456,6 +457,7 @@ export function EditorTypeChips({ workTypes, rejectedTypes = [], open, onToggle 
   )
 }
 
+// eslint-disable-next-line react/only-export-components
 export function moreRect(el: HTMLElement, minWidth = 180, estimate = 88) {
   const rect = el.getBoundingClientRect()
   const width = Math.min(320, Math.max(minWidth, rect.width))

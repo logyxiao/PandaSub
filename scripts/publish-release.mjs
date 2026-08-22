@@ -163,7 +163,7 @@ function prepareDeployment(version, notes, date, assetsDir) {
   const macUpdaterName = `pandasub-${version}-darwin-universal.app.tar.gz`
   const windowsFile = copyFile(windowsSource, releasesDir, windowsName)
   const macDmgFile = copyFile(macDmgSource, releasesDir, macDmgName)
-  const macUpdaterFile = copyFile(macUpdaterSource, releasesDir, macUpdaterName)
+  copyFile(macUpdaterSource, releasesDir, macUpdaterName)
   copyFile(windowsSignatureSource, releasesDir, `${windowsName}.sig`)
   copyFile(macSignatureSource, releasesDir, `${macUpdaterName}.sig`)
 

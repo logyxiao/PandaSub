@@ -25,7 +25,9 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
         .map_err(|e| e.to_string())?;
     let failed_today: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM task_logs WHERE level = 'error' AND category IN ('network', 'send')
+            "SELECT COUNT(*) FROM task_logs WHERE level = 'error'
+             AND category IN ('network', 'send', 'limit', 'auth')
+             AND TRIM(COALESCE(recipient, '')) <> ''
              AND date(created_at) = date('now','localtime')",
             [],
             |r| r.get(0),

@@ -11,6 +11,9 @@ use crate::smtp::{self, classify_error};
 use crate::state::TaskHandle;
 use crate::store;
 
+type SharedAttachment = Option<Arc<(String, Vec<u8>)>>;
+type AttachmentMap = HashMap<i64, SharedAttachment>;
+
 #[derive(Clone)]
 struct SendTarget {
     manuscript: Arc<Manuscript>,
@@ -25,10 +28,15 @@ enum SendOutcome {
     RetryLater,
 }
 
+fn delivery_target_key(manuscript_id: i64, recipient: &str) -> (i64, String) {
+    let (_, email) = smtp::parse_recipient(recipient);
+    (manuscript_id, email.trim().to_lowercase())
+}
+
 fn build_queue(
     _task: &Task,
     manuscripts: &[Manuscript],
-    attachments: &HashMap<i64, Option<Arc<(String, Vec<u8>)>>>,
+    attachments: &AttachmentMap,
 ) -> VecDeque<SendTarget> {
     let mut queue = VecDeque::new();
     for manuscript in manuscripts {
@@ -49,14 +57,26 @@ fn build_queue(
     items.into_iter().collect()
 }
 
-pub fn spawn_task_worker(
+pub fn try_reserve_task_handle(
+    registry: &Arc<Mutex<HashMap<i64, Arc<TaskHandle>>>>,
+    task_id: i64,
+) -> Result<Option<Arc<TaskHandle>>, String> {
+    let handle = Arc::new(TaskHandle::new());
+    let mut tasks = registry.lock().map_err(|e| e.to_string())?;
+    if tasks.contains_key(&task_id) {
+        return Ok(None);
+    }
+    tasks.insert(task_id, handle.clone());
+    Ok(Some(handle))
+}
+
+pub fn spawn_task_worker_with_handle(
     app: AppHandle,
     db: Arc<Mutex<Connection>>,
     registry: Arc<Mutex<HashMap<i64, Arc<TaskHandle>>>>,
     task_id: i64,
+    handle: Arc<TaskHandle>,
 ) {
-    let handle = Arc::new(TaskHandle::new());
-    registry.lock().unwrap().insert(task_id, handle.clone());
     tauri::async_runtime::spawn(async move {
         run_task_worker(app, db, registry, task_id, handle).await;
     });
@@ -93,6 +113,10 @@ pub fn start_scheduler_watcher(
                 }
             };
             for id in due {
+                let handle = match try_reserve_task_handle(&registry, id) {
+                    Ok(Some(handle)) => handle,
+                    Ok(None) | Err(_) => continue,
+                };
                 let claimed = {
                     let conn = db.lock().unwrap();
                     conn.execute(
@@ -103,7 +127,21 @@ pub fn start_scheduler_watcher(
                         == 1
                 };
                 if claimed {
-                    spawn_task_worker(app.clone(), db.clone(), registry.clone(), id);
+                    spawn_task_worker_with_handle(
+                        app.clone(),
+                        db.clone(),
+                        registry.clone(),
+                        id,
+                        handle,
+                    );
+                } else {
+                    let mut tasks = registry.lock().unwrap();
+                    if tasks
+                        .get(&id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &handle))
+                    {
+                        tasks.remove(&id);
+                    }
                 }
             }
         }
@@ -211,7 +249,7 @@ async fn run_task_worker(
     };
 
     // 发送时按需读取各稿件的附件（文件名 + 内容），列表加载不带附件。
-    let attachments: HashMap<i64, Option<Arc<(String, Vec<u8>)>>> = {
+    let attachments: AttachmentMap = {
         let conn = db.lock().unwrap();
         manuscripts
             .iter()
@@ -284,18 +322,19 @@ async fn run_task_worker(
         if !resend_all {
             let already = {
                 let conn = db.lock().unwrap();
-                let mut emails = std::collections::HashSet::new();
+                let mut delivered_targets = std::collections::HashSet::new();
                 for manuscript in &manuscripts {
-                    emails.extend(
-                        store::delivered_emails_for_task_manuscript(&conn, task_id, manuscript.id).unwrap_or_default(),
-                    );
+                    for email in store::delivered_emails_for_task_manuscript(&conn, task_id, manuscript.id)
+                        .unwrap_or_default()
+                    {
+                        delivered_targets.insert(delivery_target_key(manuscript.id, &email));
+                    }
                 }
-                emails
+                delivered_targets
             };
             if !already.is_empty() {
                 queue.retain(|t| {
-                    let (_, email) = smtp::parse_recipient(&t.recipient);
-                    !already.contains(&email.to_lowercase())
+                    !already.contains(&delivery_target_key(t.manuscript.id, &t.recipient))
                 });
             }
         }
@@ -356,6 +395,27 @@ async fn run_task_worker(
     let allowed_accounts: std::collections::HashSet<i64> = task.account_ids.iter().copied().collect();
 
     loop {
+        if !is_loop && queue.is_empty() {
+            let completion_message = if had_failure { "任务投递结束，但有邮件发送失败" } else { "任务全部投递完成" };
+            let log = store::insert_log(
+                &db.lock().unwrap(),
+                Some(task_id),
+                None,
+                if had_failure { "warning" } else { "success" },
+                "task",
+                completion_message,
+            );
+            if let Ok(log) = log {
+                emit_log(&app, &log);
+            }
+            {
+                let conn = db.lock().unwrap();
+                let _ = store::mark_task_finished(&conn, task_id, if had_failure { "stopped" } else { "completed" });
+            }
+            emit_task(&app, &db, task_id);
+            registry.lock().unwrap().remove(&task_id);
+            return;
+        }
         if handle.is_stopped() {
             break;
         }
@@ -377,43 +437,21 @@ async fn run_task_worker(
         }
 
         if queue.is_empty() {
-            if is_loop {
-                queue = build_queue(&task, &manuscripts, &attachments);
-                if queue.is_empty() {
-                    let log = store::insert_log(
-                        &db.lock().unwrap(),
-                        Some(task_id),
-                        None,
-                        "warning",
-                        "task",
-                        "稿件未设置收件人，60 秒后重试",
-                    );
-                    if let Ok(log) = log {
-                        emit_log(&app, &log);
-                    }
-                    interruptible_sleep(60, &handle).await;
-                    continue;
-                }
-            } else {
-                let completion_message = if had_failure { "任务投递结束，但有邮件发送失败" } else { "任务全部投递完成" };
+            queue = build_queue(&task, &manuscripts, &attachments);
+            if queue.is_empty() {
                 let log = store::insert_log(
                     &db.lock().unwrap(),
                     Some(task_id),
                     None,
-                    if had_failure { "warning" } else { "success" },
+                    "warning",
                     "task",
-                    completion_message,
+                    "稿件未设置收件人，60 秒后重试",
                 );
                 if let Ok(log) = log {
                     emit_log(&app, &log);
                 }
-                {
-                    let conn = db.lock().unwrap();
-                    let _ = store::mark_task_finished(&conn, task_id, if had_failure { "stopped" } else { "completed" });
-                }
-                emit_task(&app, &db, task_id);
-                registry.lock().unwrap().remove(&task_id);
-                return;
+                interruptible_sleep(60, &handle).await;
+                continue;
             }
         }
 
@@ -441,11 +479,6 @@ async fn run_task_worker(
             }
         };
 
-        let sender_name = if target.manuscript.sender_name.trim().is_empty() {
-            account.sender_name.clone()
-        } else {
-            target.manuscript.sender_name.clone()
-        };
         let (_editor_name, recipient_email) = smtp::parse_recipient(&target.recipient);
         let (subject, body) = smtp::resolve_outgoing_mail(
             &target.manuscript,
@@ -458,7 +491,6 @@ async fn run_task_worker(
             task_id,
             &account,
             &target,
-            &sender_name,
             &subject,
             &body,
             task.retry_max,
@@ -470,29 +502,41 @@ async fn run_task_worker(
 
         match outcome {
             SendOutcome::Success { message_id, account_id } => {
-                {
-                    let conn = db.lock().unwrap();
-                    let _ = store::increment_task_sent(&conn, task_id);
-                    let _ = store::record_account_send(&conn, account_id);
-                    let _ = store::insert_delivery(
-                        &conn,
+                let recorded = {
+                    let mut conn = db.lock().unwrap();
+                    store::record_successful_delivery(
+                        &mut conn,
                         task_id,
                         account_id,
                         target.manuscript.id,
                         &recipient_email,
                         &subject,
                         &message_id,
-                    );
-                }
-                let log = store::insert_send_log(
-                    &db.lock().unwrap(),
-                    Some(task_id),
-                    Some(account.id),
-                    "success",
-                    "send",
-                    "投递成功",
-                    &target.recipient,
-                );
+                    )
+                };
+                let log = match recorded {
+                    Ok(()) => store::insert_send_log(
+                        &db.lock().unwrap(),
+                        Some(task_id),
+                        Some(account_id),
+                        "success",
+                        "send",
+                        "投递成功",
+                        &target.recipient,
+                    ),
+                    Err(error) => {
+                        had_failure = true;
+                        store::insert_send_log(
+                            &db.lock().unwrap(),
+                            Some(task_id),
+                            Some(account_id),
+                            "error",
+                            "storage",
+                            &format!("邮件已发出，但保存投递记录失败：{error}"),
+                            &target.recipient,
+                        )
+                    }
+                };
                 if let Ok(log) = log {
                     emit_log(&app, &log);
                 }
@@ -503,6 +547,10 @@ async fn run_task_worker(
                 interruptible_sleep(30, &handle).await;
             }
             SendOutcome::Failed => { had_failure = true; }
+        }
+
+        if !is_loop && queue.is_empty() {
+            continue;
         }
 
         if handle.is_stopped() {
@@ -546,7 +594,6 @@ async fn send_with_retry(
     task_id: i64,
     initial_account: &Account,
     target: &SendTarget,
-    sender_name: &str,
     subject: &str,
     body: &str,
     retry_max: i64,
@@ -567,6 +614,11 @@ async fn send_with_retry(
                 return SendOutcome::Failed;
             }
         }
+        let sender_name = if target.manuscript.sender_name.trim().is_empty() {
+            account.sender_name.as_str()
+        } else {
+            target.manuscript.sender_name.as_str()
+        };
         match smtp::send_email(
             &account,
             &smtp::parse_recipient(&target.recipient).1,
@@ -611,6 +663,21 @@ async fn send_with_retry(
                             None => return SendOutcome::RetryLater,
                         }
                     }
+                    "send" => {
+                        let log = store::insert_send_log(
+                            &db.lock().unwrap(),
+                            Some(task_id),
+                            Some(account.id),
+                            "error",
+                            "send",
+                            &format!("投递被永久拒绝：{message}"),
+                            &target.recipient,
+                        );
+                        if let Ok(log) = log {
+                            emit_log(app, &log);
+                        }
+                        return SendOutcome::Failed;
+                    }
                     _ => {
                         network_attempts += 1;
                         let log = store::insert_log(
@@ -618,7 +685,7 @@ async fn send_with_retry(
                             Some(task_id),
                             Some(account.id),
                             "warning",
-                            "network",
+                            &category,
                             &format!("发送失败（发件：{}），稍后重试：{}", account.email, message),
                         );
                         if let Ok(log) = log {
@@ -630,7 +697,7 @@ async fn send_with_retry(
                                 Some(task_id),
                                 Some(account.id),
                                 "error",
-                                "network",
+                                &category,
                                 &format!("重试次数耗尽，跳过 {}", target.recipient),
                                 &target.recipient,
                             );
@@ -645,5 +712,42 @@ async fn send_with_retry(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_handle_reservation_is_atomic() {
+        let registry = Arc::new(Mutex::new(HashMap::new()));
+        let reservations = (0..8)
+            .map(|_| {
+                let registry = registry.clone();
+                std::thread::spawn(move || {
+                    try_reserve_task_handle(&registry, 42).unwrap().is_some()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let claimed = reservations
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(|claimed| *claimed)
+            .count();
+        assert_eq!(claimed, 1);
+    }
+
+    #[test]
+    fn delivered_target_keeps_manuscript_identity() {
+        assert_ne!(
+            delivery_target_key(1, "编辑 <Editor@Example.com>"),
+            delivery_target_key(2, "editor@example.com"),
+        );
+        assert_eq!(
+            delivery_target_key(1, "编辑 <Editor@Example.com>"),
+            delivery_target_key(1, "editor@example.com"),
+        );
     }
 }

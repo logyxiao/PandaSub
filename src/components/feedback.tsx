@@ -4,6 +4,7 @@ type ToastTone = 'info' | 'success' | 'warning' | 'error'
 interface ToastItem { id: number; message: string; tone: ToastTone }
 
 const ToastCtx = createContext<(message: string, tone?: ToastTone) => void>(() => {})
+// eslint-disable-next-line react/only-export-components
 export function useToast() { return useContext(ToastCtx) }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
@@ -36,6 +37,7 @@ interface ConfirmOptions {
 }
 
 const ConfirmCtx = createContext<(opts: ConfirmOptions) => Promise<boolean>>(() => Promise.resolve(false))
+// eslint-disable-next-line react/only-export-components
 export function useConfirm() { return useContext(ConfirmCtx) }
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {

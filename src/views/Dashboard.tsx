@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Activity, AlertCircle, ArrowRight, BookOpenText, CheckCircle2, CirclePause, CirclePlay, Inbox, Mail, RefreshCw, Square, UserRound, Users } from 'lucide-react'
 import { api, onLog, onReply, onTask } from '../api'
-import { formatTime } from '../format'
+import { formatTime, replyKindLabel, replyKindTone } from '../format'
 import { useNav } from '../nav'
 import { useToast } from '../components/feedback'
 import { Badge, Button, IconButton, RuntimeTrack, Select } from '../components/ui'
@@ -43,7 +43,11 @@ export function DashboardView() {
       setData((d) => ({
         ...d,
         sent_today: d.sent_today + (log.level === 'success' && log.category === 'send' ? 1 : 0),
-        failed_today: d.failed_today + (log.level === 'error' && (log.category === 'network' || log.category === 'send') ? 1 : 0),
+        failed_today: d.failed_today + (
+          log.level === 'error'
+            && ['network', 'send', 'limit', 'auth'].includes(log.category)
+            && Boolean(log.recipient?.trim()) ? 1 : 0
+        ),
       }))
     }).then((u) => {
       if (cancelled) u()
@@ -213,8 +217,8 @@ export function DashboardView() {
                 title: '类型',
                 width: 104,
                 render: (_value, reply) => (
-                  <Badge tone={reply.accepted ? 'success' : 'success'} dot>
-                    {reply.accepted ? '过稿回复' : '人工回复'}
+                  <Badge tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')} dot>
+                    {reply.accepted ? '过稿回复' : (replyKindLabel[reply.kind] ?? reply.kind)}
                   </Badge>
                 ),
               },
