@@ -1,5 +1,5 @@
 {
-  "version": "0.1.9",
+  "version": "0.2.0",
   "date": "2026-08-22",
   "notes": [
     "新增编辑组功能"
@@ -7,15 +7,13 @@
   "downloads": {
     "windows": {
       "label": "64 位版",
-      "detail": "Windows 10 / 11 · 64 位 · 5.2 MB",
-      "url": "releases/pandasub-0.1.9-windows-x64-setup.exe",
-      "sha256": "1bb7b6535111e4514a6760bade18d6d6443baf863dcc9fca17db5f298c2f153a"
+      "detail": "Windows 10 / 11 · 64 位",
+      "url": "releases/pandasub-0.2.0-windows-x64-setup.exe"
     },
     "macos": {
       "label": "通用版",
-      "detail": "Apple 芯片 / Intel · macOS 11 及以上 · 20 MB",
-      "url": "releases/pandasub-0.1.9-macos-universal.dmg",
-      "sha256": "87f02f3e1bf04a97b28afe4851020f1e426cf8b0120086347fa50d8fa86f9f1f"
+      "detail": "Apple 芯片 / Intel · macOS 11 及以上",
+      "url": "releases/pandasub-0.2.0-macos-universal.dmg"
     }
   }
 }

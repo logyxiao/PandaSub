@@ -1,5 +1,5 @@
 const fallback = {
-  "version": "0.1.9",
+  "version": "0.2.0",
   "date": "2026-08-22",
   "notes": [
     "新增编辑组功能"
