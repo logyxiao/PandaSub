@@ -1,19 +1,19 @@
 {
-  "version": "0.1.7",
-  "notes": "更新初始数据库,现在编辑拒收类型",
-  "pub_date": "2026-08-21T13:23:13.279Z",
+  "version": "0.1.8",
+  "notes": "修复部分 bug 问题",
+  "pub_date": "2026-08-22T10:54:48.088Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkxSNmxzN0pWWUlIQ0RPbzBoUXNhYXA3Sm5RdFRSUmpGNHFnNFhsOUZtUjBvcW5PbENaK2lqV1h4Ym55Z1kwWmJtQjJEVmdQbWJ2QUQwWkNZUWVIQVFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MzE4MzU3CWZpbGU654aK54yr5oqV56i/XzAuMS43X3g2NC1zZXR1cC5leGUKOEN1U25DdGlwRDRucmxLQllXZEh2KytPcjRYOWFTeSt1Rzg4OTNkZG0xa0F4TFNGUUF1UjFER1pBRFI3a2VoUUZHaU9odHl4N2Jqa05OL1JQa3JSQXc9PQo=",
-      "url": "https://pandasub.zhudot.com/releases/pandasub-0.1.7-windows-x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkZUU3VxK2ZkT0twRmkrSlY0L1UybTIwR1hGREtnWHZyYkh6TWxyY3NwM3NsSGQzUkxCZmUzK2hyMkYrNG9TMEM4RlVKOTdCVWtQK2ZxeEoyZVdEVndRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3Mzk1ODU3CWZpbGU654aK54yr5oqV56i/XzAuMS44X3g2NC1zZXR1cC5leGUKNDhJZlpPV2x4RVBOK0M1eVVYQ1ByQk43YnpWUGNwdlQzc1NzNU5hQm93YjhpZVpqNGwrcXFJUG9jM01yN2IrMFpiS2tqaU1BRjYzRy9QM1p5aGpwREE9PQo=",
+      "url": "https://pandasub.zhudot.com/releases/pandasub-0.1.8-windows-x64-setup.exe"
     },
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkloUWZJR3hueUoyaEF6SG9YZGRRZ3BoL0R4QWoyR2tnVTNiZXYvY1Q2eHIrTG8vZkMxb2dXR0tjUDB6eXdiZUdOZ3M5aHdGelhyUjZQTTV3VW1xVXcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MzE4NDY3CWZpbGU654aK54yr5oqV56i/LmFwcC50YXIuZ3oKVmpyZGY3NENXQTJ0V0JWMlltbFo5OFRnVUZIMlFyN2ZnQStwSWFlbHVRL2RiQmcwOGtGVjgyRnpwUGR0NnEvY3NVaC9RckhNbTRWd3RHNXNaRDdBRGc9PQo=",
-      "url": "https://pandasub.zhudot.com/releases/pandasub-0.1.7-darwin-universal.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZk9qZVo0RFVwRXBZOXoyVFRZTXJGNWpYMndRd2l3L2psbjU2Sm8zNDRPQWlzL3REUFI2MjUwLzhzVmo0WkpQWXdmWkxyS2pqZkNZOWNPWmsySVRMOFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3Mzk1NzczCWZpbGU654aK54yr5oqV56i/LmFwcC50YXIuZ3oKa2J6SVNDM3hka1ZmSyt6am00Q2h6bS80UVcrQXFUUmMweDRzZWNwV1NBb1ZDODNWOWE4ajhKUzJVZHVwaDl2NkRWL1A4QzJIQWZaU2N5c2wvV045QWc9PQo=",
+      "url": "https://pandasub.zhudot.com/releases/pandasub-0.1.8-darwin-universal.app.tar.gz"
     },
     "darwin-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkloUWZJR3hueUoyaEF6SG9YZGRRZ3BoL0R4QWoyR2tnVTNiZXYvY1Q2eHIrTG8vZkMxb2dXR0tjUDB6eXdiZUdOZ3M5aHdGelhyUjZQTTV3VW1xVXcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3MzE4NDY3CWZpbGU654aK54yr5oqV56i/LmFwcC50YXIuZ3oKVmpyZGY3NENXQTJ0V0JWMlltbFo5OFRnVUZIMlFyN2ZnQStwSWFlbHVRL2RiQmcwOGtGVjgyRnpwUGR0NnEvY3NVaC9RckhNbTRWd3RHNXNaRDdBRGc9PQo=",
-      "url": "https://pandasub.zhudot.com/releases/pandasub-0.1.7-darwin-universal.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZk9qZVo0RFVwRXBZOXoyVFRZTXJGNWpYMndRd2l3L2psbjU2Sm8zNDRPQWlzL3REUFI2MjUwLzhzVmo0WkpQWXdmWkxyS2pqZkNZOWNPWmsySVRMOFFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg3Mzk1NzczCWZpbGU654aK54yr5oqV56i/LmFwcC50YXIuZ3oKa2J6SVNDM3hka1ZmSyt6am00Q2h6bS80UVcrQXFUUmMweDRzZWNwV1NBb1ZDODNWOWE4ajhKUzJVZHVwaDl2NkRWL1A4QzJIQWZaU2N5c2wvV045QWc9PQo=",
+      "url": "https://pandasub.zhudot.com/releases/pandasub-0.1.8-darwin-universal.app.tar.gz"
     }
   }
 }
