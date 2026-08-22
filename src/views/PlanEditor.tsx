@@ -45,7 +45,7 @@ export function PlanEditor({
   const fileRef = useRef<HTMLInputElement>(null)
   const [step, setStep] = useState(1)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
-  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(() => new Set())
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
   const [orphans, setOrphans] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
   const [listCount, setListCount] = useState<number | null>(null)
@@ -127,35 +127,29 @@ export function PlanEditor({
     })
   }, [editorGroups, editors])
 
-  const effectiveSelectedIds = useMemo(() => {
-    const next = new Set(selectedIds)
-    for (const pick of groupPicks) {
-      if (!selectedGroupIds.has(pick.group.id)) continue
-      for (const editor of pick.members) next.add(editor.id)
-    }
-    return next
-  }, [groupPicks, selectedGroupIds, selectedIds])
+  const activeSelectedIds = useMemo(() => {
+    if (editorPickMode === 'all') return selectedIds
+    const selectedGroup = groupPicks.find((pick) => pick.group.id === selectedGroupId)
+    return new Set(selectedGroup?.members.map((editor) => editor.id) ?? [])
+  }, [editorPickMode, groupPicks, selectedGroupId, selectedIds])
 
   const selectedEditors = useMemo(() => {
     const map = new Map(editors.map((editor) => [editor.id, editor]))
-    return [...effectiveSelectedIds].flatMap((id) => {
+    return [...activeSelectedIds].flatMap((id) => {
       const editor = map.get(id)
       return editor ? [editor] : []
     })
-  }, [editors, effectiveSelectedIds])
+  }, [activeSelectedIds, editors])
 
   useEffect(() => {
     const availableGroupIds = new Set(editorGroups.map((group) => group.id))
-    setSelectedGroupIds((current) => {
-      if ([...current].every((id) => availableGroupIds.has(id))) return current
-      return new Set([...current].filter((id) => availableGroupIds.has(id)))
-    })
+    setSelectedGroupId((current) => current && availableGroupIds.has(current) ? current : null)
   }, [editorGroups])
 
-  // 收件名单 = 勾选的编辑 + 已保存但不在编辑库里的收件人（保留不丢）。
+  // 两种选取方式互斥：编辑组使用整组名单；全部编辑使用手动勾选名单。
   const recipients = useMemo(
-    () => [...selectedEditors.map(editorRecipient), ...orphans],
-    [selectedEditors, orphans],
+    () => [...selectedEditors.map(editorRecipient), ...(editorPickMode === 'all' ? orphans : [])],
+    [editorPickMode, selectedEditors, orphans],
   )
 
   const sendCount = recipients.filter((r) => isValidEmail(r)).length
@@ -244,13 +238,8 @@ export function PlanEditor({
   const toggleEditorGroup = (groupId: number) => {
     const pick = groupPicks.find((item) => item.group.id === groupId)
     if (!pick?.members.length) return
-    const selected = selectedGroupIds.has(groupId)
-    setSelectedGroupIds((current) => {
-      const next = new Set(current)
-      if (selected) next.delete(groupId)
-      else next.add(groupId)
-      return next
-    })
+    const selected = selectedGroupId === groupId
+    setSelectedGroupId(selected ? null : groupId)
     toast(
       selected
         ? `已取消“${pick.group.name}”的 ${pick.members.length} 位编辑`
@@ -310,7 +299,7 @@ export function PlanEditor({
       if (editingGroup) await api.updateEditorGroup(editingGroup.id, { name, editor_ids })
       else createdId = await api.createEditorGroup({ name, editor_ids })
       await onReloadEditorGroups()
-      if (createdId) setSelectedGroupIds((current) => new Set(current).add(createdId))
+      if (createdId) setSelectedGroupId(createdId)
       setShowGroupForm(false)
       toast(editingGroup ? '编辑组已更新' : '编辑组已创建并选中', 'success')
     } catch (error) {
@@ -825,11 +814,11 @@ export function PlanEditor({
               <div className="plan-editor-pick-tabs" role="tablist" aria-label="选择编辑方式">
                 <button type="button" role="tab" aria-selected={editorPickMode === 'groups'}
                   className={editorPickMode === 'groups' ? 'on' : ''} onClick={() => setEditorPickMode('groups')}>
-                  <FolderOpen size={14} />编辑组<small>{groupPicks.length}</small>
+                  <FolderOpen size={14} />编辑组<small>{selectedGroupId ? 1 : 0}</small>
                 </button>
                 <button type="button" role="tab" aria-selected={editorPickMode === 'all'}
                   className={editorPickMode === 'all' ? 'on' : ''} onClick={() => setEditorPickMode('all')}>
-                  全部编辑<small>{editors.length}</small>
+                  全部编辑<small>{selectedIds.size}</small>
                 </button>
               </div>
               {editorPickMode === 'groups'
@@ -839,20 +828,21 @@ export function PlanEditor({
             <div className="step-toolbar">
               <span className="step-meta">
                 {editorPickMode === 'groups'
-                  ? <>共有 <strong>{groupPicks.length}</strong> 个编辑组，已选 <strong>{selectedGroupIds.size}</strong> 个组，共 <strong>{effectiveSelectedIds.size}</strong> 位编辑</>
-                  : <>共有 <strong>{listCount ?? 0}</strong> 条可选数据，单独选择 <strong>{selectedIds.size}</strong> 位，合计 <strong>{effectiveSelectedIds.size}</strong> 位</>}
+                  ? <>共有 <strong>{groupPicks.length}</strong> 个编辑组，当前选择 <strong>{selectedGroupId ? 1 : 0}</strong> 个组，共 <strong>{activeSelectedIds.size}</strong> 位编辑</>
+                  : <>共有 <strong>{listCount ?? 0}</strong> 条可选数据，当前选择 <strong>{selectedIds.size}</strong> 位编辑</>}
               </span>
             </div>
             {editorPickMode === 'groups' ? (
               groupPicks.length ? (
-                <div className="plan-group-choice-list">
+                <div className="plan-group-choice-list" role="radiogroup" aria-label="选择一个编辑组">
                   {groupPicks.map(({ group, members }) => {
-                    const selected = selectedGroupIds.has(group.id)
+                    const selected = selectedGroupId === group.id
                     const preview = members.slice(0, 5).map((editor) => editor.name.trim() || editor.email).join('、')
                     return (
                       <div key={group.id} className={`plan-group-choice ${selected ? 'on' : ''}`}>
-                        <button type="button" className="plan-group-choice-main" disabled={!members.length}
-                          aria-pressed={selected} onClick={() => toggleEditorGroup(group.id)}>
+                        <button type="button" role="radio" aria-checked={selected}
+                          className="plan-group-choice-main" disabled={!members.length}
+                          onClick={() => toggleEditorGroup(group.id)}>
                           <span className="plan-group-choice-check">{selected && <Check size={14} />}</span>
                           <span className="plan-group-choice-copy">
                             <b>{group.name}</b>
@@ -869,7 +859,7 @@ export function PlanEditor({
                       </div>
                     )
                   })}
-                  <p className="plan-group-choice-hint">选择编辑组会加入组内全部编辑，包括同平台的多位编辑；切换到“全部编辑”仍可继续逐个调整。</p>
+                  <p className="plan-group-choice-hint">一次只采用一个编辑组的全部成员；与“全部编辑”的手动选择互不叠加，切换 Tab 会改用对应名单。</p>
                 </div>
               ) : (
                 <div className="panel">
@@ -917,7 +907,7 @@ export function PlanEditor({
                 emptyText="没有符合筛选的编辑。可调整筛选，或点右上角从编辑库添加。"
               />
             )}
-            {!!orphans.length && (
+            {editorPickMode === 'all' && !!orphans.length && (
               <p className="step-orphan">另有 {orphans.length} 位保存过的收件人不在编辑库中，将保留发送。</p>
             )}
             <div className="step-actions">
