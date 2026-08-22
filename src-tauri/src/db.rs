@@ -127,6 +127,22 @@ CREATE TABLE IF NOT EXISTS editors (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+
+CREATE TABLE IF NOT EXISTS editor_groups (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS editor_group_members (
+  group_id INTEGER NOT NULL,
+  editor_id INTEGER NOT NULL,
+  position INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (group_id, editor_id)
+);
+CREATE INDEX IF NOT EXISTS editor_group_members_editor ON editor_group_members(editor_id);
+CREATE INDEX IF NOT EXISTS editor_group_members_group_position ON editor_group_members(group_id, position);
 "#;
 
 pub fn open_database(path: PathBuf) -> Result<Connection, String> {
@@ -135,7 +151,9 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
         .execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = OFF;")
         .map_err(|e| e.to_string())?;
     migrate(&connection)?;
-    connection.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    connection
+        .execute_batch(SCHEMA)
+        .map_err(|e| e.to_string())?;
     add_account_imap_columns(&connection)?;
     add_manuscript_plan_columns(&connection)?;
     add_editor_enabled_column(&connection)?;
@@ -193,10 +211,16 @@ fn migrate(connection: &Connection) -> Result<(), String> {
         connection,
         "tasks",
         &[
-            ("manuscript_ids", "manuscript_ids TEXT NOT NULL DEFAULT '[]'"),
+            (
+                "manuscript_ids",
+                "manuscript_ids TEXT NOT NULL DEFAULT '[]'",
+            ),
             ("account_ids", "account_ids TEXT NOT NULL DEFAULT '[]'"),
             ("status", "status TEXT NOT NULL DEFAULT 'stopped'"),
-            ("schedule_type", "schedule_type TEXT NOT NULL DEFAULT 'immediate'"),
+            (
+                "schedule_type",
+                "schedule_type TEXT NOT NULL DEFAULT 'immediate'",
+            ),
             ("scheduled_at", "scheduled_at TEXT"),
             ("retry_max", "retry_max INTEGER NOT NULL DEFAULT 3"),
             ("sent", "sent INTEGER NOT NULL DEFAULT 0"),
@@ -298,11 +322,17 @@ fn add_manuscript_plan_columns(conn: &Connection) -> Result<(), String> {
     for (name, decl) in [
         ("word_count", "word_count INTEGER NOT NULL DEFAULT 0"),
         ("category", "category TEXT NOT NULL DEFAULT ''"),
-        ("reader_category", "reader_category TEXT NOT NULL DEFAULT ''"),
+        (
+            "reader_category",
+            "reader_category TEXT NOT NULL DEFAULT ''",
+        ),
         ("reader_emotion", "reader_emotion TEXT NOT NULL DEFAULT ''"),
         ("style", "style TEXT NOT NULL DEFAULT ''"),
         ("genres", "genres TEXT NOT NULL DEFAULT '[]'"),
-        ("excluded_types", "excluded_types TEXT NOT NULL DEFAULT '[]'"),
+        (
+            "excluded_types",
+            "excluded_types TEXT NOT NULL DEFAULT '[]'",
+        ),
         ("subject", "subject TEXT NOT NULL DEFAULT ''"),
         ("file_name", "file_name TEXT NOT NULL DEFAULT ''"),
     ] {
@@ -568,11 +598,8 @@ fn drop_press_and_magazine_editors(conn: &Connection) -> Result<(), String> {
         )
         .unwrap_or(0);
     if exists > 0 && !table_lacks_column(conn, "editors", "channel") {
-        conn.execute(
-            "DELETE FROM editors WHERE channel IN ('报刊', '杂志')",
-            [],
-        )
-        .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM editors WHERE channel IN ('报刊', '杂志')", [])
+            .map_err(|e| e.to_string())?;
     }
     conn.execute(
         "INSERT OR REPLACE INTO settings (key, value) VALUES ('editors.dropped_press_magazine', '1')",
@@ -718,9 +745,12 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
         work_type.extend(style);
         let next_work = crate::models::normalize_editor_work_types(&work_type);
         let style_cleared = raw_style.trim() == "[]" || raw_style.trim().is_empty();
-        if style_cleared && next_work == crate::models::normalize_editor_work_types(
-            &serde_json::from_str::<Vec<String>>(&raw_work).unwrap_or_default(),
-        ) {
+        if style_cleared
+            && next_work
+                == crate::models::normalize_editor_work_types(
+                    &serde_json::from_str::<Vec<String>>(&raw_work).unwrap_or_default(),
+                )
+        {
             continue;
         }
         conn.execute(
@@ -789,7 +819,9 @@ fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
                     |r| r.get(0),
                 )
                 .ok();
-            if source.as_deref().unwrap_or(crate::models::EDITOR_SOURCE_INITIAL)
+            if source
+                .as_deref()
+                .unwrap_or(crate::models::EDITOR_SOURCE_INITIAL)
                 == crate::models::EDITOR_SOURCE_INITIAL
             {
                 crate::store::upsert_editor(conn, &input, crate::models::EDITOR_SOURCE_INITIAL)?;
@@ -1150,10 +1182,14 @@ mod tests {
         repair_orphan_relations(&connection).unwrap();
 
         let valid_delivery_task: Option<i64> = connection
-            .query_row("SELECT task_id FROM deliveries WHERE id = 10", [], |row| row.get(0))
+            .query_row("SELECT task_id FROM deliveries WHERE id = 10", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let orphan_delivery_task: Option<i64> = connection
-            .query_row("SELECT task_id FROM deliveries WHERE id = 11", [], |row| row.get(0))
+            .query_row("SELECT task_id FROM deliveries WHERE id = 11", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let orphan_reply: (Option<i64>, Option<i64>) = connection
             .query_row(

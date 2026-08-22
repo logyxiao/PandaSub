@@ -1,8 +1,11 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::models::{Account, Delivery, Editor, EditorInput, Manuscript, Reply, Settings, Task, TaskLog};
+use crate::models::{
+    Account, Delivery, Editor, EditorGroup, EditorInput, Manuscript, Reply, Settings, Task, TaskLog,
+};
 
-const ACCOUNT_COLS: &str = "id, email, password, smtp_host, smtp_port, sender_name, provider, enabled,
+const ACCOUNT_COLS: &str =
+    "id, email, password, smtp_host, smtp_port, sender_name, provider, enabled,
                     last_sent_at,
                     imap_host, imap_port, check_replies, imap_uid, created_at";
 
@@ -74,12 +77,14 @@ pub fn now_str(connection: &Connection) -> Result<String, String> {
 
 pub fn load_accounts(conn: &Connection) -> Result<Vec<Account>, String> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {ACCOUNT_COLS} FROM accounts ORDER BY id ASC"))
+        .prepare(&format!(
+            "SELECT {ACCOUNT_COLS} FROM accounts ORDER BY id ASC"
+        ))
         .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], map_account)
+    let rows = stmt.query_map([], map_account).map_err(|e| e.to_string())?;
+    let mut accounts = rows
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    let mut accounts = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     let counts = sent_today_by_account(conn)?;
     for account in &mut accounts {
         account.sent_today = counts.get(&account.id).copied().unwrap_or(0);
@@ -108,7 +113,9 @@ fn sent_today_by_account(conn: &Connection) -> Result<std::collections::HashMap<
 
 pub fn load_account(conn: &Connection, id: i64) -> Result<Option<Account>, String> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {ACCOUNT_COLS} FROM accounts WHERE id = ?1"))
+        .prepare(&format!(
+            "SELECT {ACCOUNT_COLS} FROM accounts WHERE id = ?1"
+        ))
         .map_err(|e| e.to_string())?;
     let row = stmt
         .query_row([id], map_account)
@@ -129,7 +136,9 @@ pub fn load_manuscripts(conn: &Connection, ids: &[i64]) -> Result<Vec<Manuscript
 
 pub fn load_manuscript(conn: &Connection, id: i64) -> Result<Option<Manuscript>, String> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {MANUSCRIPT_COLS} FROM manuscripts WHERE id = ?1"))
+        .prepare(&format!(
+            "SELECT {MANUSCRIPT_COLS} FROM manuscripts WHERE id = ?1"
+        ))
         .map_err(|e| e.to_string())?;
     let row = stmt
         .query_row([id], map_manuscript)
@@ -140,12 +149,15 @@ pub fn load_manuscript(conn: &Connection, id: i64) -> Result<Option<Manuscript>,
 
 pub fn load_all_manuscripts(conn: &Connection) -> Result<Vec<Manuscript>, String> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {MANUSCRIPT_COLS} FROM manuscripts ORDER BY id DESC"))
+        .prepare(&format!(
+            "SELECT {MANUSCRIPT_COLS} FROM manuscripts ORDER BY id DESC"
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], map_manuscript)
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// 加载稿件的附件（文件名 + 内容），没有附件时返回 None。列表查询不带附件，仅发送时按需读取。
@@ -189,14 +201,24 @@ fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
     })
 }
 
-pub fn upsert_editor(conn: &Connection, input: &EditorInput, source: &str) -> Result<&'static str, String> {
+pub fn upsert_editor(
+    conn: &Connection,
+    input: &EditorInput,
+    source: &str,
+) -> Result<&'static str, String> {
     let email = input.email.trim().to_lowercase();
     let source = crate::models::normalize_editor_source(source);
-    let work_type = serde_json::json!(crate::models::normalize_editor_work_types(&input.work_type)).to_string();
-    let rejected_types = serde_json::json!(crate::models::normalize_editor_work_types(&input.rejected_types)).to_string();
+    let work_type =
+        serde_json::json!(crate::models::normalize_editor_work_types(&input.work_type)).to_string();
+    let rejected_types = serde_json::json!(crate::models::normalize_editor_work_types(
+        &input.rejected_types
+    ))
+    .to_string();
     let platform = crate::models::canonicalize_editor_platform(&input.platform);
     let existing: Option<i64> = conn
-        .query_row("SELECT id FROM editors WHERE email = ?1", [&email], |r| r.get(0))
+        .query_row("SELECT id FROM editors WHERE email = ?1", [&email], |r| {
+            r.get(0)
+        })
         .optional()
         .map_err(|e| e.to_string())?;
     if let Some(id) = existing {
@@ -238,12 +260,56 @@ pub fn upsert_editor(conn: &Connection, input: &EditorInput, source: &str) -> Re
 
 pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {EDITOR_COLS} FROM editors ORDER BY favorited DESC, platform ASC, name ASC"))
+        .prepare(&format!(
+            "SELECT {EDITOR_COLS} FROM editors ORDER BY favorited DESC, platform ASC, name ASC"
+        ))
         .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], map_editor)
+    let rows = stmt.query_map([], map_editor).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn load_editor_groups(conn: &Connection) -> Result<Vec<EditorGroup>, String> {
+    let mut group_stmt = conn
+        .prepare(
+            "SELECT id, name, created_at, updated_at
+             FROM editor_groups
+             ORDER BY name COLLATE NOCASE ASC, id ASC",
+        )
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    let rows = group_stmt
+        .query_map([], |row| {
+            Ok(EditorGroup {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                editor_ids: Vec::new(),
+                created_at: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut groups = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut member_stmt = conn
+        .prepare(
+            "SELECT m.editor_id
+             FROM editor_group_members m
+             JOIN editors e ON e.id = m.editor_id
+             WHERE m.group_id = ?1
+             ORDER BY m.position ASC, m.editor_id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    for group in &mut groups {
+        let members = member_stmt
+            .query_map([group.id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        group.editor_ids = members
+            .collect::<Result<Vec<i64>, _>>()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(groups)
 }
 
 pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
@@ -310,7 +376,8 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// 删掉稿件已不存在的发送任务，避免工作台还显示已删除的计划。
@@ -333,10 +400,16 @@ pub fn prune_orphan_tasks(conn: &Connection) -> Result<(), String> {
             .filter(|id| existing.contains(id))
             .collect();
         if alive.is_empty() {
-            conn.execute("UPDATE deliveries SET task_id = NULL WHERE task_id = ?1", [task.id])
-                .map_err(|e| e.to_string())?;
-            conn.execute("UPDATE replies SET task_id = NULL WHERE task_id = ?1", [task.id])
-                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE deliveries SET task_id = NULL WHERE task_id = ?1",
+                [task.id],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE replies SET task_id = NULL WHERE task_id = ?1",
+                [task.id],
+            )
+            .map_err(|e| e.to_string())?;
             conn.execute("DELETE FROM task_logs WHERE task_id = ?1", [task.id])
                 .map_err(|e| e.to_string())?;
             conn.execute("DELETE FROM tasks WHERE id = ?1", [task.id])
@@ -517,14 +590,19 @@ pub fn record_account_send(conn: &Connection, account_id: i64) -> Result<(), Str
 }
 
 pub fn mark_account_faulty(conn: &Connection, account_id: i64) -> Result<(), String> {
-    conn.execute("UPDATE accounts SET enabled = 0 WHERE id = ?1", [account_id])
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE accounts SET enabled = 0 WHERE id = ?1",
+        [account_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 pub fn load_settings(conn: &Connection) -> Result<Settings, String> {
     let raw: Option<String> = conn
-        .query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| r.get(0))
+        .query_row("SELECT value FROM settings WHERE key = 'app'", [], |r| {
+            r.get(0)
+        })
         .optional()
         .map_err(|e| e.to_string())?;
     match raw {
@@ -597,7 +675,10 @@ pub fn record_successful_delivery(
 pub fn delete_task_data(conn: &mut Connection, id: i64) -> Result<(), String> {
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
     transaction
-        .execute("UPDATE deliveries SET task_id = NULL WHERE task_id = ?1", [id])
+        .execute(
+            "UPDATE deliveries SET task_id = NULL WHERE task_id = ?1",
+            [id],
+        )
         .map_err(|e| e.to_string())?;
     transaction
         .execute("UPDATE replies SET task_id = NULL WHERE task_id = ?1", [id])
@@ -645,7 +726,9 @@ pub fn delivered_emails_for_task_manuscript(
     manuscript_id: i64,
 ) -> Result<std::collections::HashSet<String>, String> {
     let mut stmt = conn
-        .prepare("SELECT DISTINCT recipient FROM deliveries WHERE task_id = ?1 AND manuscript_id = ?2")
+        .prepare(
+            "SELECT DISTINCT recipient FROM deliveries WHERE task_id = ?1 AND manuscript_id = ?2",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![task_id, manuscript_id], |r| {
@@ -734,7 +817,8 @@ pub fn load_recent_deliveries(conn: &Connection, days: i64) -> Result<Vec<Delive
             })
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn set_account_imap_uid(conn: &Connection, account_id: i64, uid: i64) -> Result<(), String> {
@@ -808,7 +892,9 @@ pub fn insert_reply(
         .unwrap_or_default()
     } else if let Some(task_id) = task_id {
         let name = conn
-            .query_row("SELECT name FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))
+            .query_row("SELECT name FROM tasks WHERE id = ?1", [task_id], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
@@ -861,7 +947,11 @@ fn map_reply(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reply> {
     })
 }
 
-pub fn load_replies(conn: &Connection, kind: Option<&str>, limit: i64) -> Result<Vec<Reply>, String> {
+pub fn load_replies(
+    conn: &Connection,
+    kind: Option<&str>,
+    limit: i64,
+) -> Result<Vec<Reply>, String> {
     let sql = "SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject, r.snippet, r.body,
                       r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid, r.received_at, r.created_at,
                       d.recipient, t.name
@@ -870,20 +960,26 @@ pub fn load_replies(conn: &Connection, kind: Option<&str>, limit: i64) -> Result
                LEFT JOIN tasks t ON t.id = r.task_id";
     if kind == Some("accepted") {
         let mut stmt = conn
-            .prepare(&format!("{sql} WHERE r.accepted = 1 ORDER BY r.id DESC LIMIT ?1"))
+            .prepare(&format!(
+                "{sql} WHERE r.accepted = 1 ORDER BY r.id DESC LIMIT ?1"
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![limit], map_reply)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     } else if let Some(k) = kind {
         let mut stmt = conn
-            .prepare(&format!("{sql} WHERE r.kind = ?1 ORDER BY r.id DESC LIMIT ?2"))
+            .prepare(&format!(
+                "{sql} WHERE r.kind = ?1 ORDER BY r.id DESC LIMIT ?2"
+            ))
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![k, limit], map_reply)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     } else {
         let mut stmt = conn
             .prepare(&format!("{sql} ORDER BY r.id DESC LIMIT ?1"))
@@ -891,7 +987,8 @@ pub fn load_replies(conn: &Connection, kind: Option<&str>, limit: i64) -> Result
         let rows = stmt
             .query_map(params![limit], map_reply)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -905,12 +1002,20 @@ pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
 }
 
 pub fn count_accepted_replies(conn: &Connection) -> Result<i64, String> {
-    conn.query_row("SELECT COUNT(*) FROM replies WHERE accepted = 1", [], |r| r.get(0))
-        .map_err(|e| e.to_string())
+    conn.query_row("SELECT COUNT(*) FROM replies WHERE accepted = 1", [], |r| {
+        r.get(0)
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// 按新分类规则更新某条回复的判定结果（kind / reason / accepted）。
-pub fn update_reply_kind(conn: &Connection, id: i64, kind: &str, reason: &str, accepted: bool) -> Result<(), String> {
+pub fn update_reply_kind(
+    conn: &Connection,
+    id: i64,
+    kind: &str,
+    reason: &str,
+    accepted: bool,
+) -> Result<(), String> {
     conn.execute(
         "UPDATE replies SET kind = ?1, reason = ?2, accepted = ?3 WHERE id = ?4",
         params![kind, reason, accepted, id],
@@ -952,7 +1057,9 @@ mod tests {
     #[test]
     fn manual_delivery_uses_null_task_and_atomic_bookkeeping() {
         let mut connection = test_connection();
-        connection.execute("INSERT INTO accounts (id) VALUES (1)", []).unwrap();
+        connection
+            .execute("INSERT INTO accounts (id) VALUES (1)", [])
+            .unwrap();
         connection
             .execute(
                 "INSERT INTO tasks (id, name, manuscript_ids) VALUES (7, '任务', '[10]')",
@@ -995,7 +1102,9 @@ mod tests {
     #[test]
     fn deleting_manuscript_removes_related_rows_in_one_operation() {
         let mut connection = test_connection();
-        connection.execute("INSERT INTO manuscripts (id) VALUES (10)", []).unwrap();
+        connection
+            .execute("INSERT INTO manuscripts (id) VALUES (10)", [])
+            .unwrap();
         connection
             .execute(
                 "INSERT INTO tasks (id, name, manuscript_ids) VALUES (7, '任务', '[10]')",
@@ -1013,14 +1122,19 @@ mod tests {
             )
             .unwrap();
         connection
-            .execute("INSERT INTO replies (id, delivery_id, task_id) VALUES (30, 20, 7)", [])
+            .execute(
+                "INSERT INTO replies (id, delivery_id, task_id) VALUES (30, 20, 7)",
+                [],
+            )
             .unwrap();
 
         delete_manuscript_data(&mut connection, 10).unwrap();
 
         for table in ["manuscripts", "deliveries", "replies", "tasks", "task_logs"] {
             let count: i64 = connection
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .unwrap();
             assert_eq!(count, 0, "{table} should be empty");
         }
@@ -1046,20 +1160,38 @@ mod tests {
             )
             .unwrap();
         connection
-            .execute("INSERT INTO replies (id, delivery_id, task_id) VALUES (30, 20, 7)", [])
+            .execute(
+                "INSERT INTO replies (id, delivery_id, task_id) VALUES (30, 20, 7)",
+                [],
+            )
             .unwrap();
 
         delete_task_data(&mut connection, 7).unwrap();
 
         let delivery_task: Option<i64> = connection
-            .query_row("SELECT task_id FROM deliveries WHERE id = 20", [], |row| row.get(0))
+            .query_row("SELECT task_id FROM deliveries WHERE id = 20", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let reply_task: Option<i64> = connection
-            .query_row("SELECT task_id FROM replies WHERE id = 30", [], |row| row.get(0))
+            .query_row("SELECT task_id FROM replies WHERE id = 30", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(delivery_task, None);
         assert_eq!(reply_task, None);
-        assert_eq!(connection.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
-        assert_eq!(connection.query_row("SELECT COUNT(*) FROM task_logs", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM task_logs", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }

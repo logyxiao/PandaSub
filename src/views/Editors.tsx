@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Database, Download, Heart, Plus, RotateCcw, Search, Trash2, Upload, Users } from 'lucide-react'
+import { ChevronDown, Database, Download, FolderOpen, Heart, Pencil, Plus, RotateCcw, Search, Trash2, Upload, Users } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
@@ -9,7 +9,7 @@ import { Button, EmptyState, IconButton, Select } from '../components/ui'
 import { Table, type TableColumn } from '../components/Table'
 import { isValidEmail } from '../format'
 import { useNav } from '../nav'
-import type { Editor, EditorInput } from '../types'
+import type { Editor, EditorGroup, EditorInput } from '../types'
 import { GENRES, SOURCES, compareEditorsByFavorite, editorMatchesPlan, editorPlatformKey, editorRowTags, isEditorFavorited, normalizeEditorTags } from './planShared'
 
 const UNASSIGNED = '未填平台'
@@ -578,7 +578,289 @@ function PlatformPeersPop({ top, left, width, current, peers, onPick, onClose }:
   )
 }
 
+function EditorGroupsLibrary() {
+  const [groups, setGroups] = useState<EditorGroup[]>([])
+  const [editors, setEditors] = useState<Editor[]>([])
+  const [activeGroupId, setActiveGroupId] = useState<number | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [notice, setNotice] = useState('')
+  const [showForm, setShowForm] = useState(false)
+  const [editing, setEditing] = useState<EditorGroup | null>(null)
+  const [name, setName] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [visibleEditors, setVisibleEditors] = useState<Editor[]>([])
+  const [selectedOnly, setSelectedOnly] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const groupFileRef = useRef<HTMLInputElement>(null)
+  const toast = useToast()
+  const confirm = useConfirm()
+
+  const load = useCallback(async (preferredGroupId?: number) => {
+    setLoading(true)
+    try {
+      const [nextGroups, nextEditors] = await Promise.all([api.listEditorGroups(), api.listEditors()])
+      setGroups(nextGroups)
+      setEditors(nextEditors)
+      setActiveGroupId((current) => {
+        if (preferredGroupId && nextGroups.some((group) => group.id === preferredGroupId)) return preferredGroupId
+        if (current && nextGroups.some((group) => group.id === current)) return current
+        return nextGroups[0]?.id ?? null
+      })
+      setNotice('')
+    } catch (error) {
+      setNotice(String(error))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { void load() }, [load])
+
+  const editorMap = useMemo(
+    () => new Map(editors.map((editor) => [editor.id, editor])),
+    [editors],
+  )
+  const activeGroup = groups.find((group) => group.id === activeGroupId) ?? null
+  const activeMembers = activeGroup?.editor_ids.flatMap((id) => {
+    const editor = editorMap.get(id)
+    return editor ? [editor] : []
+  }) ?? []
+
+  const openNew = () => {
+    setEditing(null)
+    setName('')
+    setSelectedIds(new Set())
+    setVisibleEditors([])
+    setSelectedOnly(false)
+    setShowForm(true)
+  }
+
+  const openEdit = (group: EditorGroup) => {
+    setEditing(group)
+    setName(group.name)
+    setSelectedIds(new Set(group.editor_ids.filter((id) => editorMap.has(id))))
+    setVisibleEditors([])
+    setSelectedOnly(false)
+    setShowForm(true)
+  }
+
+  const toggleEditor = (editor: Editor, checked: boolean) => {
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(editor.id)
+      else next.delete(editor.id)
+      return next
+    })
+  }
+
+  const toggleVisible = () => {
+    const shouldSelect = visibleEditors.some((editor) => !selectedIds.has(editor.id))
+    setSelectedIds((current) => {
+      const next = new Set(current)
+      for (const editor of visibleEditors) {
+        if (shouldSelect) next.add(editor.id)
+        else next.delete(editor.id)
+      }
+      return next
+    })
+  }
+
+  const save = async () => {
+    const trimmedName = name.trim()
+    if (!trimmedName) { toast('请填写编辑组名称', 'warning'); return }
+    if (!selectedIds.size) { toast('请至少选择一位编辑', 'warning'); return }
+    const editor_ids = editors.filter((editor) => selectedIds.has(editor.id)).map((editor) => editor.id)
+    setSaving(true)
+    try {
+      let savedId = editing?.id
+      if (editing) await api.updateEditorGroup(editing.id, { name: trimmedName, editor_ids })
+      else savedId = await api.createEditorGroup({ name: trimmedName, editor_ids })
+      setShowForm(false)
+      await load(savedId)
+      toast(editing ? '编辑组已更新' : '编辑组已创建', 'success')
+    } catch (error) {
+      toast(String(error), 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const remove = async (group: EditorGroup) => {
+    const ok = await confirm({
+      title: `删除“${group.name}”？`,
+      message: '只会删除这个分组，不会删除组里的编辑资料，也不会影响已经保存的投稿计划。',
+      confirmLabel: '删除分组',
+      tone: 'danger',
+    })
+    if (!ok) return
+    try {
+      await api.deleteEditorGroup(group.id)
+      await load()
+      toast('编辑组已删除', 'success')
+    } catch (error) {
+      toast(String(error), 'error')
+    }
+  }
+
+  const exportGroups = async (groupIds: number[], fileLabel: string) => {
+    const safeLabel = fileLabel.replace(/[\\/:*?"<>|]/g, '_')
+    const path = await saveDialog({
+      title: groupIds.length ? '导出当前编辑组' : '导出全部编辑组',
+      defaultPath: `${safeLabel}.json`,
+      filters: [{ name: 'NovelSub 编辑组', extensions: ['json'] }],
+    })
+    if (!path) return
+    setExporting(true)
+    try {
+      const saved = await api.exportEditorGroups(path, groupIds)
+      toast(`编辑组已导出到 ${saved}`, 'success')
+    } catch (error) {
+      toast(String(error), 'error')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const importGroups = async (file: File | null) => {
+    if (!file) return
+    setImporting(true)
+    try {
+      const data = Array.from(new Uint8Array(await file.arrayBuffer()))
+      const result = await api.importEditorGroups(data, file.name)
+      await load()
+      const changes = [
+        result.groups_added ? `新增 ${result.groups_added} 个组` : '',
+        result.groups_updated ? `合并 ${result.groups_updated} 个同名组` : '',
+        result.editors_added ? `补入 ${result.editors_added} 位编辑` : '',
+      ].filter(Boolean)
+      toast(changes.join('，') || '编辑组内容已存在，无需重复导入', changes.length ? 'success' : 'info')
+    } catch (error) {
+      toast(String(error), 'error')
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  const pickerItems = useMemo(
+    () => selectedOnly ? editors.filter((editor) => selectedIds.has(editor.id)) : editors,
+    [editors, selectedIds, selectedOnly],
+  )
+  const allVisibleSelected = visibleEditors.length > 0
+    && visibleEditors.every((editor) => selectedIds.has(editor.id))
+
+  return (
+    <>
+      <input ref={groupFileRef} type="file" accept=".json,application/json" hidden
+        onChange={(event) => { void importGroups(event.target.files?.[0] ?? null); event.target.value = '' }} />
+      <div className="editor-group-tabs-bar">
+        <div className="editor-group-tabs" role="tablist" aria-label="编辑组列表">
+          {groups.map((group) => {
+            const memberCount = group.editor_ids.filter((id) => editorMap.has(id)).length
+            const active = group.id === activeGroupId
+            return (
+              <button type="button" role="tab" aria-selected={active} key={group.id}
+                className={`editor-group-tab ${active ? 'on' : ''}`}
+                onClick={() => setActiveGroupId(group.id)}>
+                <span>{group.name}</span><small>{memberCount}</small>
+              </button>
+            )
+          })}
+        </div>
+        <div className="editor-group-share-actions">
+          <Button size="sm" disabled={importing} onClick={() => groupFileRef.current?.click()}>
+            <Upload size={13} />{importing ? '导入中…' : '导入'}
+          </Button>
+          <Button size="sm" disabled={exporting || !groups.length} onClick={() => void exportGroups([], '全部编辑组')}>
+            <Download size={13} />导出全部
+          </Button>
+          <Button size="sm" variant="primary" onClick={openNew}><Plus size={13} />新建编辑组</Button>
+        </div>
+      </div>
+      {notice && <div className="notice notice-error">{notice}</div>}
+      {!loading && !groups.length ? (
+        <div className="panel">
+          <EmptyState icon={FolderOpen} title="还没有编辑组"
+            desc="把常用编辑整理成组，写投稿计划时就能一键选择。"
+            action={<Button size="sm" variant="primary" onClick={openNew}><Plus size={13} />新建编辑组</Button>} />
+        </div>
+      ) : activeGroup && (
+        <div className="editor-group-detail">
+          <div className="editor-group-detail-head">
+            <span className="editor-group-detail-title">
+              <span className="editor-group-icon"><FolderOpen size={17} /></span>
+              <span><b>{activeGroup.name}</b><small>{activeMembers.length} 位编辑</small></span>
+            </span>
+            <span className="editor-group-actions">
+              <Button size="sm" disabled={exporting} onClick={() => void exportGroups([activeGroup.id], activeGroup.name)}>
+                <Download size={13} />导出当前
+              </Button>
+              <Button size="sm" onClick={() => openEdit(activeGroup)}><Pencil size={13} />改名和成员</Button>
+              <IconButton title={`删除编辑组 ${activeGroup.name}`} className="danger" onClick={() => void remove(activeGroup)}><Trash2 size={14} /></IconButton>
+            </span>
+          </div>
+          <EditorsList
+            key={activeGroup.id}
+            items={activeMembers}
+            onFavoriteChange={(id, favorited) => setEditors((items) => items.map((editor) => editor.id === id ? { ...editor, favorited } : editor))}
+            pageSize={10}
+            emptyText="这个组里暂时没有可用编辑，可点“改名和成员”重新选择。"
+            emptyAction={<Button size="sm" onClick={() => openEdit(activeGroup)}><Pencil size={13} />管理成员</Button>}
+          />
+          <p className="after-table-hint">在投稿计划的“选择编辑”步骤，点“{activeGroup.name}”即可整组选入。</p>
+        </div>
+      )}
+
+      {showForm && (
+        <Modal title={editing ? '编辑编辑组' : '新建编辑组'} width={900}
+          onClose={() => setShowForm(false)}
+          footer={
+            <>
+              <span className="editor-group-selected-count">已选 {selectedIds.size} 位</span>
+              <Button variant="ghost" onClick={() => setShowForm(false)}>取消</Button>
+              <Button variant="primary" disabled={saving || !name.trim() || !selectedIds.size} onClick={() => void save()}>
+                {saving ? '保存中…' : '保存编辑组'}
+              </Button>
+            </>
+          }>
+          <div className="editor-group-form-head">
+            <label className="field">编辑组名称
+              <input autoFocus maxLength={40} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：短篇常投、重点编辑" />
+            </label>
+            <p>从完整编辑库中勾选成员。保存后可随时改名、增减成员。</p>
+          </div>
+          <div className="editor-group-picker">
+            <EditorsList
+              items={pickerItems}
+              selectable
+              selectedIds={selectedIds}
+              onToggleSelect={toggleEditor}
+              onVisibleChange={setVisibleEditors}
+              onFavoriteChange={(id, favorited) => setEditors((items) => items.map((editor) => editor.id === id ? { ...editor, favorited } : editor))}
+              pageSize={6}
+              actions={
+                <>
+                  <Button size="sm" className={selectedOnly ? 'on' : ''} onClick={() => setSelectedOnly((value) => !value)}>
+                    {selectedOnly ? '查看全部' : `只看已选（${selectedIds.size}）`}
+                  </Button>
+                  <Button size="sm" disabled={!visibleEditors.length} onClick={toggleVisible}>
+                    {allVisibleSelected ? '取消当前结果' : '选择当前结果'}
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={!selectedIds.size} onClick={() => setSelectedIds(new Set())}>清空</Button>
+                </>
+              }
+              emptyText={selectedOnly ? '还没有选中编辑。切换到“查看全部”开始选择。' : '编辑库还是空的，请先添加或导入编辑。'}
+            />
+          </div>
+        </Modal>
+      )}
+    </>
+  )
+}
+
 export function EditorsView() {
+  const [view, setView] = useState<'editors' | 'groups'>('editors')
   const [reloadSignal, setReloadSignal] = useState(0)
   const [total, setTotal] = useState(0)
   const [platformOptions, setPlatformOptions] = useState<string[]>([])
@@ -741,7 +1023,15 @@ export function EditorsView() {
     <>
       <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.txt" hidden
         onChange={(e) => { void importList(e.target.files?.[0] ?? null); e.target.value = '' }} />
-      <EditorsList
+      <div className="editor-view-switch" role="tablist" aria-label="编辑库视图">
+        <button type="button" role="tab" aria-selected={view === 'editors'} className={view === 'editors' ? 'on' : ''} onClick={() => setView('editors')}>
+          <Users size={14} />全部编辑
+        </button>
+        <button type="button" role="tab" aria-selected={view === 'groups'} className={view === 'groups' ? 'on' : ''} onClick={() => setView('groups')}>
+          <FolderOpen size={14} />编辑组
+        </button>
+      </div>
+      {view === 'editors' ? <><EditorsList
         reloadSignal={reloadSignal}
         onEdit={openEdit}
         onDelete={(e) => void remove(e.id)}
@@ -765,7 +1055,7 @@ export function EditorsView() {
         <p className="after-table-hint">
           导入同邮箱会更新资料。准备好后去 <button type="button" className="text-link" onClick={() => go('plans')}>投稿计划</button> 按作品类型筛编辑。
         </p>
-      )}
+      )}</> : <EditorGroupsLibrary />}
 
       {showData && (
         <Modal title="数据管理" width={440} onClose={() => setShowData(false)}>

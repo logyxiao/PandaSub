@@ -17,12 +17,7 @@ pub fn list_logs(
     offset: Option<i64>,
 ) -> Result<Vec<TaskLog>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    store::load_logs(
-        &conn,
-        task_id,
-        limit.unwrap_or(200),
-        offset.unwrap_or(0),
-    )
+    store::load_logs(&conn, task_id, limit.unwrap_or(200), offset.unwrap_or(0))
 }
 
 #[tauri::command]
@@ -61,7 +56,16 @@ pub fn export_logs(
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
-    let headers = ["ID", "任务", "账号", "编辑邮箱", "级别", "类别", "消息", "时间"];
+    let headers = [
+        "ID",
+        "任务",
+        "账号",
+        "编辑邮箱",
+        "级别",
+        "类别",
+        "消息",
+        "时间",
+    ];
     for (col, h) in headers.iter().enumerate() {
         sheet
             .write_string(0, col as u16, *h)
@@ -73,15 +77,23 @@ pub fn export_logs(
             .write_number(row, 0, log.id as f64)
             .map_err(|e| e.to_string())?;
         sheet
-            .write_string(row, 1, log.task_id.map(|v| v.to_string()).unwrap_or_default())
+            .write_string(
+                row,
+                1,
+                log.task_id.map(|v| v.to_string()).unwrap_or_default(),
+            )
             .map_err(|e| e.to_string())?;
         sheet
             .write_string(
                 row,
                 2,
-                log
-                    .account_id
-                    .and_then(|id| accounts.iter().find(|a| a.id == id).map(|a| a.email.clone()))
+                log.account_id
+                    .and_then(|id| {
+                        accounts
+                            .iter()
+                            .find(|a| a.id == id)
+                            .map(|a| a.email.clone())
+                    })
                     .unwrap_or_default(),
             )
             .map_err(|e| e.to_string())?;

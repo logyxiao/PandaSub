@@ -10,10 +10,8 @@ use crate::store;
 pub fn get_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let count = |table: &str| -> Result<i64, String> {
-        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
-            r.get(0)
-        })
-        .map_err(|e| e.to_string())
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .map_err(|e| e.to_string())
     };
     let sent_today: i64 = conn
         .query_row(
@@ -34,16 +32,16 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
         )
         .map_err(|e| e.to_string())?;
     let running_tasks: i64 = conn
-        .query_row("SELECT COUNT(*) FROM tasks WHERE status = 'running'", [], |r| {
-            r.get(0)
-        })
-        .map_err(|e| e.to_string())?;
-    let account_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM accounts WHERE enabled = 1",
+            "SELECT COUNT(*) FROM tasks WHERE status = 'running'",
             [],
             |r| r.get(0),
         )
+        .map_err(|e| e.to_string())?;
+    let account_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM accounts WHERE enabled = 1", [], |r| {
+            r.get(0)
+        })
         .map_err(|e| e.to_string())?;
     let _ = store::prune_orphan_tasks(&conn);
     let tasks = store::load_tasks(&conn)?;

@@ -194,11 +194,21 @@ pub struct Settings {
     pub reply_poll_minutes: i64,
 }
 
-fn default_true() -> bool { true }
-fn default_editor_source() -> String { EDITOR_SOURCE_MANUAL.to_string() }
-fn default_imap_port() -> u16 { 993 }
-fn default_reply_poll() -> i64 { 2 }
-fn default_send_interval_min() -> i64 { 3 }
+fn default_true() -> bool {
+    true
+}
+fn default_editor_source() -> String {
+    EDITOR_SOURCE_MANUAL.to_string()
+}
+fn default_imap_port() -> u16 {
+    993
+}
+fn default_reply_poll() -> i64 {
+    2
+}
+fn default_send_interval_min() -> i64 {
+    3
+}
 
 pub fn normalize_send_interval_min(value: i64) -> i64 {
     match value {
@@ -228,7 +238,9 @@ pub const EDITOR_SOURCE_IMPORT: &str = "导入数据";
 
 pub fn normalize_editor_source(value: &str) -> String {
     match value.trim() {
-        EDITOR_SOURCE_INITIAL | EDITOR_SOURCE_MANUAL | EDITOR_SOURCE_IMPORT => value.trim().to_string(),
+        EDITOR_SOURCE_INITIAL | EDITOR_SOURCE_MANUAL | EDITOR_SOURCE_IMPORT => {
+            value.trim().to_string()
+        }
         _ => EDITOR_SOURCE_MANUAL.to_string(),
     }
 }
@@ -248,21 +260,74 @@ pub fn normalize_editor_work_types(tags: &[String]) -> Vec<String> {
     types
 }
 
-const REJECTED_TYPE_ALIASES: &[(&str, &str)] = &[
-    ("纯世情", "世情"),
-    ("甜文", "甜宠"),
-    ("同人类型", "同人"),
-];
+const REJECTED_TYPE_ALIASES: &[(&str, &str)] =
+    &[("纯世情", "世情"), ("甜文", "甜宠"), ("同人类型", "同人")];
 
 const KNOWN_REJECTED_TYPES: &[&str] = &[
-    "短篇", "中短篇", "女频", "男频", "全品类", "追妻", "追夫", "世情", "爽文", "脑洞", "古言", "现言",
-    "悬疑", "年代", "情绪流", "都市", "亲情虐", "大女主", "玄幻", "重生", "打脸", "种田", "末世", "甜宠",
-    "宅斗", "宫斗", "萌宝", "校园", "仙侠", "穿越", "穿书", "总裁", "婚恋", "虐恋", "全员背叛", "言情",
-    "性转", "死人文学", "系统", "女强", "信息差", "散文", "童话", "诗歌", "耽美", "百合", "同人", "剧本",
+    "短篇",
+    "中短篇",
+    "女频",
+    "男频",
+    "全品类",
+    "追妻",
+    "追夫",
+    "世情",
+    "爽文",
+    "脑洞",
+    "古言",
+    "现言",
+    "悬疑",
+    "年代",
+    "情绪流",
+    "都市",
+    "亲情虐",
+    "大女主",
+    "玄幻",
+    "重生",
+    "打脸",
+    "种田",
+    "末世",
+    "甜宠",
+    "宅斗",
+    "宫斗",
+    "萌宝",
+    "校园",
+    "仙侠",
+    "穿越",
+    "穿书",
+    "总裁",
+    "婚恋",
+    "虐恋",
+    "全员背叛",
+    "言情",
+    "性转",
+    "死人文学",
+    "系统",
+    "女强",
+    "信息差",
+    "散文",
+    "童话",
+    "诗歌",
+    "耽美",
+    "百合",
+    "同人",
+    "剧本",
 ];
 
 const REJECTED_CLAUSE_STOPS: &[&str] = &[
-    "\n", "。", "；", ";", "全勤", "结算", "例文", "标签", "投稿需", "其他类型", "其余类型", "，收", "、收",
+    "\n",
+    "。",
+    "；",
+    ";",
+    "全勤",
+    "结算",
+    "例文",
+    "标签",
+    "投稿需",
+    "其他类型",
+    "其余类型",
+    "，收",
+    "、收",
 ];
 
 fn next_reject_marker(text: &str) -> Option<(usize, usize)> {
@@ -277,7 +342,11 @@ fn next_reject_marker(text: &str) -> Option<(usize, usize)> {
     }
 }
 
-fn collect_rejected_tags(clause: &str, found: &mut Vec<String>, seen: &mut std::collections::BTreeSet<String>) {
+fn collect_rejected_tags(
+    clause: &str,
+    found: &mut Vec<String>,
+    seen: &mut std::collections::BTreeSet<String>,
+) {
     for (from, mapped) in REJECTED_TYPE_ALIASES {
         if clause.contains(from) && seen.insert((*mapped).to_string()) {
             found.push((*mapped).to_string());
@@ -289,7 +358,10 @@ fn collect_rejected_tags(clause: &str, found: &mut Vec<String>, seen: &mut std::
         .filter(|tag| clause.contains(tag))
         .collect();
     for tag in &hits {
-        if hits.iter().any(|other| *other != *tag && other.contains(tag)) {
+        if hits
+            .iter()
+            .any(|other| *other != *tag && other.contains(tag))
+        {
             continue;
         }
         if seen.insert((*tag).to_string()) {
@@ -311,7 +383,8 @@ pub fn extract_rejected_types_from_notes(notes: &str) -> Vec<String> {
             .filter_map(|mark| after.find(mark))
             .min()
             .unwrap_or(after.len());
-        let clause = after[..end].trim_matches([' ', '，', ',', '、', '的', '（', '）', '(', ')', '\t']);
+        let clause =
+            after[..end].trim_matches([' ', '，', ',', '、', '的', '（', '）', '(', ')', '\t']);
         let consumed = search.len() - after.len() + end;
         search = search.get(consumed..).unwrap_or("");
         if clause.is_empty() {
@@ -347,13 +420,18 @@ pub fn canonicalize_editor_platform(raw: &str) -> String {
 
 fn editor_platform_alias(value: &str) -> Option<&'static str> {
     Some(match value {
-        "九州（一组）" | "九州（二组）" | "九州（海外）" | "九州(一组)" | "九州(二组)" | "九州(海外)" => "九州",
+        "九州（一组）" | "九州（二组）" | "九州（海外）" | "九州(一组)" | "九州(二组)"
+        | "九州(海外)" => "九州",
         "麦芽5组" => "麦芽",
         "吾里鹿糖" => "吾里",
         "长樂" => "长乐",
         "花不完(刚刚好)" | "花不完（刚刚好）" => "花不完",
-        "GoodNovel(海外）" | "GoodNovel(海外)" | "GoodNovel（海外）" | "GoodNovel（海外)" => "GoodNovel",
-        "dreame（海外）" | "dreame(海外)" | "dreame（海外)" | "Dreame（海外）" => "Dreame",
+        "GoodNovel(海外）" | "GoodNovel(海外)" | "GoodNovel（海外）" | "GoodNovel（海外)" => {
+            "GoodNovel"
+        }
+        "dreame（海外）" | "dreame(海外)" | "dreame（海外)" | "Dreame（海外）" => {
+            "Dreame"
+        }
         "月下" => "月下小说",
         "四季文学" => "四季",
         "绣球阅读" => "绣球",
@@ -419,6 +497,30 @@ pub struct EditorInput {
     pub rejected_types: Vec<String>,
     #[serde(default)]
     pub notes: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EditorGroup {
+    pub id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub editor_ids: Vec<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EditorGroupInput {
+    pub name: String,
+    #[serde(default)]
+    pub editor_ids: Vec<i64>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct EditorGroupImportResult {
+    pub groups_added: i64,
+    pub groups_updated: i64,
+    pub editors_added: i64,
 }
 
 pub fn default_editor_inputs() -> Result<Vec<EditorInput>, String> {

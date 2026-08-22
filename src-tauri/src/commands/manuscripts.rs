@@ -41,7 +41,11 @@ pub async fn resend_delivery(
     };
 
     let (_editor_name, recipient_email) = smtp::parse_recipient(&delivery.recipient);
-    let (subject, body) = smtp::resolve_outgoing_mail(&manuscript, &delivery.recipient, settings.anti_spam_mutation);
+    let (subject, body) = smtp::resolve_outgoing_mail(
+        &manuscript,
+        &delivery.recipient,
+        settings.anti_spam_mutation,
+    );
     let sender_name = if manuscript.sender_name.trim().is_empty() {
         account.sender_name.clone()
     } else {
@@ -55,7 +59,9 @@ pub async fn resend_delivery(
         &subject,
         &body,
         &manuscript.content_type,
-        attachment.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
+        attachment
+            .as_ref()
+            .map(|(name, data)| (name.as_str(), data.as_slice())),
     )
     .await
     .map_err(|err| {
@@ -94,7 +100,9 @@ pub async fn resend_delivery(
         if let Ok(log) = log {
             let _ = app.emit("log", &log);
         }
-        return Err(format!("邮件已发出，但保存投递记录失败：{error}。请勿立即重复发送"));
+        return Err(format!(
+            "邮件已发出，但保存投递记录失败：{error}。请勿立即重复发送"
+        ));
     }
     let log = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -127,8 +135,8 @@ pub async fn send_manual_delivery(
 ) -> Result<(), String> {
     let (manuscript, account) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let manuscript = store::load_manuscript(&conn, manuscript_id)?
-            .ok_or("稿件不存在，无法手动发送")?;
+        let manuscript =
+            store::load_manuscript(&conn, manuscript_id)?.ok_or("稿件不存在，无法手动发送")?;
         let accounts = store::load_accounts(&conn)?;
         let account = if account_ids.is_empty() {
             accounts.into_iter().find(|a| a.enabled)
@@ -159,7 +167,8 @@ pub async fn send_manual_delivery(
     };
 
     let (_editor_name, recipient_email) = smtp::parse_recipient(&recipient);
-    let (subject, body) = smtp::resolve_outgoing_mail(&manuscript, &recipient, settings.anti_spam_mutation);
+    let (subject, body) =
+        smtp::resolve_outgoing_mail(&manuscript, &recipient, settings.anti_spam_mutation);
     let sender_name = if manuscript.sender_name.trim().is_empty() {
         account.sender_name.clone()
     } else {
@@ -173,7 +182,9 @@ pub async fn send_manual_delivery(
         &subject,
         &body,
         &manuscript.content_type,
-        attachment.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
+        attachment
+            .as_ref()
+            .map(|(name, data)| (name.as_str(), data.as_slice())),
     )
     .await;
     let message_id = match send_result {
@@ -230,7 +241,9 @@ pub async fn send_manual_delivery(
         if let Ok(log) = log {
             let _ = app.emit("log", &log);
         }
-        return Err(format!("邮件已发出，但保存投递记录失败：{error}。请勿立即重复发送"));
+        return Err(format!(
+            "邮件已发出，但保存投递记录失败：{error}。请勿立即重复发送"
+        ));
     }
     let log = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -272,7 +285,10 @@ pub fn add_manuscript(
         return Err("作品名称不能为空".into());
     }
     if input.body.trim().is_empty()
-        && !input.mail_templates.iter().any(|item| !item.body.trim().is_empty())
+        && !input
+            .mail_templates
+            .iter()
+            .any(|item| !item.body.trim().is_empty())
     {
         return Err("请至少填写一套邮件正文".into());
     }
@@ -389,7 +405,8 @@ pub fn delete_manuscript(state: State<'_, AppState>, id: i64) -> Result<(), Stri
 #[tauri::command]
 pub fn extract_docx_text(data: Vec<u8>) -> Result<String, String> {
     let reader = std::io::Cursor::new(data);
-    let mut archive = zip::ZipArchive::new(reader).map_err(|_| "不是有效的 Word 文件".to_string())?;
+    let mut archive =
+        zip::ZipArchive::new(reader).map_err(|_| "不是有效的 Word 文件".to_string())?;
     let mut file = archive
         .by_name("word/document.xml")
         .map_err(|_| "不是有效的 Word 文件".to_string())?;

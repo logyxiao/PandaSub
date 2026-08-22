@@ -14,10 +14,7 @@ pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<crate::models::Ac
 }
 
 #[tauri::command]
-pub fn add_account(
-    state: State<'_, AppState>,
-    input: AccountInput,
-) -> Result<i64, String> {
+pub fn add_account(state: State<'_, AppState>, input: AccountInput) -> Result<i64, String> {
     validate_account(&input)?;
     let (imap_host, imap_port) = resolve_imap(&input);
     let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -153,11 +150,17 @@ pub async fn send_test_email(
     match crate::smtp::send_email(
         &account,
         &to,
-        if sender_name.trim().is_empty() { &account.sender_name } else { &sender_name },
+        if sender_name.trim().is_empty() {
+            &account.sender_name
+        } else {
+            &sender_name
+        },
         &subject,
         &body,
         &content_type,
-        attachment_data.as_ref().map(|(name, data)| (name.as_str(), data.as_slice())),
+        attachment_data
+            .as_ref()
+            .map(|(name, data)| (name.as_str(), data.as_slice())),
     )
     .await
     {
@@ -175,7 +178,14 @@ pub async fn send_test_email(
 
 fn resolve_imap(input: &AccountInput) -> (String, u16) {
     if !input.imap_host.trim().is_empty() {
-        return (input.imap_host.trim().to_string(), if input.imap_port == 0 { 993 } else { input.imap_port });
+        return (
+            input.imap_host.trim().to_string(),
+            if input.imap_port == 0 {
+                993
+            } else {
+                input.imap_port
+            },
+        );
     }
     match input.provider.as_str() {
         "qq" => ("imap.qq.com".into(), 993),

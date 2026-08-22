@@ -53,6 +53,25 @@ export interface EditorInput {
   notes: string
 }
 
+export interface EditorGroup {
+  id: number
+  name: string
+  editor_ids: number[]
+  created_at: string
+  updated_at: string
+}
+
+export interface EditorGroupInput {
+  name: string
+  editor_ids: number[]
+}
+
+export interface EditorGroupImportResult {
+  groups_added: number
+  groups_updated: number
+  editors_added: number
+}
+
 export interface EditorImportResult {
   added: number
   updated: number

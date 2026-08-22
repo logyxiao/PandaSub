@@ -1,5 +1,5 @@
-mod commands;
 mod classify;
+mod commands;
 mod db;
 mod inbox;
 mod models;
@@ -75,7 +75,9 @@ pub fn run() {
 
             let auto_backup = {
                 let conn = db.lock().unwrap();
-                store::load_settings(&conn).map(|s| s.auto_backup).unwrap_or(false)
+                store::load_settings(&conn)
+                    .map(|s| s.auto_backup)
+                    .unwrap_or(false)
             };
             if auto_backup {
                 if let Err(error) = commands::backup_database(&data_dir) {
@@ -181,6 +183,12 @@ pub fn run() {
             commands::extract_docx_text,
             commands::list_deliveries,
             commands::list_editors,
+            commands::list_editor_groups,
+            commands::create_editor_group,
+            commands::update_editor_group,
+            commands::delete_editor_group,
+            commands::export_editor_groups,
+            commands::import_editor_groups,
             commands::add_editor,
             commands::update_editor,
             commands::toggle_editor_favorite,

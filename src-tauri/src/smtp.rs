@@ -77,7 +77,11 @@ pub fn apply_placeholders_full(
     } else {
         text.to_string()
     };
-    let work = if title.trim().is_empty() { "未命名作品" } else { title };
+    let work = if title.trim().is_empty() {
+        "未命名作品"
+    } else {
+        title
+    };
     prepared
         .replace("{{编辑昵称}}", editor_name)
         .replace("{{收件人}}", editor_name)
@@ -130,7 +134,9 @@ fn tidy_mail_subject(subject: &str) -> String {
         }
         out = next;
     }
-    out = out.trim_matches(|c: char| c == '+' || c.is_whitespace()).to_string();
+    out = out
+        .trim_matches(|c: char| c == '+' || c.is_whitespace())
+        .to_string();
     while out.contains("  ") {
         out = out.replace("  ", " ");
     }
@@ -160,11 +166,19 @@ pub fn pick_mail_template(manuscript: &Manuscript) -> (String, String) {
 }
 
 /// 从模板中随机取一套，填入占位符；可选做防风控空白微改。
-pub fn resolve_outgoing_mail(manuscript: &Manuscript, recipient: &str, mutate: bool) -> (String, String) {
+pub fn resolve_outgoing_mail(
+    manuscript: &Manuscript,
+    recipient: &str,
+    mutate: bool,
+) -> (String, String) {
     let (editor_name, recipient_email) = parse_recipient(recipient);
     let (subject_src, body_src) = pick_mail_template(manuscript);
     let (words, length, genres) = plan_tag_values(manuscript);
-    let subject_words = if words == "未填" { "" } else { words.as_str() };
+    let subject_words = if words == "未填" {
+        ""
+    } else {
+        words.as_str()
+    };
     let subject = tidy_mail_subject(&apply_placeholders_full(
         &subject_src,
         &editor_name,

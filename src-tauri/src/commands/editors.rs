@@ -1,10 +1,14 @@
 use calamine::Reader;
+use rusqlite::OptionalExtension;
 use rust_xlsxwriter::Workbook;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use tauri::State;
 
 use crate::models::{
-    EditorImportResult, EditorInput, EDITOR_SOURCE_IMPORT, EDITOR_SOURCE_INITIAL, EDITOR_SOURCE_MANUAL,
+    EditorImportResult, EditorInput, EDITOR_SOURCE_IMPORT, EDITOR_SOURCE_INITIAL,
+    EDITOR_SOURCE_MANUAL,
 };
 use crate::state::AppState;
 use crate::store;
@@ -22,7 +26,9 @@ fn normalize_editor_input(input: &crate::models::EditorInput) -> crate::models::
     }
 }
 
-fn validate_editor(input: &crate::models::EditorInput) -> Result<crate::models::EditorInput, String> {
+fn validate_editor(
+    input: &crate::models::EditorInput,
+) -> Result<crate::models::EditorInput, String> {
     let input = normalize_editor_input(input);
     if input.email.trim().is_empty() || !input.email.contains('@') {
         return Err("请填写有效的收稿邮箱".into());
@@ -34,6 +40,333 @@ fn validate_editor(input: &crate::models::EditorInput) -> Result<crate::models::
 pub fn list_editors(state: State<'_, AppState>) -> Result<Vec<crate::models::Editor>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     store::load_editors(&conn)
+}
+
+fn validate_editor_group(
+    conn: &rusqlite::Connection,
+    input: &crate::models::EditorGroupInput,
+) -> Result<(String, Vec<i64>), String> {
+    let name = input.name.trim().to_string();
+    if name.is_empty() {
+        return Err("请填写编辑组名称".into());
+    }
+    if name.chars().count() > 40 {
+        return Err("编辑组名称不能超过 40 个字".into());
+    }
+
+    let mut seen = HashSet::new();
+    let editor_ids = input
+        .editor_ids
+        .iter()
+        .copied()
+        .filter(|id| seen.insert(*id))
+        .collect::<Vec<_>>();
+    if editor_ids.is_empty() {
+        return Err("请至少选择一位编辑".into());
+    }
+
+    let existing = store::load_editors(conn)?
+        .into_iter()
+        .map(|editor| editor.id)
+        .collect::<HashSet<_>>();
+    if editor_ids.iter().any(|id| !existing.contains(id)) {
+        return Err("部分编辑已不在编辑库，请刷新后重新选择".into());
+    }
+    Ok((name, editor_ids))
+}
+
+fn replace_editor_group_members(
+    conn: &rusqlite::Connection,
+    group_id: i64,
+    editor_ids: &[i64],
+) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM editor_group_members WHERE group_id = ?1",
+        [group_id],
+    )
+    .map_err(|e| e.to_string())?;
+    for (position, editor_id) in editor_ids.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO editor_group_members (group_id, editor_id, position) VALUES (?1, ?2, ?3)",
+            rusqlite::params![group_id, editor_id, position as i64],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn editor_group_error(error: rusqlite::Error) -> String {
+    if error.to_string().contains("UNIQUE") {
+        "已经有同名编辑组了".into()
+    } else {
+        error.to_string()
+    }
+}
+
+const EDITOR_GROUP_SHARE_KIND: &str = "novelsub-editor-groups";
+
+#[derive(Serialize, Deserialize)]
+struct EditorGroupShareFile {
+    kind: String,
+    version: u32,
+    groups: Vec<EditorGroupShareGroup>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct EditorGroupShareGroup {
+    name: String,
+    editors: Vec<crate::models::EditorInput>,
+}
+
+#[tauri::command]
+pub fn list_editor_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::EditorGroup>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::load_editor_groups(&conn)
+}
+
+#[tauri::command]
+pub fn create_editor_group(
+    state: State<'_, AppState>,
+    input: crate::models::EditorGroupInput,
+) -> Result<i64, String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (name, editor_ids) = validate_editor_group(&conn, &input)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO editor_groups (name) VALUES (?1)", [&name])
+        .map_err(editor_group_error)?;
+    let id = tx.last_insert_rowid();
+    replace_editor_group_members(&tx, id, &editor_ids)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn update_editor_group(
+    state: State<'_, AppState>,
+    id: i64,
+    input: crate::models::EditorGroupInput,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (name, editor_ids) = validate_editor_group(&conn, &input)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let updated = tx
+        .execute(
+            "UPDATE editor_groups
+             SET name = ?1, updated_at = datetime('now','localtime')
+             WHERE id = ?2",
+            rusqlite::params![name, id],
+        )
+        .map_err(editor_group_error)?;
+    if updated == 0 {
+        return Err("没有找到这个编辑组".into());
+    }
+    replace_editor_group_members(&tx, id, &editor_ids)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_editor_group(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM editor_group_members WHERE group_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM editor_groups WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn export_editor_groups(
+    state: State<'_, AppState>,
+    path: String,
+    group_ids: Vec<i64>,
+) -> Result<String, String> {
+    let (groups, editors) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        (
+            store::load_editor_groups(&conn)?,
+            store::load_editors(&conn)?,
+        )
+    };
+    let selected = group_ids.into_iter().collect::<HashSet<_>>();
+    let editor_map = editors
+        .into_iter()
+        .map(|editor| (editor.id, editor))
+        .collect::<HashMap<_, _>>();
+    let groups = groups
+        .into_iter()
+        .filter(|group| selected.is_empty() || selected.contains(&group.id))
+        .map(|group| EditorGroupShareGroup {
+            name: group.name,
+            editors: group
+                .editor_ids
+                .into_iter()
+                .filter_map(|id| editor_map.get(&id))
+                .map(|editor| crate::models::EditorInput {
+                    platform: editor.platform.clone(),
+                    name: editor.name.clone(),
+                    email: editor.email.clone(),
+                    work_type: editor.work_type.clone(),
+                    rejected_types: editor.rejected_types.clone(),
+                    notes: editor.notes.clone(),
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    if groups.is_empty() {
+        return Err("没有可导出的编辑组".into());
+    }
+
+    let file = EditorGroupShareFile {
+        kind: EDITOR_GROUP_SHARE_KIND.into(),
+        version: 1,
+        groups,
+    };
+    let content = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
+    let path = if path.trim().to_lowercase().ends_with(".json") {
+        path
+    } else {
+        format!("{path}.json")
+    };
+    let file_path = std::path::PathBuf::from(&path);
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&file_path, content).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+#[tauri::command]
+pub fn import_editor_groups(
+    state: State<'_, AppState>,
+    data: Vec<u8>,
+    file_name: String,
+) -> Result<crate::models::EditorGroupImportResult, String> {
+    if data.len() > 10 * 1024 * 1024 {
+        return Err("编辑组文件不能超过 10 MB".into());
+    }
+    let file: EditorGroupShareFile =
+        serde_json::from_slice(&data).map_err(|e| format!("无法读取“{file_name}”：{e}"))?;
+    if file.kind != EDITOR_GROUP_SHARE_KIND || file.version != 1 {
+        return Err("这不是支持的 NovelSub 编辑组文件".into());
+    }
+    if file.groups.is_empty() {
+        return Err("文件里没有编辑组".into());
+    }
+    if file.groups.len() > 500 {
+        return Err("单个文件最多导入 500 个编辑组".into());
+    }
+
+    let mut names = HashSet::new();
+    let mut normalized_groups = Vec::with_capacity(file.groups.len());
+    for group in file.groups {
+        let name = group.name.trim().to_string();
+        if name.is_empty() || name.chars().count() > 40 {
+            return Err("文件中有空组名或超过 40 个字的组名".into());
+        }
+        if !names.insert(name.to_lowercase()) {
+            return Err(format!("文件中有重复编辑组：{name}"));
+        }
+        if group.editors.len() > 10_000 {
+            return Err(format!("“{name}”的成员数量超过 10000 位"));
+        }
+        let mut emails = HashSet::new();
+        let mut members = Vec::with_capacity(group.editors.len());
+        for editor in group.editors {
+            let editor = validate_editor(&editor)
+                .map_err(|error| format!("“{name}”中有无效编辑：{error}"))?;
+            let email = editor.email.trim().to_lowercase();
+            if emails.insert(email) {
+                members.push(editor);
+            }
+        }
+        normalized_groups.push((name, members));
+    }
+
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut groups_added = 0_i64;
+    let mut groups_updated = 0_i64;
+    let mut editors_added = 0_i64;
+    for (name, members) in normalized_groups {
+        let existing_group: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM editor_groups WHERE name = ?1 COLLATE NOCASE",
+                [&name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let group_id = if let Some(id) = existing_group {
+            groups_updated += 1;
+            id
+        } else {
+            tx.execute("INSERT INTO editor_groups (name) VALUES (?1)", [&name])
+                .map_err(editor_group_error)?;
+            groups_added += 1;
+            tx.last_insert_rowid()
+        };
+        let mut position: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM editor_group_members WHERE group_id = ?1",
+                [group_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+
+        for editor in members {
+            let email = editor.email.trim().to_lowercase();
+            let existing_editor: Option<i64> = tx
+                .query_row("SELECT id FROM editors WHERE email = ?1", [&email], |row| {
+                    row.get(0)
+                })
+                .optional()
+                .map_err(|e| e.to_string())?;
+            let editor_id = if let Some(id) = existing_editor {
+                id
+            } else {
+                tx.execute(
+                    "INSERT INTO editors (platform, name, email, style, work_type, rejected_types, notes, source)
+                     VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        editor.platform,
+                        editor.name.trim(),
+                        email,
+                        json!(editor.work_type).to_string(),
+                        json!(editor.rejected_types).to_string(),
+                        editor.notes,
+                        EDITOR_SOURCE_IMPORT,
+                    ],
+                )
+                .map_err(|e| e.to_string())?;
+                editors_added += 1;
+                tx.last_insert_rowid()
+            };
+            let inserted = tx
+                .execute(
+                    "INSERT OR IGNORE INTO editor_group_members (group_id, editor_id, position)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![group_id, editor_id, position],
+                )
+                .map_err(|e| e.to_string())?;
+            if inserted > 0 {
+                position += 1;
+            }
+        }
+        tx.execute(
+            "UPDATE editor_groups SET updated_at = datetime('now','localtime') WHERE id = ?1",
+            [group_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(crate::models::EditorGroupImportResult {
+        groups_added,
+        groups_updated,
+        editors_added,
+    })
 }
 
 #[tauri::command]
@@ -114,25 +447,37 @@ pub fn toggle_editor_favorite(state: State<'_, AppState>, id: i64) -> Result<boo
     )
     .map_err(|e| e.to_string())?;
     let favorited: i64 = conn
-        .query_row("SELECT favorited FROM editors WHERE id = ?1", [id], |r| r.get(0))
+        .query_row("SELECT favorited FROM editors WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
         .map_err(|_| "没有找到这位编辑".to_string())?;
     Ok(favorited != 0)
 }
 
 #[tauri::command]
 pub fn delete_editor(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM editors WHERE id = ?1", [id])
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM editor_group_members WHERE editor_id = ?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM editors WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
-    Ok(())
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn clear_editors(state: State<'_, AppState>) -> Result<i64, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let deleted = conn
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM editor_group_members", [])
+        .map_err(|e| e.to_string())?;
+    let deleted = tx
         .execute("DELETE FROM editors", [])
         .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(deleted as i64)
 }
 
@@ -154,7 +499,15 @@ pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
-    let headers = ["平台", "名称", "邮箱", "作品类型", "拒收类型", "收稿说明", "来源"];
+    let headers = [
+        "平台",
+        "名称",
+        "邮箱",
+        "作品类型",
+        "拒收类型",
+        "收稿说明",
+        "来源",
+    ];
     for (col, h) in headers.iter().enumerate() {
         sheet
             .write_string(0, col as u16, *h)
@@ -196,7 +549,9 @@ pub fn import_editors(
 ) -> Result<EditorImportResult, String> {
     let rows = parse_editor_import(&data, &file_name)?;
     if rows.is_empty() {
-        return Err("文件里没有可导入的行。请用列：平台、名称、邮箱、作品类型、拒收类型、收稿说明。".into());
+        return Err(
+            "文件里没有可导入的行。请用列：平台、名称、邮箱、作品类型、拒收类型、收稿说明。".into(),
+        );
     }
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut added = 0i64;
@@ -224,7 +579,9 @@ pub fn import_default_editors(state: State<'_, AppState>) -> Result<EditorImport
     let mut updated = 0i64;
     let mut errors = Vec::new();
     for input in rows {
-        match validate_editor(&input).and_then(|input| store::upsert_editor(&conn, &input, EDITOR_SOURCE_INITIAL)) {
+        match validate_editor(&input)
+            .and_then(|input| store::upsert_editor(&conn, &input, EDITOR_SOURCE_INITIAL))
+        {
             Ok("updated") => updated += 1,
             Ok(_) => added += 1,
             Err(e) => errors.push(e),
@@ -237,7 +594,10 @@ pub fn import_default_editors(state: State<'_, AppState>) -> Result<EditorImport
     })
 }
 
-fn upsert_imported_editor(conn: &rusqlite::Connection, input: &EditorInput) -> Result<&'static str, String> {
+fn upsert_imported_editor(
+    conn: &rusqlite::Connection,
+    input: &EditorInput,
+) -> Result<&'static str, String> {
     let input = validate_editor(input)?;
     store::upsert_editor(conn, &input, EDITOR_SOURCE_IMPORT)
 }
@@ -275,12 +635,17 @@ fn read_spreadsheet_sheets(data: &[u8]) -> Result<SpreadsheetSheets, String> {
     let names = workbook.sheet_names().to_vec();
     let mut out = Vec::new();
     for name in names {
-        let Ok(range) = workbook.worksheet_range(&name) else { continue };
+        let Ok(range) = workbook.worksheet_range(&name) else {
+            continue;
+        };
         let rows: Vec<Vec<String>> = range
             .rows()
             .map(|row| row.iter().map(spreadsheet_cell).collect())
             .collect();
-        if rows.iter().any(|row| row.iter().any(|cell| !cell.is_empty())) {
+        if rows
+            .iter()
+            .any(|row| row.iter().any(|cell| !cell.is_empty()))
+        {
             out.push((name, rows));
         }
     }
@@ -359,7 +724,10 @@ fn decode_import_text(data: &[u8]) -> String {
 }
 
 fn detect_delim(text: &str) -> char {
-    let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
+    let first = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
     let comma = first.matches(',').count();
     let tab = first.matches('\t').count();
     let semi = first.matches(';').count();
@@ -383,7 +751,11 @@ fn rows_to_editors(table: Vec<Vec<String>>) -> Vec<(usize, EditorInput)> {
         .skip(start)
         .filter_map(|(i, row)| {
             let input = editor_from_row(&row, &map);
-            if input.email.is_empty() && input.work_type.is_empty() && input.name.is_empty() && input.platform.is_empty() {
+            if input.email.is_empty()
+                && input.work_type.is_empty()
+                && input.name.is_empty()
+                && input.platform.is_empty()
+            {
                 return None;
             }
             Some((i + 1, input))
@@ -405,12 +777,21 @@ fn detect_editor_columns(first: &[String]) -> (usize, EditorColumns) {
     let mut map = EditorColumns::default();
     for (i, cell) in first.iter().enumerate() {
         match normalize_header(cell).as_str() {
-            "平台" | "platform" | "站点" | "刊物" | "三方" | "报刊" | "杂志" | "杂志名称" => map.platform = Some(i),
+            "平台" | "platform" | "站点" | "刊物" | "三方" | "报刊" | "杂志" | "杂志名称" => {
+                map.platform = Some(i)
+            }
             "名称" | "name" | "编辑" | "昵称" | "副刊" => map.name = Some(i),
-            "邮箱" | "email" | "邮件" | "收稿邮箱" | "投稿邮箱" | "联系方式" => map.email = Some(i),
-            "作品类型" | "类型" | "题材" | "work_type" | "收稿方向" | "方向" | "收稿类别" | "类别" | "标签" | "tags" | "收稿类型" => map.work_type = Some(i),
-            "拒收类型" | "拒收" | "不收" | "不收类型" | "rejected" | "rejected_types" => map.rejected_types = Some(i),
-            "说明" | "notes" | "收稿说明" | "备注" | "审稿" | "投稿注意" => map.notes = Some(i),
+            "邮箱" | "email" | "邮件" | "收稿邮箱" | "投稿邮箱" | "联系方式" => {
+                map.email = Some(i)
+            }
+            "作品类型" | "类型" | "题材" | "work_type" | "收稿方向" | "方向" | "收稿类别"
+            | "类别" | "标签" | "tags" | "收稿类型" => map.work_type = Some(i),
+            "拒收类型" | "拒收" | "不收" | "不收类型" | "rejected" | "rejected_types" => {
+                map.rejected_types = Some(i)
+            }
+            "说明" | "notes" | "收稿说明" | "备注" | "审稿" | "投稿注意" => {
+                map.notes = Some(i)
+            }
             _ => {}
         }
     }
@@ -418,10 +799,28 @@ fn detect_editor_columns(first: &[String]) -> (usize, EditorColumns) {
         return (1, map);
     }
     let fallback = match first.len() {
-        1 => EditorColumns { email: Some(0), ..EditorColumns::default() },
-        2 => EditorColumns { email: Some(0), work_type: Some(1), ..EditorColumns::default() },
-        3 => EditorColumns { name: Some(0), email: Some(1), work_type: Some(2), ..EditorColumns::default() },
-        4 => EditorColumns { platform: Some(0), name: Some(1), email: Some(2), work_type: Some(3), ..EditorColumns::default() },
+        1 => EditorColumns {
+            email: Some(0),
+            ..EditorColumns::default()
+        },
+        2 => EditorColumns {
+            email: Some(0),
+            work_type: Some(1),
+            ..EditorColumns::default()
+        },
+        3 => EditorColumns {
+            name: Some(0),
+            email: Some(1),
+            work_type: Some(2),
+            ..EditorColumns::default()
+        },
+        4 => EditorColumns {
+            platform: Some(0),
+            name: Some(1),
+            email: Some(2),
+            work_type: Some(3),
+            ..EditorColumns::default()
+        },
         _ => EditorColumns {
             platform: Some(0),
             name: Some(1),
@@ -439,7 +838,10 @@ fn normalize_header(value: &str) -> String {
 }
 
 fn cell_at(row: &[String], index: Option<usize>) -> String {
-    index.and_then(|i| row.get(i)).map(|s| s.trim().to_string()).unwrap_or_default()
+    index
+        .and_then(|i| row.get(i))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn editor_from_row(row: &[String], map: &EditorColumns) -> EditorInput {
@@ -448,7 +850,10 @@ fn editor_from_row(row: &[String], map: &EditorColumns) -> EditorInput {
     if email.is_empty() {
         if let Some((_, extracted)) = name.rsplit_once('<') {
             email = extracted.trim().trim_end_matches('>').trim().to_string();
-            name = name.rsplit_once('<').map(|(left, _)| left.trim().to_string()).unwrap_or_default();
+            name = name
+                .rsplit_once('<')
+                .map(|(left, _)| left.trim().to_string())
+                .unwrap_or_default();
         }
     }
     if name.is_empty() && email.contains('<') {
@@ -479,7 +884,9 @@ fn editor_from_row(row: &[String], map: &EditorColumns) -> EditorInput {
 fn extract_email(raw: &str) -> String {
     let cleaned = raw.replace("小窗", " ").replace("微信", " ");
     cleaned
-        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-' | '@')))
+        .split(|c: char| {
+            !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-' | '@'))
+        })
         .find(|part| part.contains('@') && part.contains('.'))
         .unwrap_or("")
         .to_lowercase()

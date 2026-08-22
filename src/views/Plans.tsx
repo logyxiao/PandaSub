@@ -7,7 +7,7 @@ import { Badge, Button, EmptyState, IconButton, RuntimeTrack } from '../componen
 import { Table } from '../components/Table'
 import { formatTime, fromDbTime, isValidEmail, statusLabel, taskTone, toDbTime } from '../format'
 import { useNav } from '../nav'
-import type { Account, Delivery, Editor, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
+import type { Account, Delivery, Editor, EditorGroup, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
 import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
 import {
@@ -27,6 +27,7 @@ export function PlansView() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [deliveries, setDeliveries] = useState<Delivery[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
+  const [editorGroups, setEditorGroups] = useState<EditorGroup[]>([])
   const [settings, setSettings] = useState<Settings | null>(null)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('')
@@ -48,10 +49,10 @@ export function PlansView() {
   const load = async () => {
     setLoading(true)
     try {
-      const [m, t, a, s, d, e] = await Promise.all([
-        api.listManuscripts(), api.listTasks(), api.listAccounts(), api.getSettings(), api.listDeliveries(), api.listEditors(),
+      const [m, t, a, s, d, e, g] = await Promise.all([
+        api.listManuscripts(), api.listTasks(), api.listAccounts(), api.getSettings(), api.listDeliveries(), api.listEditors(), api.listEditorGroups(),
       ])
-      setManuscripts(m); setTasks(t); setAccounts(a); setSettings(s); setDeliveries(d); setEditors(e); setNotice('')
+      setManuscripts(m); setTasks(t); setAccounts(a); setSettings(s); setDeliveries(d); setEditors(e); setEditorGroups(g); setNotice('')
     } catch (e) { setNotice(String(e)) }
     finally { setLoading(false) }
   }
@@ -357,7 +358,9 @@ export function PlansView() {
       <PlanEditor
         editing={editing}
         editors={editors}
+        editorGroups={editorGroups}
         onReloadEditors={async () => { setEditors(await api.listEditors()) }}
+        onReloadEditorGroups={async () => { setEditorGroups(await api.listEditorGroups()) }}
         onFavoriteChange={(id, favorited) => {
           setEditors((list) => list.map((editor) => (editor.id === id ? { ...editor, favorited } : editor)))
         }}

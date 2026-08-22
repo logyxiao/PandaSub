@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Clock3, Copy, Eye, FileUp, Heart, HeartOff, Pencil, Plus, Send, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, Clock3, Copy, Eye, FileUp, FolderOpen, Heart, HeartOff, Pencil, Plus, Send, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/feedback'
-import { Button } from '../components/ui'
+import { Button, EmptyState } from '../components/ui'
 import { isValidEmail, parseRecipient, providerName } from '../format'
-import type { Account, Editor, EditorInput, MailTemplate, Manuscript, ManuscriptInput, TaskInput } from '../types'
+import type { Account, Editor, EditorGroup, EditorInput, MailTemplate, Manuscript, ManuscriptInput, TaskInput } from '../types'
 import {
   GENRES, LENGTH_TAGS, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
   fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
@@ -20,13 +20,15 @@ const emptyEditor: EditorInput = {
 }
 
 export function PlanEditor({
-  editing, editors, onReloadEditors, onFavoriteChange, enabledAccounts,
+  editing, editors, editorGroups, onReloadEditors, onReloadEditorGroups, onFavoriteChange, enabledAccounts,
   form, setForm, taskForm, setTaskForm,
   saving, onClose, onSaveDraft, onSaveAndSend, onImportFile,
 }: {
   editing: Manuscript | null
   editors: Editor[]
+  editorGroups: EditorGroup[]
   onReloadEditors: () => Promise<void>
+  onReloadEditorGroups: () => Promise<void>
   onFavoriteChange?: (id: number, favorited: boolean) => void
   enabledAccounts: Account[]
   form: ManuscriptInput
@@ -43,10 +45,12 @@ export function PlanEditor({
   const fileRef = useRef<HTMLInputElement>(null)
   const [step, setStep] = useState(1)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(() => new Set())
   const [orphans, setOrphans] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
   const [listCount, setListCount] = useState<number | null>(null)
   const [visibleEditors, setVisibleEditors] = useState<Editor[]>([])
+  const [editorPickMode, setEditorPickMode] = useState<'groups' | 'all'>('all')
   const [listFilters, setListFilters] = useState<EditorListFilters>(() =>
     emptyEditorListFilters(form.genres, form.excluded_types ?? []),
   )
@@ -59,6 +63,13 @@ export function PlanEditor({
   const [customWorkType, setCustomWorkType] = useState('')
   const [customRejectedType, setCustomRejectedType] = useState('')
   const [savingEditor, setSavingEditor] = useState(false)
+  const [showGroupForm, setShowGroupForm] = useState(false)
+  const [editingGroup, setEditingGroup] = useState<EditorGroup | null>(null)
+  const [groupName, setGroupName] = useState('')
+  const [groupMemberIds, setGroupMemberIds] = useState<Set<number>>(new Set())
+  const [groupVisibleEditors, setGroupVisibleEditors] = useState<Editor[]>([])
+  const [groupSelectedOnly, setGroupSelectedOnly] = useState(false)
+  const [savingGroup, setSavingGroup] = useState(false)
   const [testing, setTesting] = useState(false)
   const initRef = useRef(false)
 
@@ -102,13 +113,44 @@ export function PlanEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在进入时初始化一次
   }, [])
 
+  const groupPicks = useMemo(() => {
+    const editorMap = new Map(editors.map((editor) => [editor.id, editor]))
+    return editorGroups.map((group) => {
+      const seenIds = new Set<number>()
+      const members = group.editor_ids.flatMap((id) => {
+        const editor = editorMap.get(id)
+        if (!editor || seenIds.has(editor.id)) return []
+        seenIds.add(editor.id)
+        return [editor]
+      })
+      return { group, members }
+    })
+  }, [editorGroups, editors])
+
+  const effectiveSelectedIds = useMemo(() => {
+    const next = new Set(selectedIds)
+    for (const pick of groupPicks) {
+      if (!selectedGroupIds.has(pick.group.id)) continue
+      for (const editor of pick.members) next.add(editor.id)
+    }
+    return next
+  }, [groupPicks, selectedGroupIds, selectedIds])
+
   const selectedEditors = useMemo(() => {
     const map = new Map(editors.map((editor) => [editor.id, editor]))
-    return [...selectedIds].flatMap((id) => {
+    return [...effectiveSelectedIds].flatMap((id) => {
       const editor = map.get(id)
       return editor ? [editor] : []
     })
-  }, [editors, selectedIds])
+  }, [editors, effectiveSelectedIds])
+
+  useEffect(() => {
+    const availableGroupIds = new Set(editorGroups.map((group) => group.id))
+    setSelectedGroupIds((current) => {
+      if ([...current].every((id) => availableGroupIds.has(id))) return current
+      return new Set([...current].filter((id) => availableGroupIds.has(id)))
+    })
+  }, [editorGroups])
 
   // 收件名单 = 勾选的编辑 + 已保存但不在编辑库里的收件人（保留不丢）。
   const recipients = useMemo(
@@ -198,6 +240,92 @@ export function PlanEditor({
       return next
     })
   }
+
+  const toggleEditorGroup = (groupId: number) => {
+    const pick = groupPicks.find((item) => item.group.id === groupId)
+    if (!pick?.members.length) return
+    const selected = selectedGroupIds.has(groupId)
+    setSelectedGroupIds((current) => {
+      const next = new Set(current)
+      if (selected) next.delete(groupId)
+      else next.add(groupId)
+      return next
+    })
+    toast(
+      selected
+        ? `已取消“${pick.group.name}”的 ${pick.members.length} 位编辑`
+        : `已选“${pick.group.name}”的 ${pick.members.length} 位编辑`,
+      'info',
+    )
+  }
+
+  const openNewGroup = () => {
+    setEditingGroup(null)
+    setGroupName('')
+    setGroupMemberIds(new Set())
+    setGroupVisibleEditors([])
+    setGroupSelectedOnly(false)
+    setShowGroupForm(true)
+  }
+
+  const openEditGroup = (group: EditorGroup) => {
+    const availableIds = new Set(editors.map((editor) => editor.id))
+    setEditingGroup(group)
+    setGroupName(group.name)
+    setGroupMemberIds(new Set(group.editor_ids.filter((id) => availableIds.has(id))))
+    setGroupVisibleEditors([])
+    setGroupSelectedOnly(false)
+    setShowGroupForm(true)
+  }
+
+  const toggleGroupMember = (editor: Editor, checked: boolean) => {
+    setGroupMemberIds((current) => {
+      const next = new Set(current)
+      if (checked) next.add(editor.id)
+      else next.delete(editor.id)
+      return next
+    })
+  }
+
+  const toggleVisibleGroupMembers = () => {
+    const shouldSelect = groupVisibleEditors.some((editor) => !groupMemberIds.has(editor.id))
+    setGroupMemberIds((current) => {
+      const next = new Set(current)
+      for (const editor of groupVisibleEditors) {
+        if (shouldSelect) next.add(editor.id)
+        else next.delete(editor.id)
+      }
+      return next
+    })
+  }
+
+  const saveEditorGroup = async () => {
+    const name = groupName.trim()
+    if (!name) { toast('请填写编辑组名称', 'warning'); return }
+    if (!groupMemberIds.size) { toast('请至少选择一位编辑', 'warning'); return }
+    const editor_ids = editors.filter((editor) => groupMemberIds.has(editor.id)).map((editor) => editor.id)
+    setSavingGroup(true)
+    try {
+      let createdId: number | null = null
+      if (editingGroup) await api.updateEditorGroup(editingGroup.id, { name, editor_ids })
+      else createdId = await api.createEditorGroup({ name, editor_ids })
+      await onReloadEditorGroups()
+      if (createdId) setSelectedGroupIds((current) => new Set(current).add(createdId))
+      setShowGroupForm(false)
+      toast(editingGroup ? '编辑组已更新' : '编辑组已创建并选中', 'success')
+    } catch (error) {
+      toast(String(error), 'error')
+    } finally {
+      setSavingGroup(false)
+    }
+  }
+
+  const groupPickerItems = useMemo(
+    () => groupSelectedOnly ? editors.filter((editor) => groupMemberIds.has(editor.id)) : editors,
+    [editors, groupMemberIds, groupSelectedOnly],
+  )
+  const allVisibleGroupMembersSelected = groupVisibleEditors.length > 0
+    && groupVisibleEditors.every((editor) => groupMemberIds.has(editor.id))
 
   const favoriteEditors = useMemo(
     () => visibleEditors.filter(isEditorFavorited),
@@ -693,50 +821,102 @@ export function PlanEditor({
 
         {step === 2 && (
           <section className="plan-step-2">
+            <div className="plan-editor-pick-nav">
+              <div className="plan-editor-pick-tabs" role="tablist" aria-label="选择编辑方式">
+                <button type="button" role="tab" aria-selected={editorPickMode === 'groups'}
+                  className={editorPickMode === 'groups' ? 'on' : ''} onClick={() => setEditorPickMode('groups')}>
+                  <FolderOpen size={14} />编辑组<small>{groupPicks.length}</small>
+                </button>
+                <button type="button" role="tab" aria-selected={editorPickMode === 'all'}
+                  className={editorPickMode === 'all' ? 'on' : ''} onClick={() => setEditorPickMode('all')}>
+                  全部编辑<small>{editors.length}</small>
+                </button>
+              </div>
+              {editorPickMode === 'groups'
+                ? <Button size="sm" onClick={openNewGroup}><Plus size={14} />新建编辑组</Button>
+                : <Button size="sm" onClick={openAddEditor}><Plus size={14} />添加编辑</Button>}
+            </div>
             <div className="step-toolbar">
               <span className="step-meta">
-                共有 <strong>{listCount ?? 0}</strong> 条可选数据，已选 <strong>{selectedIds.size}</strong> 条
+                {editorPickMode === 'groups'
+                  ? <>共有 <strong>{groupPicks.length}</strong> 个编辑组，已选 <strong>{selectedGroupIds.size}</strong> 个组，共 <strong>{effectiveSelectedIds.size}</strong> 位编辑</>
+                  : <>共有 <strong>{listCount ?? 0}</strong> 条可选数据，单独选择 <strong>{selectedIds.size}</strong> 位，合计 <strong>{effectiveSelectedIds.size}</strong> 位</>}
               </span>
-              <Button size="sm" onClick={openAddEditor}><Plus size={14} />添加编辑</Button>
             </div>
-            <EditorsList
-              items={editors}
-              selectable
-              onePerPlatform
-              selectedIds={selectedIds}
-              onToggleSelect={toggleSelect}
-              onTotalChange={setListCount}
-              onVisibleChange={setVisibleEditors}
-              platformPeersOf={platformPeersOf}
-              onReplaceEditor={replacePlatformEditor}
-              onFavoriteChange={onFavoriteChange}
-              onEdit={openEditEditor}
-              filters={listFilters}
-              onFiltersChange={(next) => {
-                const tagsChanged = next.workTypes.join('\0') !== listFilters.workTypes.join('\0')
-                  || next.excludedWorkTypes.join('\0') !== listFilters.excludedWorkTypes.join('\0')
-                setListFilters(next)
-                if (tagsChanged) {
-                  setSelectedIds((prev) => mergeEditorSelectionByPlatform(
-                    editors, prev, next.workTypes, next.excludedWorkTypes,
-                  ))
+            {editorPickMode === 'groups' ? (
+              groupPicks.length ? (
+                <div className="plan-group-choice-list">
+                  {groupPicks.map(({ group, members }) => {
+                    const selected = selectedGroupIds.has(group.id)
+                    const preview = members.slice(0, 5).map((editor) => editor.name.trim() || editor.email).join('、')
+                    return (
+                      <div key={group.id} className={`plan-group-choice ${selected ? 'on' : ''}`}>
+                        <button type="button" className="plan-group-choice-main" disabled={!members.length}
+                          aria-pressed={selected} onClick={() => toggleEditorGroup(group.id)}>
+                          <span className="plan-group-choice-check">{selected && <Check size={14} />}</span>
+                          <span className="plan-group-choice-copy">
+                            <b>{group.name}</b>
+                            <small>{preview || '组内暂时没有可用编辑'}{members.length > 5 ? ` 等 ${members.length} 位` : ''}</small>
+                          </span>
+                          <span className="plan-group-choice-count">
+                            <b>{members.length}</b><small>位编辑</small>
+                          </span>
+                          <span className="plan-group-choice-status">
+                            {selected ? '已选整组' : '选择整组'}
+                          </span>
+                        </button>
+                        <Button size="sm" onClick={() => openEditGroup(group)}><Pencil size={13} />编辑组</Button>
+                      </div>
+                    )
+                  })}
+                  <p className="plan-group-choice-hint">选择编辑组会加入组内全部编辑，包括同平台的多位编辑；切换到“全部编辑”仍可继续逐个调整。</p>
+                </div>
+              ) : (
+                <div className="panel">
+                  <EmptyState icon={FolderOpen} title="还没有编辑组" desc="先把常用编辑整理成组，之后投稿时可一键全部选择。"
+                    action={<Button size="sm" variant="primary" onClick={openNewGroup}><Plus size={13} />新建编辑组</Button>} />
+                </div>
+              )
+            ) : (
+              <EditorsList
+                items={editors}
+                selectable
+                onePerPlatform
+                selectedIds={selectedIds}
+                onToggleSelect={toggleSelect}
+                onTotalChange={setListCount}
+                onVisibleChange={setVisibleEditors}
+                platformPeersOf={platformPeersOf}
+                onReplaceEditor={replacePlatformEditor}
+                onFavoriteChange={onFavoriteChange}
+                onEdit={openEditEditor}
+                filters={listFilters}
+                onFiltersChange={(next) => {
+                  const tagsChanged = next.workTypes.join('\0') !== listFilters.workTypes.join('\0')
+                    || next.excludedWorkTypes.join('\0') !== listFilters.excludedWorkTypes.join('\0')
+                  setListFilters(next)
+                  if (tagsChanged) {
+                    setSelectedIds((prev) => mergeEditorSelectionByPlatform(
+                      editors, prev, next.workTypes, next.excludedWorkTypes,
+                    ))
+                  }
+                }}
+                pageSize={6}
+                actions={
+                  <>
+                    <Button size="sm" className="favorite-action" disabled={!favoriteEditors.length}
+                      onClick={selectFavoriteEditors}>
+                      <Heart size={12} />选择收藏编辑
+                    </Button>
+                    <Button size="sm" className="favorite-action is-remove" disabled={!hasSelectedFavorite}
+                      onClick={deselectFavoriteEditors}>
+                      <HeartOff size={12} />取消选择收藏编辑
+                    </Button>
+                  </>
                 }
-              }}
-              pageSize={6}
-              actions={
-                <>
-                  <Button size="sm" className="favorite-action" disabled={!favoriteEditors.length}
-                    onClick={selectFavoriteEditors}>
-                    <Heart size={12} />选择收藏编辑
-                  </Button>
-                  <Button size="sm" className="favorite-action is-remove" disabled={!hasSelectedFavorite}
-                    onClick={deselectFavoriteEditors}>
-                    <HeartOff size={12} />取消选择收藏编辑
-                  </Button>
-                </>
-              }
-              emptyText="没有符合筛选的编辑。可调整筛选，或点右上角从编辑库添加。"
-            />
+                emptyText="没有符合筛选的编辑。可调整筛选，或点右上角从编辑库添加。"
+              />
+            )}
             {!!orphans.length && (
               <p className="step-orphan">另有 {orphans.length} 位保存过的收件人不在编辑库中，将保留发送。</p>
             )}
@@ -842,6 +1022,51 @@ export function PlanEditor({
           </section>
         )}
       </div>
+
+      {showGroupForm && (
+        <Modal title={editingGroup ? '编辑编辑组' : '新建编辑组'} width={900}
+          onClose={() => setShowGroupForm(false)}
+          footer={
+            <>
+              <span className="editor-group-selected-count">已选 {groupMemberIds.size} 位</span>
+              <Button variant="ghost" onClick={() => setShowGroupForm(false)}>取消</Button>
+              <Button variant="primary" disabled={savingGroup || !groupName.trim() || !groupMemberIds.size}
+                onClick={() => void saveEditorGroup()}>
+                {savingGroup ? '保存中…' : '保存编辑组'}
+              </Button>
+            </>
+          }>
+          <div className="editor-group-form-head">
+            <label className="field">编辑组名称
+              <input autoFocus maxLength={40} value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：短篇常投、重点编辑" />
+            </label>
+            <p>在当前投稿页面直接维护组名和成员，保存后编辑库也会同步更新。</p>
+          </div>
+          <div className="editor-group-picker">
+            <EditorsList
+              items={groupPickerItems}
+              selectable
+              selectedIds={groupMemberIds}
+              onToggleSelect={toggleGroupMember}
+              onVisibleChange={setGroupVisibleEditors}
+              onFavoriteChange={onFavoriteChange}
+              pageSize={6}
+              actions={
+                <>
+                  <Button size="sm" className={groupSelectedOnly ? 'on' : ''} onClick={() => setGroupSelectedOnly((value) => !value)}>
+                    {groupSelectedOnly ? '查看全部' : `只看已选（${groupMemberIds.size}）`}
+                  </Button>
+                  <Button size="sm" disabled={!groupVisibleEditors.length} onClick={toggleVisibleGroupMembers}>
+                    {allVisibleGroupMembersSelected ? '取消当前结果' : '选择当前结果'}
+                  </Button>
+                  <Button size="sm" variant="ghost" disabled={!groupMemberIds.size} onClick={() => setGroupMemberIds(new Set())}>清空</Button>
+                </>
+              }
+              emptyText={groupSelectedOnly ? '还没有选中编辑。切换到“查看全部”开始选择。' : '编辑库还是空的，请先添加编辑。'}
+            />
+          </div>
+        </Modal>
+      )}
 
       {showEditorForm && (
         <Modal title={editingEditor ? '修改编辑资料' : '添加编辑'} width={560}

@@ -272,9 +272,15 @@ fn parse_message(uid: u32, raw: &[u8]) -> FetchedMail {
             uid,
             from: first_address(parsed.from()),
             subject: parsed.subject().unwrap_or("").to_string(),
-            body: parsed.body_text(0).map(|s| s.into_owned()).unwrap_or_else(|| {
-                parsed.body_html(0).map(|s| strip_tags(s.into_owned())).unwrap_or_default()
-            }),
+            body: parsed
+                .body_text(0)
+                .map(|s| s.into_owned())
+                .unwrap_or_else(|| {
+                    parsed
+                        .body_html(0)
+                        .map(|s| strip_tags(s.into_owned()))
+                        .unwrap_or_default()
+                }),
             message_id: parsed.message_id().unwrap_or("").to_string(),
             in_reply_to: header_ids(parsed.in_reply_to()),
             references: header_ids(parsed.references()),
@@ -393,9 +399,18 @@ fn normalize_subject(value: &str) -> String {
     let mut subject = value.trim().to_lowercase();
     loop {
         let trimmed = subject.trim_start();
-        let prefix = ["re:", "re：", "回复:", "回复：", "答复:", "答复：", "fw:", "fwd:"]
-            .into_iter()
-            .find(|prefix| trimmed.starts_with(prefix));
+        let prefix = [
+            "re:",
+            "re：",
+            "回复:",
+            "回复：",
+            "答复:",
+            "答复：",
+            "fw:",
+            "fwd:",
+        ]
+        .into_iter()
+        .find(|prefix| trimmed.starts_with(prefix));
         let Some(prefix) = prefix else { break };
         subject = trimmed[prefix.len()..].trim_start().to_string();
     }

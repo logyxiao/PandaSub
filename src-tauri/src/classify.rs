@@ -80,7 +80,11 @@ fn auto_reply_reason(subject: &str) -> Option<&'static str> {
 /// 先排除「未通过 / 没过」等否定表达，避免「初审未通过」被误判。
 pub fn body_suggests_accepted(body: &str) -> bool {
     let body = body.to_lowercase();
-    if body.contains("未通过") || body.contains("没有通过") || body.contains("未过") || body.contains("没过") {
+    if body.contains("未通过")
+        || body.contains("没有通过")
+        || body.contains("未过")
+        || body.contains("没过")
+    {
         return false;
     }
     const KEYS: &[&str] = &[
@@ -98,7 +102,9 @@ pub fn body_suggests_accepted(body: &str) -> bool {
 }
 
 fn header_present(headers: &[(String, String)], name: &str) -> bool {
-    headers.iter().any(|(k, v)| k == name && v != "no" && !v.is_empty())
+    headers
+        .iter()
+        .any(|(k, v)| k == name && v != "no" && !v.is_empty())
 }
 
 fn is_bounce(
@@ -144,7 +150,8 @@ fn unique_body(body: &str) -> String {
         if t.starts_with("On ") && t.contains("wrote") {
             break;
         }
-        if t.contains("原始邮件") || t.contains("Original Message") || t.contains("转发的邮件") {
+        if t.contains("原始邮件") || t.contains("Original Message") || t.contains("转发的邮件")
+        {
             break;
         }
         if t.starts_with("-----") {
@@ -173,28 +180,48 @@ mod tests {
 
     #[test]
     fn auto_subject_is_auto() {
-        let m = mail("noreply@site.com", "自动回复：已收到投稿", "请勿回复此邮件，这是系统自动发送的。");
+        let m = mail(
+            "noreply@site.com",
+            "自动回复：已收到投稿",
+            "请勿回复此邮件，这是系统自动发送的。",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Auto);
     }
 
     #[test]
     fn traditional_chinese_auto_subject_is_auto() {
-        let m = mail("noreply@site.com", "自動回覆：稿件收到", "系統自動發送，請勿回覆。");
+        let m = mail(
+            "noreply@site.com",
+            "自動回覆：稿件收到",
+            "系統自動發送，請勿回覆。",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Auto);
     }
 
     #[test]
     fn english_autoreply_subject_is_auto() {
-        let m = mail("noreply@site.com", "AutoReply: 稿件已收到", "This is an automatic reply.");
+        let m = mail(
+            "noreply@site.com",
+            "AutoReply: 稿件已收到",
+            "This is an automatic reply.",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Auto);
-        let m = mail("noreply@site.com", "Re: Auto-Reply 已收到您的来信", "请勿回复。");
+        let m = mail(
+            "noreply@site.com",
+            "Re: Auto-Reply 已收到您的来信",
+            "请勿回复。",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Auto);
     }
 
     #[test]
     fn no_auto_keyword_is_human() {
         // 简化后的规则只看主题：即使正文/邮件头有自动特征，主题不含「自动回复」也判人工。
-        let m = mail("noreply@site.com", "Re: 投石穿云", "请勿回复此邮件，这是系统自动发送的。");
+        let m = mail(
+            "noreply@site.com",
+            "Re: 投石穿云",
+            "请勿回复此邮件，这是系统自动发送的。",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Human);
     }
 
@@ -210,7 +237,11 @@ mod tests {
 
     #[test]
     fn bounce_mailer_daemon() {
-        let m = mail("MAILER-DAEMON@qq.com", "Undelivered Mail Returned to Sender", "Diagnostic-Code: smtp; 550");
+        let m = mail(
+            "MAILER-DAEMON@qq.com",
+            "Undelivered Mail Returned to Sender",
+            "Diagnostic-Code: smtp; 550",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Bounce);
     }
 
@@ -227,32 +258,51 @@ mod tests {
 
     #[test]
     fn short_plain_reply_is_human() {
-        let m = mail("editor@site.com", "Re: 投石穿云", "方便今晚十点通话吗？我是责编李四。");
+        let m = mail(
+            "editor@site.com",
+            "Re: 投石穿云",
+            "方便今晚十点通话吗？我是责编李四。",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Human);
     }
 
     #[test]
     fn short_received_confirmation_is_human() {
-        let m = mail("editor@site.com", "Re: 投石穿云", "稿件已收到，我们一周内会给结果。");
+        let m = mail(
+            "editor@site.com",
+            "Re: 投石穿云",
+            "稿件已收到，我们一周内会给结果。",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Human);
     }
 
     #[test]
     fn editorial_promise_is_human() {
-        let m = mail("editor@site.com", "Re: 投石穿云", "稿子看到了，我会尽快回复审稿意见。");
+        let m = mail(
+            "editor@site.com",
+            "Re: 投石穿云",
+            "稿子看到了，我会尽快回复审稿意见。",
+        );
         assert_eq!(classify(&m).kind, ReplyKind::Human);
     }
 
     #[test]
     fn accepted_keywords_detected() {
-        for text in ["审核通过，请签约", "恭喜过稿！", "稿件初审通过", "复审通过，进入终审", "您的作品被录用"] {
+        for text in [
+            "审核通过，请签约",
+            "恭喜过稿！",
+            "稿件初审通过",
+            "复审通过，进入终审",
+            "您的作品被录用",
+        ] {
             assert!(body_suggests_accepted(text), "应识别为过稿: {text}");
         }
     }
 
     #[test]
     fn rejected_phrases_not_detected() {
-        for text in ["初审未通过", "审核没有通过", "稿件没过", "尚未通过审核"] {
+        for text in ["初审未通过", "审核没有通过", "稿件没过", "尚未通过审核"]
+        {
             assert!(!body_suggests_accepted(text), "不应识别为过稿: {text}");
         }
     }

@@ -211,7 +211,10 @@ fn pick_available_account(
     let scope: Vec<&Account> = if allowed.is_empty() {
         accounts.iter().collect()
     } else {
-        accounts.iter().filter(|a| allowed.contains(&a.id)).collect()
+        accounts
+            .iter()
+            .filter(|a| allowed.contains(&a.id))
+            .collect()
     };
     if scope.is_empty() {
         return None;
@@ -324,8 +327,9 @@ async fn run_task_worker(
                 let conn = db.lock().unwrap();
                 let mut delivered_targets = std::collections::HashSet::new();
                 for manuscript in &manuscripts {
-                    for email in store::delivered_emails_for_task_manuscript(&conn, task_id, manuscript.id)
-                        .unwrap_or_default()
+                    for email in
+                        store::delivered_emails_for_task_manuscript(&conn, task_id, manuscript.id)
+                            .unwrap_or_default()
                     {
                         delivered_targets.insert(delivery_target_key(manuscript.id, &email));
                     }
@@ -392,11 +396,16 @@ async fn run_task_worker(
 
     let mut cursor: usize = 0;
     let mut had_failure = false;
-    let allowed_accounts: std::collections::HashSet<i64> = task.account_ids.iter().copied().collect();
+    let allowed_accounts: std::collections::HashSet<i64> =
+        task.account_ids.iter().copied().collect();
 
     loop {
         if !is_loop && queue.is_empty() {
-            let completion_message = if had_failure { "任务投递结束，但有邮件发送失败" } else { "任务全部投递完成" };
+            let completion_message = if had_failure {
+                "任务投递结束，但有邮件发送失败"
+            } else {
+                "任务全部投递完成"
+            };
             let log = store::insert_log(
                 &db.lock().unwrap(),
                 Some(task_id),
@@ -410,7 +419,11 @@ async fn run_task_worker(
             }
             {
                 let conn = db.lock().unwrap();
-                let _ = store::mark_task_finished(&conn, task_id, if had_failure { "stopped" } else { "completed" });
+                let _ = store::mark_task_finished(
+                    &conn,
+                    task_id,
+                    if had_failure { "stopped" } else { "completed" },
+                );
             }
             emit_task(&app, &db, task_id);
             registry.lock().unwrap().remove(&task_id);
@@ -501,7 +514,10 @@ async fn run_task_worker(
         .await;
 
         match outcome {
-            SendOutcome::Success { message_id, account_id } => {
+            SendOutcome::Success {
+                message_id,
+                account_id,
+            } => {
                 let recorded = {
                     let mut conn = db.lock().unwrap();
                     store::record_successful_delivery(
@@ -549,7 +565,9 @@ async fn run_task_worker(
                 queue.push_front(target);
                 interruptible_sleep(30, &handle).await;
             }
-            SendOutcome::Failed => { had_failure = true; }
+            SendOutcome::Failed => {
+                had_failure = true;
+            }
         }
 
         if !is_loop && queue.is_empty() {
@@ -629,7 +647,10 @@ async fn send_with_retry(
             subject,
             body,
             &target.manuscript.content_type,
-            target.attachment.as_ref().map(|attachment| (attachment.0.as_str(), attachment.1.as_slice())),
+            target
+                .attachment
+                .as_ref()
+                .map(|attachment| (attachment.0.as_str(), attachment.1.as_slice())),
         )
         .await
         {

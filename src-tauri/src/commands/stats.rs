@@ -48,7 +48,9 @@ pub fn get_stats(
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([&start, &end], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .query_map([&start, &end], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
             .map_err(|e| e.to_string())?;
         for row in rows {
             let (k, c) = row.map_err(|e| e.to_string())?;
@@ -66,7 +68,9 @@ pub fn get_stats(
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([&start, &end], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .query_map([&start, &end], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
             .map_err(|e| e.to_string())?;
         for row in rows {
             let (k, c) = row.map_err(|e| e.to_string())?;
@@ -84,7 +88,9 @@ pub fn get_stats(
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([&start, &end], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .query_map([&start, &end], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
             .map_err(|e| e.to_string())?;
         for row in rows {
             let (k, c) = row.map_err(|e| e.to_string())?;
@@ -104,7 +110,9 @@ pub fn get_stats(
         );
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([&start, &end], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .query_map([&start, &end], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
             .map_err(|e| e.to_string())?;
         for row in rows {
             let (k, c) = row.map_err(|e| e.to_string())?;
@@ -126,7 +134,11 @@ pub fn get_stats(
 }
 
 /// 默认范围：全部数据；提供时按 YYYY-MM-DD 归一化。
-fn normalize_range(conn: &rusqlite::Connection, start: Option<String>, end: Option<String>) -> Result<(String, String), String> {
+fn normalize_range(
+    conn: &rusqlite::Connection,
+    start: Option<String>,
+    end: Option<String>,
+) -> Result<(String, String), String> {
     let start = start.unwrap_or_default();
     let end = end.unwrap_or_default();
     let clamp = |v: &str, fallback: &str| -> String {
@@ -140,13 +152,21 @@ fn normalize_range(conn: &rusqlite::Connection, start: Option<String>, end: Opti
     let end = clamp(&end, "9999-12-31");
     // 校验格式：能通过 date() 解析且形如 YYYY-MM-DD 即可
     let valid: i64 = conn
-        .query_row("SELECT date(?1) IS NOT NULL AND length(?1) = 10", [&start], |r| r.get(0))
+        .query_row(
+            "SELECT date(?1) IS NOT NULL AND length(?1) = 10",
+            [&start],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     if valid == 0 {
         return Err("统计日期格式应为 YYYY-MM-DD".into());
     }
     let valid: i64 = conn
-        .query_row("SELECT date(?1) IS NOT NULL AND length(?1) = 10", [&end], |r| r.get(0))
+        .query_row(
+            "SELECT date(?1) IS NOT NULL AND length(?1) = 10",
+            [&end],
+            |r| r.get(0),
+        )
         .unwrap_or(0);
     if valid == 0 {
         return Err("统计日期格式应为 YYYY-MM-DD".into());

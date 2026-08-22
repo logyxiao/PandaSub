@@ -17,7 +17,11 @@ pub fn list_tasks(state: State<'_, AppState>) -> Result<Vec<crate::models::Task>
 }
 
 #[tauri::command]
-pub fn update_task_accounts(state: State<'_, AppState>, id: i64, account_ids: Vec<i64>) -> Result<(), String> {
+pub fn update_task_accounts(
+    state: State<'_, AppState>,
+    id: i64,
+    account_ids: Vec<i64>,
+) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE tasks SET account_ids = ?1 WHERE id = ?2",
@@ -28,7 +32,10 @@ pub fn update_task_accounts(state: State<'_, AppState>, id: i64, account_ids: Ve
 }
 
 #[tauri::command]
-pub fn get_task(state: State<'_, AppState>, id: i64) -> Result<Option<crate::models::Task>, String> {
+pub fn get_task(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<crate::models::Task>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     store::load_task(&conn, id)
 }
@@ -41,7 +48,12 @@ fn validate_task_input(conn: &Connection, input: &TaskInput) -> Result<(), Strin
         return Err("请选择至少一篇稿件".into());
     }
     if input.schedule_type == "scheduled" {
-        let Some(at) = input.scheduled_at.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        let Some(at) = input
+            .scheduled_at
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
             return Err("请选择定时发送的时间".into());
         };
         if at <= store::now_str(conn)?.as_str() {
@@ -69,14 +81,23 @@ fn validate_task_input(conn: &Connection, input: &TaskInput) -> Result<(), Strin
     if manuscripts.len() != input.manuscript_ids.len() {
         return Err("部分稿件不存在，请刷新后重试".into());
     }
-    if manuscripts.iter().map(|m| m.recipients.len()).sum::<usize>() == 0 {
+    if manuscripts
+        .iter()
+        .map(|m| m.recipients.len())
+        .sum::<usize>()
+        == 0
+    {
         return Err("所选稿件都没有收件人，请先在稿件中填写编辑部邮箱".into());
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn create_task(app: AppHandle, state: State<'_, AppState>, input: TaskInput) -> Result<i64, String> {
+pub fn create_task(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: TaskInput,
+) -> Result<i64, String> {
     let status = if input.schedule_type == "scheduled" {
         "scheduled"
     } else {
@@ -170,8 +191,8 @@ pub fn create_waste_draft_task(
 ) -> Result<usize, String> {
     let (task_id, cloned_manuscript_id, recipient_count) = {
         let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-        let manuscript = store::load_manuscript(&conn, manuscript_id)?
-            .ok_or("原计划不存在，请刷新后重试")?;
+        let manuscript =
+            store::load_manuscript(&conn, manuscript_id)?.ok_or("原计划不存在，请刷新后重试")?;
         let latest_task = store::load_tasks(&conn)?
             .into_iter()
             .find(|task| task.manuscript_ids.contains(&manuscript_id));
@@ -185,7 +206,10 @@ pub fn create_waste_draft_task(
 
         let mut excluded_emails = store::delivered_emails_for_manuscript(&conn, manuscript_id)?;
         excluded_emails.extend(manuscript.recipients.iter().filter_map(|recipient| {
-            let email = crate::smtp::parse_recipient(recipient).1.trim().to_lowercase();
+            let email = crate::smtp::parse_recipient(recipient)
+                .1
+                .trim()
+                .to_lowercase();
             (!email.is_empty()).then_some(email)
         }));
 
@@ -248,8 +272,9 @@ pub fn create_waste_draft_task(
         let recipient_count = recipients.len();
 
         let transaction = conn.transaction().map_err(|e| e.to_string())?;
-        transaction.execute(
-            "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
+        transaction
+            .execute(
+                "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
                 word_count, category, reader_category, reader_emotion, style, genres,
                 excluded_types, account_ids, send_interval_min, subject, mail_templates,
                 file_name, file_data)
@@ -258,9 +283,14 @@ pub fn create_waste_draft_task(
                 excluded_types, ?3, send_interval_min, subject, mail_templates,
                 file_name, file_data
              FROM manuscripts WHERE id = ?4",
-            rusqlite::params![manuscript_title, recipients_json, account_ids_json, manuscript_id],
-        )
-        .map_err(|e| e.to_string())?;
+                rusqlite::params![
+                    manuscript_title,
+                    recipients_json,
+                    account_ids_json,
+                    manuscript_id
+                ],
+            )
+            .map_err(|e| e.to_string())?;
         let cloned_manuscript_id = transaction.last_insert_rowid();
         transaction.execute(
             "INSERT INTO tasks (name, manuscript_ids, account_ids, status, schedule_type, scheduled_at, retry_max)
@@ -281,7 +311,10 @@ pub fn create_waste_draft_task(
     if let Err(error) = start_task(app, state.clone(), task_id) {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let _ = conn.execute("DELETE FROM tasks WHERE id = ?1", [task_id]);
-        let _ = conn.execute("DELETE FROM manuscripts WHERE id = ?1", [cloned_manuscript_id]);
+        let _ = conn.execute(
+            "DELETE FROM manuscripts WHERE id = ?1",
+            [cloned_manuscript_id],
+        );
         return Err(error);
     }
     Ok(recipient_count)
@@ -326,7 +359,6 @@ fn start_reserved_task(
     id: i64,
     handle: Arc<TaskHandle>,
 ) -> Result<(), String> {
-
     let prepared = (|| -> Result<(), String> {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let task = store::load_task(&conn, id)?.ok_or("任务不存在")?;
@@ -360,7 +392,9 @@ fn start_reserved_task(
 #[tauri::command]
 pub fn pause_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    let handle = registry.get(&id).ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
+    let handle = registry
+        .get(&id)
+        .ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
     handle.pause();
     Ok(())
 }
@@ -368,7 +402,9 @@ pub fn pause_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn resume_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    let handle = registry.get(&id).ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
+    let handle = registry
+        .get(&id)
+        .ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
     handle.resume();
     Ok(())
 }

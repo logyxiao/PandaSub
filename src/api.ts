@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
-  Account, AccountInput, Dashboard, Delivery, Editor, EditorImportResult, EditorInput, Manuscript, ManuscriptInput,
+  Account, AccountInput, Dashboard, Delivery, Editor, EditorGroup, EditorGroupImportResult, EditorGroupInput, EditorImportResult, EditorInput, Manuscript, ManuscriptInput,
   Reply, Settings, StatsReport, Task, TaskInput, TaskLog,
 } from './types'
 
@@ -54,6 +54,12 @@ export const api = {
     invoke('send_manual_delivery', { manuscriptId, recipient, accountIds }),
 
   listEditors: () => invoke<Editor[]>('list_editors'),
+  listEditorGroups: () => invoke<EditorGroup[]>('list_editor_groups'),
+  createEditorGroup: (input: EditorGroupInput) => invoke<number>('create_editor_group', { input }),
+  updateEditorGroup: (id: number, input: EditorGroupInput) => invoke('update_editor_group', { id, input }),
+  deleteEditorGroup: (id: number) => invoke('delete_editor_group', { id }),
+  exportEditorGroups: (path: string, groupIds: number[]) => invoke<string>('export_editor_groups', { path, groupIds }),
+  importEditorGroups: (data: number[], fileName: string) => invoke<EditorGroupImportResult>('import_editor_groups', { data, fileName }),
   addEditor: (input: EditorInput) => invoke<number>('add_editor', { input }),
   updateEditor: (id: number, input: EditorInput) => invoke('update_editor', { id, input }),
   toggleEditorFavorite: (id: number) => invoke<boolean>('toggle_editor_favorite', { id }),
