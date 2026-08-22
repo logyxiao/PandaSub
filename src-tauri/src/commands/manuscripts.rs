@@ -63,18 +63,38 @@ pub async fn resend_delivery(
         msg
     })?;
 
-    {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let _ = store::record_account_send(&conn, account.id);
-        let _ = store::insert_delivery(
-            &conn,
-            delivery.task_id.unwrap_or(0),
-            account.id,
-            manuscript.id,
-            &recipient_email,
-            &subject,
-            &message_id,
-        );
+    let recorded = {
+        let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::record_successful_delivery(
+            &mut conn,
+            store::SuccessfulDelivery {
+                task_id: delivery.task_id,
+                account_id: account.id,
+                manuscript_id: manuscript.id,
+                recipient: &recipient_email,
+                subject: &subject,
+                message_id: &message_id,
+                increment_task_progress: false,
+            },
+        )
+    };
+    if let Err(error) = recorded {
+        let log = {
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            store::insert_send_log(
+                &conn,
+                delivery.task_id,
+                Some(account.id),
+                "error",
+                "storage",
+                &format!("邮件已重新发出，但保存投递记录失败：{error}"),
+                &delivery.recipient,
+            )
+        };
+        if let Ok(log) = log {
+            let _ = app.emit("log", &log);
+        }
+        return Err(format!("邮件已发出，但保存投递记录失败：{error}。请勿立即重复发送"));
     }
     let log = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -179,18 +199,38 @@ pub async fn send_manual_delivery(
         }
     };
 
-    {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let _ = store::record_account_send(&conn, account.id);
-        let _ = store::insert_delivery(
-            &conn,
-            0,
-            account.id,
-            manuscript.id,
-            &recipient_email,
-            &subject,
-            &message_id,
-        );
+    let recorded = {
+        let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+        store::record_successful_delivery(
+            &mut conn,
+            store::SuccessfulDelivery {
+                task_id: None,
+                account_id: account.id,
+                manuscript_id: manuscript.id,
+                recipient: &recipient_email,
+                subject: &subject,
+                message_id: &message_id,
+                increment_task_progress: false,
+            },
+        )
+    };
+    if let Err(error) = recorded {
+        let log = {
+            let conn = state.db.lock().map_err(|e| e.to_string())?;
+            store::insert_send_log(
+                &conn,
+                None,
+                Some(account.id),
+                "error",
+                "storage",
+                &format!("邮件已手动发出，但保存投递记录失败：{error}"),
+                &recipient,
+            )
+        };
+        if let Ok(log) = log {
+            let _ = app.emit("log", &log);
+        }
+        return Err(format!("邮件已发出，但保存投递记录失败：{error}。请勿立即重复发送"));
     }
     let log = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -329,19 +369,21 @@ pub fn update_manuscript(
 
 #[tauri::command]
 pub fn delete_manuscript(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    // Hold the task registry through the database transaction. A concurrent
+    // start can then only reserve the task before this check (and be rejected)
+    // or after deletion (and fail because the task no longer exists).
+    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     let tasks = store::load_tasks(&conn)?;
     for task in &tasks {
-        if task.manuscript_ids.contains(&id) && matches!(task.status.as_str(), "running" | "paused") {
+        if task.manuscript_ids.contains(&id)
+            && (registry.contains_key(&task.id)
+                || matches!(task.status.as_str(), "running" | "paused"))
+        {
             return Err("这个计划正在发送，请先停止".into());
         }
     }
-    conn.execute("DELETE FROM manuscripts WHERE id = ?1", [id])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM deliveries WHERE manuscript_id = ?1", [id])
-        .map_err(|e| e.to_string())?;
-    store::prune_orphan_tasks(&conn)?;
-    Ok(())
+    store::delete_manuscript_data(&mut conn, id)
 }
 
 #[tauri::command]
@@ -374,4 +416,3 @@ fn docx_xml_to_text(xml: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
 }
-

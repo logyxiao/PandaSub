@@ -161,6 +161,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_mail_templates_column(&connection)?;
     add_manuscript_send_interval_column(&connection)?;
     add_reply_accepted_column(&connection)?;
+    repair_orphan_relations(&connection)?;
     reclassify_autoreply_history(&connection)?;
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
@@ -926,6 +927,26 @@ fn add_reply_accepted_column(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn repair_orphan_relations(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "UPDATE deliveries
+         SET task_id = NULL
+         WHERE task_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.id = deliveries.task_id);
+
+         UPDATE replies
+         SET task_id = NULL
+         WHERE task_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.id = replies.task_id);
+
+         UPDATE replies
+         SET delivery_id = NULL
+         WHERE delivery_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM deliveries WHERE deliveries.id = replies.delivery_id);",
+    )
+    .map_err(|e| e.to_string())
+}
+
 fn reclassify_autoreply_history(conn: &Connection) -> Result<(), String> {
     let done: i64 = conn
         .query_row(
@@ -1109,5 +1130,40 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn orphan_relations_are_detached_without_losing_history() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE tasks (id INTEGER PRIMARY KEY);
+                 CREATE TABLE deliveries (id INTEGER PRIMARY KEY, task_id INTEGER);
+                 CREATE TABLE replies (id INTEGER PRIMARY KEY, task_id INTEGER, delivery_id INTEGER);
+                 INSERT INTO tasks (id) VALUES (1);
+                 INSERT INTO deliveries (id, task_id) VALUES (10, 1), (11, 0);
+                 INSERT INTO replies (id, task_id, delivery_id) VALUES
+                    (20, 1, 10), (21, 0, 999);",
+            )
+            .unwrap();
+
+        repair_orphan_relations(&connection).unwrap();
+
+        let valid_delivery_task: Option<i64> = connection
+            .query_row("SELECT task_id FROM deliveries WHERE id = 10", [], |row| row.get(0))
+            .unwrap();
+        let orphan_delivery_task: Option<i64> = connection
+            .query_row("SELECT task_id FROM deliveries WHERE id = 11", [], |row| row.get(0))
+            .unwrap();
+        let orphan_reply: (Option<i64>, Option<i64>) = connection
+            .query_row(
+                "SELECT task_id, delivery_id FROM replies WHERE id = 21",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(valid_delivery_task, Some(1));
+        assert_eq!(orphan_delivery_task, None);
+        assert_eq!(orphan_reply, (None, None));
     }
 }

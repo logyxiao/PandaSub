@@ -333,6 +333,10 @@ pub fn prune_orphan_tasks(conn: &Connection) -> Result<(), String> {
             .filter(|id| existing.contains(id))
             .collect();
         if alive.is_empty() {
+            conn.execute("UPDATE deliveries SET task_id = NULL WHERE task_id = ?1", [task.id])
+                .map_err(|e| e.to_string())?;
+            conn.execute("UPDATE replies SET task_id = NULL WHERE task_id = ?1", [task.id])
+                .map_err(|e| e.to_string())?;
             conn.execute("DELETE FROM task_logs WHERE task_id = ?1", [task.id])
                 .map_err(|e| e.to_string())?;
             conn.execute("DELETE FROM tasks WHERE id = ?1", [task.id])
@@ -542,7 +546,7 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> Result<(), Strin
 
 pub fn insert_delivery(
     conn: &Connection,
-    task_id: i64,
+    task_id: Option<i64>,
     account_id: i64,
     manuscript_id: i64,
     recipient: &str,
@@ -558,27 +562,78 @@ pub fn insert_delivery(
     Ok(conn.last_insert_rowid())
 }
 
+pub struct SuccessfulDelivery<'a> {
+    pub task_id: Option<i64>,
+    pub account_id: i64,
+    pub manuscript_id: i64,
+    pub recipient: &'a str,
+    pub subject: &'a str,
+    pub message_id: &'a str,
+    pub increment_task_progress: bool,
+}
+
 pub fn record_successful_delivery(
     conn: &mut Connection,
-    task_id: i64,
-    account_id: i64,
-    manuscript_id: i64,
-    recipient: &str,
-    subject: &str,
-    message_id: &str,
+    delivery: SuccessfulDelivery<'_>,
 ) -> Result<(), String> {
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
-    increment_task_sent(&transaction, task_id)?;
-    record_account_send(&transaction, account_id)?;
+    if delivery.increment_task_progress {
+        let task_id = delivery.task_id.ok_or("任务投递缺少任务 ID")?;
+        increment_task_sent(&transaction, task_id)?;
+    }
+    record_account_send(&transaction, delivery.account_id)?;
     insert_delivery(
         &transaction,
-        task_id,
-        account_id,
-        manuscript_id,
-        recipient,
-        subject,
-        message_id,
+        delivery.task_id,
+        delivery.account_id,
+        delivery.manuscript_id,
+        delivery.recipient,
+        delivery.subject,
+        delivery.message_id,
     )?;
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+pub fn delete_task_data(conn: &mut Connection, id: i64) -> Result<(), String> {
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    transaction
+        .execute("UPDATE deliveries SET task_id = NULL WHERE task_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute("UPDATE replies SET task_id = NULL WHERE task_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute("DELETE FROM task_logs WHERE task_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    let deleted = transaction
+        .execute("DELETE FROM tasks WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    if deleted == 0 {
+        return Err("任务不存在".into());
+    }
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+pub fn delete_manuscript_data(conn: &mut Connection, id: i64) -> Result<(), String> {
+    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    transaction
+        .execute(
+            "DELETE FROM replies WHERE delivery_id IN (
+                SELECT id FROM deliveries WHERE manuscript_id = ?1
+             )",
+            [id],
+        )
+        .map_err(|e| e.to_string())?;
+    transaction
+        .execute("DELETE FROM deliveries WHERE manuscript_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    let deleted = transaction
+        .execute("DELETE FROM manuscripts WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    if deleted == 0 {
+        return Err("稿件不存在".into());
+    }
+    prune_orphan_tasks(&transaction)?;
     transaction.commit().map_err(|e| e.to_string())
 }
 
@@ -862,4 +917,149 @@ pub fn update_reply_kind(conn: &Connection, id: i64, kind: &str, reason: &str, a
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_connection() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE accounts (id INTEGER PRIMARY KEY, last_sent_at TEXT);
+                 CREATE TABLE manuscripts (id INTEGER PRIMARY KEY);
+                 CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY, name TEXT NOT NULL, manuscript_ids TEXT NOT NULL,
+                    account_ids TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'stopped',
+                    schedule_type TEXT NOT NULL DEFAULT 'immediate', scheduled_at TEXT,
+                    retry_max INTEGER NOT NULL DEFAULT 3, sent INTEGER NOT NULL DEFAULT 0,
+                    total INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '',
+                    started_at TEXT, finished_at TEXT
+                 );
+                 CREATE TABLE task_logs (id INTEGER PRIMARY KEY, task_id INTEGER);
+                 CREATE TABLE deliveries (
+                    id INTEGER PRIMARY KEY, task_id INTEGER, account_id INTEGER,
+                    manuscript_id INTEGER, recipient TEXT NOT NULL, subject TEXT NOT NULL,
+                    message_id TEXT NOT NULL, sent_at TEXT NOT NULL DEFAULT ''
+                 );
+                 CREATE TABLE replies (id INTEGER PRIMARY KEY, delivery_id INTEGER, task_id INTEGER);",
+            )
+            .unwrap();
+        connection
+    }
+
+    #[test]
+    fn manual_delivery_uses_null_task_and_atomic_bookkeeping() {
+        let mut connection = test_connection();
+        connection.execute("INSERT INTO accounts (id) VALUES (1)", []).unwrap();
+        connection
+            .execute(
+                "INSERT INTO tasks (id, name, manuscript_ids) VALUES (7, '任务', '[10]')",
+                [],
+            )
+            .unwrap();
+
+        record_successful_delivery(
+            &mut connection,
+            SuccessfulDelivery {
+                task_id: None,
+                account_id: 1,
+                manuscript_id: 10,
+                recipient: "editor@example.com",
+                subject: "投稿",
+                message_id: "message-id",
+                increment_task_progress: false,
+            },
+        )
+        .unwrap();
+
+        let delivery_task: Option<i64> = connection
+            .query_row("SELECT task_id FROM deliveries", [], |row| row.get(0))
+            .unwrap();
+        let sent: i64 = connection
+            .query_row("SELECT sent FROM tasks WHERE id = 7", [], |row| row.get(0))
+            .unwrap();
+        let account_updated: i64 = connection
+            .query_row(
+                "SELECT last_sent_at IS NOT NULL FROM accounts WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(delivery_task, None);
+        assert_eq!(sent, 0);
+        assert_eq!(account_updated, 1);
+    }
+
+    #[test]
+    fn deleting_manuscript_removes_related_rows_in_one_operation() {
+        let mut connection = test_connection();
+        connection.execute("INSERT INTO manuscripts (id) VALUES (10)", []).unwrap();
+        connection
+            .execute(
+                "INSERT INTO tasks (id, name, manuscript_ids) VALUES (7, '任务', '[10]')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("INSERT INTO task_logs (id, task_id) VALUES (1, 7)", [])
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO deliveries (id, task_id, account_id, manuscript_id, recipient, subject, message_id)
+                 VALUES (20, 7, 1, 10, 'editor@example.com', '投稿', 'message-id')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("INSERT INTO replies (id, delivery_id, task_id) VALUES (30, 20, 7)", [])
+            .unwrap();
+
+        delete_manuscript_data(&mut connection, 10).unwrap();
+
+        for table in ["manuscripts", "deliveries", "replies", "tasks", "task_logs"] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be empty");
+        }
+    }
+
+    #[test]
+    fn deleting_task_detaches_preserved_history() {
+        let mut connection = test_connection();
+        connection
+            .execute(
+                "INSERT INTO tasks (id, name, manuscript_ids) VALUES (7, '任务', '[10]')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("INSERT INTO task_logs (id, task_id) VALUES (1, 7)", [])
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO deliveries (id, task_id, account_id, manuscript_id, recipient, subject, message_id)
+                 VALUES (20, 7, 1, 10, 'editor@example.com', '投稿', 'message-id')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("INSERT INTO replies (id, delivery_id, task_id) VALUES (30, 20, 7)", [])
+            .unwrap();
+
+        delete_task_data(&mut connection, 7).unwrap();
+
+        let delivery_task: Option<i64> = connection
+            .query_row("SELECT task_id FROM deliveries WHERE id = 20", [], |row| row.get(0))
+            .unwrap();
+        let reply_task: Option<i64> = connection
+            .query_row("SELECT task_id FROM replies WHERE id = 30", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(delivery_task, None);
+        assert_eq!(reply_task, None);
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM task_logs", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
 }

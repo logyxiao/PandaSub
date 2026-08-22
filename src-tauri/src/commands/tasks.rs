@@ -289,18 +289,12 @@ pub fn create_waste_draft_task(
 
 #[tauri::command]
 pub fn delete_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    {
-        let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-        if let Some(handle) = registry.get(&id) {
-            handle.stop();
-        }
+    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    if registry.contains_key(&id) {
+        return Err("任务正在启动、发送或暂停，请先停止并等待状态更新后再删除".into());
     }
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM task_logs WHERE task_id = ?1", [id])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM tasks WHERE id = ?1", [id])
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::delete_task_data(&mut conn, id)
 }
 
 #[tauri::command]

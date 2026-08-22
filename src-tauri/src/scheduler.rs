@@ -506,12 +506,15 @@ async fn run_task_worker(
                     let mut conn = db.lock().unwrap();
                     store::record_successful_delivery(
                         &mut conn,
-                        task_id,
-                        account_id,
-                        target.manuscript.id,
-                        &recipient_email,
-                        &subject,
-                        &message_id,
+                        store::SuccessfulDelivery {
+                            task_id: Some(task_id),
+                            account_id,
+                            manuscript_id: target.manuscript.id,
+                            recipient: &recipient_email,
+                            subject: &subject,
+                            message_id: &message_id,
+                            increment_task_progress: true,
+                        },
                     )
                 };
                 let log = match recorded {
