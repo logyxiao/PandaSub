@@ -22,7 +22,7 @@ const emptyEditor: EditorInput = {
 export function PlanEditor({
   editing, editors, editorGroups, onReloadEditors, onReloadEditorGroups, onFavoriteChange, enabledAccounts,
   form, setForm, taskForm, setTaskForm,
-  saving, onClose, onSaveDraft, onSaveAndSend, onImportFile,
+  saving, onClose, onSaveDraft, onSaveAndSend, onImportFile, onDefaultTemplatesChange,
 }: {
   editing: Manuscript | null
   editors: Editor[]
@@ -40,6 +40,7 @@ export function PlanEditor({
   onSaveDraft: () => void
   onSaveAndSend: () => void
   onImportFile: (file: File | null) => void
+  onDefaultTemplatesChange: (templates: MailTemplate[]) => void
 }) {
   const toast = useToast()
   const fileRef = useRef<HTMLInputElement>(null)
@@ -520,7 +521,7 @@ export function PlanEditor({
     finally { setSavingEditor(false) }
   }
 
-  const writeTemplates = (next: MailTemplate[], currentId = activeTplId) => {
+  const writeTemplates = (next: MailTemplate[], currentId = activeTplId, saveAsDefault = false) => {
     const current = next.find((item) => item.id === currentId) ?? next[0]
     setForm((f) => ({
       ...f,
@@ -528,11 +529,12 @@ export function PlanEditor({
       subject: current?.subject ?? '',
       body: current?.body ?? '',
     }))
+    if (saveAsDefault) onDefaultTemplatesChange(next)
   }
 
   const updateActiveTpl = (patch: Partial<MailTemplate>) => {
     if (!activeTpl) return
-    writeTemplates(mailTemplates.map((item) => item.id === activeTpl.id ? { ...item, ...patch } : item))
+    writeTemplates(mailTemplates.map((item) => item.id === activeTpl.id ? { ...item, ...patch } : item), activeTpl.id, true)
   }
 
   const addTemplate = () => {
@@ -540,9 +542,9 @@ export function PlanEditor({
       id: `tpl-${Date.now()}`,
       name: `模板 ${mailTemplates.length + 1}`,
       subject: '投稿：《{{作品名}}》+{{字数}}+{{类型}}',
-      body: '尊敬的{{编辑昵称}}：\n\n现将作品《{{作品名}}》投至贵处，请审阅。谢谢。',
+      body: '编辑老师您好：\n\n现将作品《{{作品名}}》投至贵处，恳请审阅。完整稿件已随信附上，谢谢。',
     }
-    writeTemplates([...mailTemplates, item], item.id)
+    writeTemplates([...mailTemplates, item], item.id, true)
     setActiveTplId(item.id)
     setTplMode('edit')
   }
@@ -555,7 +557,7 @@ export function PlanEditor({
     const index = mailTemplates.findIndex((item) => item.id === activeTpl.id)
     const next = mailTemplates.filter((item) => item.id !== activeTpl.id)
     const fallback = next[Math.max(0, index - 1)] ?? next[0]
-    writeTemplates(next, fallback.id)
+    writeTemplates(next, fallback.id, true)
     setActiveTplId(fallback.id)
   }
 
@@ -726,7 +728,7 @@ export function PlanEditor({
                 <div className="plan-tpl-head">
                   <div>
                     <strong>邮件模板</strong>
-                    <p>发送时从这 {mailTemplates.length} 套里随机选用。测试发送用当前这套。</p>
+                    <p>发送时从这 {mailTemplates.length} 套里随机选用。修改会自动保存为以后新计划的默认模板。</p>
                   </div>
                   <div className="plan-tpl-head-actions">
                     <Button size="sm" onClick={addTemplate}><Plus size={14} />新增</Button>
@@ -793,9 +795,9 @@ export function PlanEditor({
                           className="plan-body"
                           value={activeTpl.body}
                           onChange={(e) => updateActiveTpl({ body: e.target.value })}
-                          placeholder={'尊敬的{{编辑昵称}}：\n\n现将作品《{{作品名}}》投至贵处，请审阅。'}
+                          placeholder={'编辑老师您好：\n\n现将作品《{{作品名}}》投至贵处，请审阅。'}
                         />
-                        <p className="plan-tpl-hint">标题建议带 {'{{字数}}'} 和 {'{{类型}}'}（不含短篇 / 中短篇）。正文还可用 {'{{作品名}}'} {'{{编辑昵称}}'} {'{{篇幅}}'}。没选类型时不会带上「类型：」。</p>
+                        <p className="plan-tpl-hint">标题建议带 {'{{字数}}'} 和 {'{{类型}}'}（不含短篇 / 中短篇）。正文可用 {'{{作品名}}'} {'{{篇幅}}'} {'{{字数}}'} {'{{类型}}'}。没选类型时不会带上「类型：」。</p>
                       </div>
                     )}
                   </>

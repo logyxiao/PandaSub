@@ -174,6 +174,8 @@ pub fn run() {
             commands::export_logs,
             commands::get_settings,
             commands::update_settings,
+            commands::get_default_mail_templates,
+            commands::save_default_mail_templates,
             commands::set_autostart,
             commands::backup_data,
             commands::show_main_window,

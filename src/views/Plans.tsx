@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Copy, FileX2, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, onTask } from '../api'
 import { Modal } from '../components/Modal'
@@ -7,13 +7,13 @@ import { Badge, Button, EmptyState, IconButton, RuntimeTrack } from '../componen
 import { Table } from '../components/Table'
 import { formatTime, fromDbTime, isValidEmail, statusLabel, taskTone, toDbTime } from '../format'
 import { useNav } from '../nav'
-import type { Account, Delivery, Editor, EditorGroup, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
+import type { Account, Delivery, Editor, EditorGroup, MailTemplate, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
 import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
 import {
   categoryFromWords, countChars, createEmptyManuscript, DEFAULT_SEND_INTERVAL_MIN,
   latestTask, normalizeSendIntervalMin, planSendProgress, SEND_INTERVAL_OPTIONS,
-  syncMailFromTemplates, toInput, accountTodayQuota,
+  syncMailFromTemplates, toInput, accountTodayQuota, defaultMailTemplates, normalizeDefaultMailTemplates,
 } from './planShared'
 
 const emptyTask: TaskInput = {
@@ -28,6 +28,7 @@ export function PlansView() {
   const [deliveries, setDeliveries] = useState<Delivery[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
   const [editorGroups, setEditorGroups] = useState<EditorGroup[]>([])
+  const [defaultTemplates, setDefaultTemplates] = useState<MailTemplate[]>(() => defaultMailTemplates())
   const [settings, setSettings] = useState<Settings | null>(null)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('')
@@ -42,6 +43,8 @@ export function PlansView() {
   const [taskForm, setTaskForm] = useState<TaskInput>(emptyTask)
   const [scheduledInput, setScheduledInput] = useState('')
   const [saving, setSaving] = useState(false)
+  const pendingDefaultTemplates = useRef<MailTemplate[] | null>(null)
+  const savingDefaultTemplates = useRef(false)
   const toast = useToast()
   const confirm = useConfirm()
   const { go, setChrome } = useNav()
@@ -49,10 +52,16 @@ export function PlansView() {
   const load = async () => {
     setLoading(true)
     try {
-      const [m, t, a, s, d, e, g] = await Promise.all([
-        api.listManuscripts(), api.listTasks(), api.listAccounts(), api.getSettings(), api.listDeliveries(), api.listEditors(), api.listEditorGroups(),
+      const [m, t, a, s, d, e, g, templates] = await Promise.all([
+        api.listManuscripts(), api.listTasks(), api.listAccounts(), api.getSettings(), api.listDeliveries(), api.listEditors(), api.listEditorGroups(), api.getDefaultMailTemplates(),
       ])
-      setManuscripts(m); setTasks(t); setAccounts(a); setSettings(s); setDeliveries(d); setEditors(e); setEditorGroups(g); setNotice('')
+      const normalizedTemplates = normalizeDefaultMailTemplates(templates)
+      setManuscripts(m); setTasks(t); setAccounts(a); setSettings(s); setDeliveries(d); setEditors(e); setEditorGroups(g); setDefaultTemplates(normalizedTemplates); setNotice('')
+      if (JSON.stringify(normalizedTemplates) !== JSON.stringify(templates)) {
+        void api.saveDefaultMailTemplates(normalizedTemplates).catch((error) => {
+          toast(`默认模板初始化失败：${String(error)}`, 'error')
+        })
+      }
     } catch (e) { setNotice(String(e)) }
     finally { setLoading(false) }
   }
@@ -104,9 +113,31 @@ export function PlansView() {
     [manuscripts, deliveries],
   )
 
+  const saveDefaultTemplates = (templates: MailTemplate[]) => {
+    const next = normalizeDefaultMailTemplates(templates)
+    setDefaultTemplates(next)
+    pendingDefaultTemplates.current = next
+    if (savingDefaultTemplates.current) return
+    savingDefaultTemplates.current = true
+    void (async () => {
+      try {
+        while (pendingDefaultTemplates.current) {
+          const current = pendingDefaultTemplates.current
+          pendingDefaultTemplates.current = null
+          await api.saveDefaultMailTemplates(current)
+        }
+      } catch (error) {
+        pendingDefaultTemplates.current = null
+        toast(`默认模板自动保存失败：${String(error)}`, 'error')
+      } finally {
+        savingDefaultTemplates.current = false
+      }
+    })()
+  }
+
   const openAdd = () => {
     setEditing(null)
-    setForm(createEmptyManuscript())
+    setForm(createEmptyManuscript(defaultTemplates))
     setTaskForm({
       ...emptyTask,
       account_ids: enabledAccounts.map((a) => a.id),
@@ -364,6 +395,7 @@ export function PlansView() {
         onFavoriteChange={(id, favorited) => {
           setEditors((list) => list.map((editor) => (editor.id === id ? { ...editor, favorited } : editor)))
         }}
+        onDefaultTemplatesChange={saveDefaultTemplates}
         enabledAccounts={enabledAccounts}
         form={form}
         setForm={setForm}

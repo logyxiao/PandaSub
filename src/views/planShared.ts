@@ -153,37 +153,37 @@ export const DEFAULT_MAIL_TEMPLATES: MailTemplate[] = [
     id: 't1',
     name: '常规问候',
     subject: '投稿：《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '尊敬的{{编辑昵称}}：\n\n您好。现将作品《{{作品名}}》投至贵处，恳请审阅。\n\n篇幅：{{篇幅}}\n字数：{{字数}}\n类型：{{类型}}\n\n稿件已附上，辛苦了。',
+    body: '编辑老师您好：\n\n现将作品《{{作品名}}》投至贵处，恳请审阅。\n\n篇幅：{{篇幅}}\n字数：{{字数}}\n类型：{{类型}}\n\n完整稿件已随信附上，感谢您的时间。',
   },
   {
     id: 't2',
     name: '书名开场',
     subject: '《{{作品名}}》投稿+{{字数}}+{{类型}}',
-    body: '{{编辑昵称}} 您好：\n\n附上《{{作品名}}》，{{篇幅}}，{{类型}}。请您抽空看看是否合适。谢谢。',
+    body: '您好：\n\n现投稿作品《{{作品名}}》，篇幅为{{篇幅}}，共{{字数}}。\n类型：{{类型}}\n\n正文见附件，烦请审阅，谢谢。',
   },
   {
     id: 't3',
-    name: '短讯',
+    name: '简短投稿',
     subject: '《{{作品名}}》投稿+{{字数}}+{{类型}}',
-    body: '{{编辑昵称}} 您好，投稿《{{作品名}}》。若方便，请帮忙看看。谢谢。',
+    body: '编辑老师您好，现投稿《{{作品名}}》，{{篇幅}}，共{{字数}}。稿件已附上，烦请查收。',
   },
   {
     id: 't4',
     name: '恳请审阅',
     subject: '恳请审阅：《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '尊敬的{{编辑昵称}}，您好：\n\n我是一名作者，现将《{{作品名}}》投来，恳请审阅。如需完整稿件或作者简介，我可再行补充。\n\n此致\n敬礼',
+    body: '编辑老师您好：\n\n冒昧来信，现将作品《{{作品名}}》投稿至贵处。作品为{{篇幅}}，共{{字数}}，类型为{{类型}}。\n\n恳请审阅，若有修改建议，我会认真配合。\n\n祝工作顺利。',
   },
   {
     id: 't5',
     name: '附件说明',
     subject: '投稿附件：《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '{{编辑昵称}} 您好：\n\n作品《{{作品名}}》已作为附件发送，正文不另贴。{{篇幅}} / {{字数}} / {{类型}}。请查收。',
+    body: '编辑老师您好：\n\n作品《{{作品名}}》已作为附件发送，正文不在邮件中重复粘贴。\n\n篇幅：{{篇幅}}\n字数：{{字数}}\n类型：{{类型}}\n\n烦请查收。',
   },
   {
     id: 't6',
     name: '轻松口吻',
     subject: '投稿来了：《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '{{编辑昵称}}，您好呀。\n\n投一篇《{{作品名}}》过来，大概 {{字数}}，偏{{类型}}。不合适直接略过就好，谢谢您。',
+    body: '您好：\n\n投来一篇《{{作品名}}》，共{{字数}}，偏{{类型}}。全文放在附件里，方便时请帮忙看看，谢谢。',
   },
   {
     id: 't7',
@@ -195,7 +195,7 @@ export const DEFAULT_MAIL_TEMPLATES: MailTemplate[] = [
     id: 't8',
     name: '期待回复',
     subject: '《{{作品名}}》请您看看+{{字数}}+{{类型}}',
-    body: '尊敬的{{编辑昵称}}：\n\n打扰了。作品《{{作品名}}》已附上，期待您的意见。若暂不合适，也完全理解。\n\n祝工作顺利。',
+    body: '编辑老师您好：\n\n打扰了。作品《{{作品名}}》已附上，期待您的意见；若暂不合适，也完全理解。\n\n感谢阅读，祝工作顺利。',
   },
 ]
 
@@ -221,6 +221,31 @@ export function isDroppedMailTemplate(item: MailTemplate) {
 
 export function defaultMailTemplates(): MailTemplate[] {
   return DEFAULT_MAIL_TEMPLATES.map((item) => ({ ...item }))
+}
+
+function removeDefaultEditorNickname(body: string) {
+  return body
+    .replaceAll('尊敬的{{编辑昵称}}，您好：', '编辑老师您好：')
+    .replaceAll('尊敬的{{编辑昵称}}：', '编辑老师您好：')
+    .replaceAll('{{编辑昵称}}，您好呀。', '编辑老师您好。')
+    .replaceAll('{{编辑昵称}} 您好：', '编辑老师您好：')
+    .replaceAll('{{编辑昵称}} 您好，', '编辑老师您好，')
+    .replaceAll('{{编辑昵称}}，', '编辑老师，')
+    .replaceAll('{{编辑昵称}}', '编辑老师')
+}
+
+export function normalizeDefaultMailTemplates(stored?: MailTemplate[]) {
+  const source = stored?.length ? stored : defaultMailTemplates()
+  const normalized = source
+    .filter((item) => !isDroppedMailTemplate(item))
+    .map((item, index) => ({
+      ...item,
+      id: item.id.trim() || `default-${index + 1}`,
+      name: item.name.trim() || `模板 ${index + 1}`,
+      subject: upgradeMailSubject(item),
+      body: removeDefaultEditorNickname(item.body),
+    }))
+  return normalized.length ? normalized : defaultMailTemplates()
 }
 
 export function hydrateMailTemplates(
@@ -256,8 +281,8 @@ export function syncMailFromTemplates(input: ManuscriptInput): ManuscriptInput {
   }
 }
 
-export function createEmptyManuscript(): ManuscriptInput {
-  const mail_templates = defaultMailTemplates()
+export function createEmptyManuscript(templates?: MailTemplate[]): ManuscriptInput {
+  const mail_templates = normalizeDefaultMailTemplates(templates)
   return {
     title: '', body: mail_templates[0].body, content_type: 'text/plain', recipients: [], sender_name: '',
     word_count: 0, category: '', reader_emotion: '', style: '',

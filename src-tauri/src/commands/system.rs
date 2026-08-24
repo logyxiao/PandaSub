@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::Connection;
 use tauri::{AppHandle, Manager, State};
 
-use crate::models::Settings;
+use crate::models::{MailTemplate, Settings};
 use crate::state::AppState;
 use crate::store;
 
@@ -23,6 +23,29 @@ pub fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result
     }
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     store::save_settings(&conn, &settings)
+}
+
+#[tauri::command]
+pub fn get_default_mail_templates(
+    state: State<'_, AppState>,
+) -> Result<Vec<MailTemplate>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::load_default_mail_templates(&conn)
+}
+
+#[tauri::command]
+pub fn save_default_mail_templates(
+    state: State<'_, AppState>,
+    templates: Vec<MailTemplate>,
+) -> Result<(), String> {
+    if templates.is_empty() {
+        return Err("至少保留一套默认邮件模板".into());
+    }
+    if templates.iter().all(|item| item.body.trim().is_empty()) {
+        return Err("默认邮件模板至少需要一套正文".into());
+    }
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::save_default_mail_templates(&conn, &templates)
 }
 
 #[tauri::command]

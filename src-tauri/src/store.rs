@@ -1,7 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::{
-    Account, Delivery, Editor, EditorGroup, EditorInput, Manuscript, Reply, Settings, Task, TaskLog,
+    Account, Delivery, Editor, EditorGroup, EditorInput, MailTemplate, Manuscript, Reply, Settings,
+    Task, TaskLog,
 };
 
 const ACCOUNT_COLS: &str =
@@ -615,6 +616,33 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> Result<(), Strin
     let raw = serde_json::to_string(settings).map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO settings (key, value) VALUES ('app', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [raw],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn load_default_mail_templates(conn: &Connection) -> Result<Vec<MailTemplate>, String> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'default_mail_templates'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    raw.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+        .unwrap_or_else(|| Ok(Vec::new()))
+}
+
+pub fn save_default_mail_templates(
+    conn: &Connection,
+    templates: &[MailTemplate],
+) -> Result<(), String> {
+    let raw = serde_json::to_string(templates).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('default_mail_templates', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [raw],
     )

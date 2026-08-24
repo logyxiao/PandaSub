@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
-  Account, AccountInput, Dashboard, Delivery, Editor, EditorGroup, EditorGroupImportResult, EditorGroupInput, EditorImportResult, EditorInput, Manuscript, ManuscriptInput,
+  Account, AccountInput, Dashboard, Delivery, Editor, EditorGroup, EditorGroupImportResult, EditorGroupInput, EditorImportResult, EditorInput, MailTemplate, Manuscript, ManuscriptInput,
   Reply, Settings, StatsReport, Task, TaskInput, TaskLog,
 } from './types'
 
@@ -42,6 +42,8 @@ export const api = {
 
   getSettings: () => invoke<Settings>('get_settings'),
   updateSettings: (settings: Settings) => invoke('update_settings', { settings }),
+  getDefaultMailTemplates: () => invoke<MailTemplate[]>('get_default_mail_templates'),
+  saveDefaultMailTemplates: (templates: MailTemplate[]) => invoke('save_default_mail_templates', { templates }),
   setAutostart: (enabled: boolean) => invoke('set_autostart', { enabled }),
   backup: () => invoke<string>('backup_data'),
   listReplies: (kind?: string) => invoke<Reply[]>('list_replies', { kind: kind || null }),
