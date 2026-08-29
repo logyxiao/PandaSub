@@ -143,21 +143,33 @@ function waitForReleaseBuild(tag, commit) {
 }
 
 function downloadReleaseArtifacts(runId, version) {
-  let lastError
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), `pandasub-assets-${version}-`))
-    try {
-      run('gh', ['run', 'download', runId, '--dir', downloadDir])
-      return downloadDir
-    } catch (error) {
-      lastError = error
-      if (attempt < 3) {
-        console.log(`\n安装包下载中断，正在重试（${attempt}/3）...`)
-        run('sleep', [String(attempt * 2)])
+  const names = [
+    'windows-x64-updater-signature',
+    'windows-x64-nsis',
+    'darwin-universal-updater',
+    'darwin-universal-dmg',
+  ]
+  const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), `pandasub-assets-${version}-`))
+  for (const name of names) {
+    const artifactDir = path.join(downloadDir, name)
+    fs.mkdirSync(artifactDir, { recursive: true })
+    let downloaded = false
+    let lastError
+    for (let attempt = 1; attempt <= 3 && !downloaded; attempt += 1) {
+      try {
+        run('gh', ['run', 'download', runId, '--name', name, '--dir', artifactDir])
+        downloaded = true
+      } catch (error) {
+        lastError = error
+        if (attempt < 3) {
+          console.log(`\n${name} 下载中断，正在重试（${attempt}/3）...`)
+          run('sleep', [String(attempt * 2)])
+        }
       }
     }
+    if (!downloaded) throw lastError
   }
-  throw lastError
+  return downloadDir
 }
 
 function prepareDeployment(version, notes, date, assetsDir) {
