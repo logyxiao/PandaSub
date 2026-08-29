@@ -31,6 +31,22 @@ function run(command, args, { capture = false, allowFailure = false } = {}) {
   return capture ? String(result.stdout || '').trim() : ''
 }
 
+function runWithRetry(command, args, options = {}, attempts = 3) {
+  let lastError
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return run(command, args, options)
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts) {
+        console.log(`\n${command} 网络请求失败，正在重试（${attempt}/${attempts}）...`)
+        run('sleep', [String(attempt * 2)])
+      }
+    }
+  }
+  throw lastError
+}
+
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), 'utf8'))
 }
@@ -127,7 +143,7 @@ function copyFile(source, directory, name) {
 function waitForReleaseBuild(tag, commit) {
   let runId = ''
   for (let attempt = 0; attempt < 30 && !runId; attempt += 1) {
-    const output = run('gh', [
+    const output = runWithRetry('gh', [
       'run', 'list', '--workflow', 'build.yml', '--limit', '20',
       '--json', 'databaseId,headBranch,headSha,event',
     ], { capture: true })
@@ -260,7 +276,7 @@ async function main() {
   if (run('git', ['branch', '--show-current'], { capture: true }) !== 'main') {
     fail('请切换到 main 分支后发布')
   }
-  run('gh', ['auth', 'status'], { capture: true })
+  runWithRetry('gh', ['auth', 'status'], { capture: true })
   run('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', sshTarget, 'true'])
   run('git', ['fetch', 'origin', '--tags'])
   const existingTag = run('git', ['tag', '--list', tag], { capture: true })
@@ -326,8 +342,8 @@ async function main() {
       '--notes', notes.join('\n')])
   }
   const releaseFiles = allFiles(path.join(deployDir, 'releases'))
-  run('gh', ['release', 'upload', tag, ...releaseFiles, '--clobber'])
-  run('gh', ['release', 'edit', tag, '--title', `熊猫投稿 ${tag}`,
+  runWithRetry('gh', ['release', 'upload', tag, ...releaseFiles, '--clobber'])
+  runWithRetry('gh', ['release', 'edit', tag, '--title', `熊猫投稿 ${tag}`,
     '--notes', notes.join('\n'), '--draft=false', '--latest'])
 
   console.log(`\n发布完成：${siteUrl}/`)
