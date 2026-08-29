@@ -142,6 +142,24 @@ function waitForReleaseBuild(tag, commit) {
   return runId
 }
 
+function downloadReleaseArtifacts(runId, version) {
+  let lastError
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), `pandasub-assets-${version}-`))
+    try {
+      run('gh', ['run', 'download', runId, '--dir', downloadDir])
+      return downloadDir
+    } catch (error) {
+      lastError = error
+      if (attempt < 3) {
+        console.log(`\n安装包下载中断，正在重试（${attempt}/3）...`)
+        run('sleep', [String(attempt * 2)])
+      }
+    }
+  }
+  throw lastError
+}
+
 function prepareDeployment(version, notes, date, assetsDir) {
   const files = allFiles(assetsDir)
   const windowsSource = onlyAsset(files, '.exe', 'Windows 安装包')
@@ -249,9 +267,9 @@ async function main() {
       run('git', ['commit', '-m', `fix: repair ${tag} release pipeline`])
     }
     run('git', ['push', 'origin', 'main'])
-    commit = run('git', ['rev-parse', 'HEAD'], { capture: true })
-    run('gh', ['workflow', 'run', 'build.yml', '--ref', 'main'])
-    runId = waitForReleaseBuild('', commit)
+    // 续跑发布时复用标签已经成功的安装包构建；发布脚本修复不需要重新构建应用。
+    commit = run('git', ['rev-list', '-n', '1', tag], { capture: true })
+    runId = waitForReleaseBuild(tag, commit)
   } else {
     console.log(`\n准备发布熊猫投稿 ${tag}`)
     const pending = run('git', ['status', '--short'], { capture: true })
@@ -265,8 +283,7 @@ async function main() {
     runId = waitForReleaseBuild(tag, commit)
   }
 
-  const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), `pandasub-assets-${version}-`))
-  run('gh', ['run', 'download', runId, '--dir', downloadDir])
+  const downloadDir = downloadReleaseArtifacts(runId, version)
   const deployDir = prepareDeployment(version, notes, date, downloadDir)
 
   console.log('\n上传下载站和安装包...')
