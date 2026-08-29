@@ -10,13 +10,15 @@
   "downloads": {
     "windows": {
       "label": "64 位版",
-      "detail": "Windows 10 / 11 · 64 位",
-      "url": "releases/pandasub-0.2.1-windows-x64-setup.exe"
+      "detail": "Windows 10 / 11 · 64 位 · 5.3 MB",
+      "url": "releases/pandasub-0.2.1-windows-x64-setup.exe",
+      "sha256": "f54ef32229411fd0fbea9cce47fa1fc410ab75afccfa5b40a52ce52b12b4d8ef"
     },
     "macos": {
       "label": "通用版",
-      "detail": "Apple 芯片 / Intel · macOS 11 及以上",
-      "url": "releases/pandasub-0.2.1-macos-universal.dmg"
+      "detail": "Apple 芯片 / Intel · macOS 11 及以上 · 20 MB",
+      "url": "releases/pandasub-0.2.1-macos-universal.dmg",
+      "sha256": "e3ab2c81b0c6d9961503824f355ed20d73548a436e13f602ccb0f4987f52b8cf"
     }
   }
 }
