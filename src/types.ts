@@ -102,6 +102,7 @@ export interface Manuscript {
   send_interval_min?: number
   subject: string
   mail_templates?: MailTemplate[]
+  fixed_mail_template_id?: string
   file_name: string
   has_file?: boolean
   created_at: string
@@ -124,6 +125,7 @@ export interface ManuscriptInput {
   send_interval_min?: number
   subject: string
   mail_templates: MailTemplate[]
+  fixed_mail_template_id: string
   file_name: string
   file_data?: number[] | null
   has_file?: boolean

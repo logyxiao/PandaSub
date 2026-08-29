@@ -56,7 +56,7 @@ export function PlanEditor({
     emptyEditorListFilters(form.genres, form.excluded_types ?? []),
   )
   const pickKeyRef = useRef('')
-  const [activeTplId, setActiveTplId] = useState(() => form.mail_templates[0]?.id ?? 't1')
+  const [activeTplId, setActiveTplId] = useState(() => form.fixed_mail_template_id || form.mail_templates[0]?.id || 't1')
   const [tplMode, setTplMode] = useState<'preview' | 'edit'>('preview')
   const [showEditorForm, setShowEditorForm] = useState(false)
   const [editingEditor, setEditingEditor] = useState<Editor | null>(null)
@@ -164,9 +164,10 @@ export function PlanEditor({
   const mailTemplates = (form.mail_templates?.length ? form.mail_templates : defaultMailTemplates())
     .filter((item) => !isDroppedMailTemplate(item))
   const activeTpl = mailTemplates.find((item) => item.id === activeTplId) ?? mailTemplates[0]
+  const fixedTemplate = mailTemplates.find((item) => item.id === form.fixed_mail_template_id)
   const ready = Boolean(
     form.title.trim()
-    && mailTemplates.some((item) => item.body.trim())
+    && (fixedTemplate ? fixedTemplate.body.trim() : mailTemplates.some((item) => item.body.trim()))
     && sendCount > 0
     && selectedAccounts.length,
   )
@@ -526,6 +527,9 @@ export function PlanEditor({
     setForm((f) => ({
       ...f,
       mail_templates: next,
+      fixed_mail_template_id: next.some((item) => item.id === f.fixed_mail_template_id)
+        ? f.fixed_mail_template_id
+        : '',
       subject: current?.subject ?? '',
       body: current?.body ?? '',
     }))
@@ -728,7 +732,7 @@ export function PlanEditor({
                 <div className="plan-tpl-head">
                   <div>
                     <strong>邮件模板</strong>
-                    <p>发送时从这 {mailTemplates.length} 套里随机选用。修改会自动保存为以后新计划的默认模板。</p>
+                    <p>{fixedTemplate ? `发送时固定使用「${fixedTemplate.name.trim() || '未命名模板'}」。` : `发送时从这 ${mailTemplates.length} 套里随机选用。`} 修改会自动保存为以后新计划的默认模板。</p>
                   </div>
                   <div className="plan-tpl-head-actions">
                     <Button size="sm" onClick={addTemplate}><Plus size={14} />新增</Button>
@@ -737,6 +741,22 @@ export function PlanEditor({
                     </Button>
                   </div>
                 </div>
+                <label className="plan-tpl-strategy">
+                  <span>模板使用方式</span>
+                  <select
+                    value={form.fixed_mail_template_id}
+                    onChange={(e) => {
+                      const id = e.target.value
+                      setForm((f) => ({ ...f, fixed_mail_template_id: id }))
+                      if (id) setActiveTplId(id)
+                    }}
+                  >
+                    <option value="">每封随机选择（默认）</option>
+                    {mailTemplates.map((item, index) => (
+                      <option key={item.id} value={item.id}>固定使用：{item.name.trim() || `模板 ${index + 1}`}</option>
+                    ))}
+                  </select>
+                </label>
                 <div className="plan-tpl-tabs" role="tablist" aria-label="邮件模板">
                   {mailTemplates.map((item, index) => (
                     <button

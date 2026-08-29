@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS manuscripts (
   send_interval_min INTEGER NOT NULL DEFAULT 3,
   subject TEXT NOT NULL DEFAULT '',
   mail_templates TEXT NOT NULL DEFAULT '[]',
+  fixed_mail_template_id TEXT NOT NULL DEFAULT '',
   file_name TEXT NOT NULL DEFAULT '',
   file_data BLOB,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -177,6 +178,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_file_column(&connection)?;
     add_manuscript_account_ids_column(&connection)?;
     add_manuscript_mail_templates_column(&connection)?;
+    add_manuscript_fixed_mail_template_column(&connection)?;
     add_manuscript_send_interval_column(&connection)?;
     add_reply_accepted_column(&connection)?;
     repair_orphan_relations(&connection)?;
@@ -1050,6 +1052,17 @@ fn add_manuscript_mail_templates_column(conn: &Connection) -> Result<(), String>
     Ok(())
 }
 
+fn add_manuscript_fixed_mail_template_column(conn: &Connection) -> Result<(), String> {
+    if table_lacks_column(conn, "manuscripts", "fixed_mail_template_id") {
+        conn.execute(
+            "ALTER TABLE manuscripts ADD COLUMN fixed_mail_template_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn add_manuscript_account_ids_column(conn: &Connection) -> Result<(), String> {
     let exists: i64 = conn
         .query_row(
@@ -1201,5 +1214,24 @@ mod tests {
         assert_eq!(valid_delivery_task, Some(1));
         assert_eq!(orphan_delivery_task, None);
         assert_eq!(orphan_reply, (None, None));
+    }
+
+    #[test]
+    fn fixed_mail_template_column_is_added_with_random_default() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE manuscripts (id INTEGER PRIMARY KEY); INSERT INTO manuscripts (id) VALUES (1);")
+            .unwrap();
+
+        add_manuscript_fixed_mail_template_column(&connection).unwrap();
+
+        let fixed_id: String = connection
+            .query_row(
+                "SELECT fixed_mail_template_id FROM manuscripts WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fixed_id, "");
     }
 }

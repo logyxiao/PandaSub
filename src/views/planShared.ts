@@ -273,9 +273,13 @@ export function hydrateMailTemplates(
 export function syncMailFromTemplates(input: ManuscriptInput): ManuscriptInput {
   const mail_templates = hydrateMailTemplates(input.mail_templates, input.subject, input.body)
   const current = mail_templates.find((item) => item.body.trim()) ?? mail_templates[0]
+  const fixed_mail_template_id = mail_templates.some((item) => item.id === input.fixed_mail_template_id)
+    ? input.fixed_mail_template_id
+    : ''
   return {
     ...input,
     mail_templates,
+    fixed_mail_template_id,
     subject: current?.subject ?? input.subject,
     body: current?.body ?? input.body,
   }
@@ -287,7 +291,7 @@ export function createEmptyManuscript(templates?: MailTemplate[]): ManuscriptInp
     title: '', body: mail_templates[0].body, content_type: 'text/plain', recipients: [], sender_name: '',
     word_count: 0, category: '', reader_emotion: '', style: '',
     genres: [], excluded_types: [], account_ids: [], send_interval_min: DEFAULT_SEND_INTERVAL_MIN,
-    subject: mail_templates[0].subject, mail_templates, file_name: '',
+    subject: mail_templates[0].subject, mail_templates, fixed_mail_template_id: '', file_name: '',
   }
 }
 
@@ -361,6 +365,7 @@ export function toInput(m: Manuscript): ManuscriptInput {
     genres: m.genres ?? [], excluded_types: m.excluded_types ?? [], account_ids: m.account_ids ?? [],
     send_interval_min: normalizeSendIntervalMin(m.send_interval_min),
     subject: m.subject, mail_templates: hydrateMailTemplates(m.mail_templates, m.subject, m.body),
+    fixed_mail_template_id: m.fixed_mail_template_id ?? '',
     file_name: m.file_name, has_file: m.has_file,
   }
 }

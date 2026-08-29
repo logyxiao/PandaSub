@@ -149,7 +149,15 @@ pub fn pick_mail_template(manuscript: &Manuscript) -> (String, String) {
         .iter()
         .filter(|item| !item.body.trim().is_empty() || !item.subject.trim().is_empty())
         .collect();
-    if let Some(item) = usable.choose(&mut rand::rng()) {
+    let picked = usable
+        .iter()
+        .copied()
+        .find(|item| {
+            !manuscript.fixed_mail_template_id.is_empty()
+                && item.id == manuscript.fixed_mail_template_id
+        })
+        .or_else(|| usable.choose(&mut rand::rng()).copied());
+    if let Some(item) = picked {
         let subject = if item.subject.trim().is_empty() {
             manuscript.title.clone()
         } else {
@@ -165,7 +173,7 @@ pub fn pick_mail_template(manuscript: &Manuscript) -> (String, String) {
     (subject, manuscript.body.clone())
 }
 
-/// 从模板中随机取一套，填入占位符；可选做防风控空白微改。
+/// 按计划设置固定或随机取一套模板，填入占位符；可选做防风控空白微改。
 pub fn resolve_outgoing_mail(
     manuscript: &Manuscript,
     recipient: &str,
@@ -374,4 +382,60 @@ pub fn mutate_body(body: &str, enabled: bool) -> String {
         }
     }
     spaced
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manuscript_with_templates(fixed_mail_template_id: &str) -> Manuscript {
+        Manuscript {
+            id: 1,
+            title: "测试作品".into(),
+            body: "旧正文".into(),
+            content_type: "text/plain".into(),
+            recipients: vec![],
+            sender_name: String::new(),
+            word_count: 0,
+            category: String::new(),
+            reader_category: String::new(),
+            reader_emotion: String::new(),
+            style: String::new(),
+            genres: vec![],
+            excluded_types: vec![],
+            account_ids: vec![],
+            send_interval_min: 3,
+            subject: "旧标题".into(),
+            mail_templates: vec![
+                MailTemplate {
+                    id: "first".into(),
+                    name: "模板一".into(),
+                    subject: "标题一".into(),
+                    body: "正文一".into(),
+                },
+                MailTemplate {
+                    id: "second".into(),
+                    name: "模板二".into(),
+                    subject: "标题二".into(),
+                    body: "正文二".into(),
+                },
+            ],
+            fixed_mail_template_id: fixed_mail_template_id.into(),
+            file_name: String::new(),
+            has_file: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn fixed_mail_template_is_always_selected() {
+        let manuscript = manuscript_with_templates("second");
+        for _ in 0..20 {
+            assert_eq!(
+                pick_mail_template(&manuscript),
+                ("标题二".into(), "正文二".into())
+            );
+        }
+    }
 }

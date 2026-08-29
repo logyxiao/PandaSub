@@ -2433,6 +2433,25 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 .plan-tpl-head strong { display: block; font-size: 14px; font-weight: 650; }
 .plan-tpl-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .plan-tpl-head-actions { flex: none; display: flex; gap: 6px; }
+.plan-tpl-strategy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.plan-tpl-strategy select {
+  min-width: 190px;
+  height: 30px;
+  padding: 0 30px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
 .plan-tpl-tabs {
   display: flex;
   flex-wrap: wrap;

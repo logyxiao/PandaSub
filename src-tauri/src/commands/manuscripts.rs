@@ -297,6 +297,15 @@ pub fn add_manuscript(
     let genres = json!(input.genres).to_string();
     let excluded_types = json!(input.excluded_types).to_string();
     let mail_templates = json!(input.mail_templates).to_string();
+    let fixed_mail_template_id = input.fixed_mail_template_id.trim();
+    if !fixed_mail_template_id.is_empty()
+        && !input
+            .mail_templates
+            .iter()
+            .any(|item| item.id == fixed_mail_template_id && !item.body.trim().is_empty())
+    {
+        return Err("固定使用的邮件模板不存在或正文为空".into());
+    }
     let body = if input.body.trim().is_empty() {
         input
             .mail_templates
@@ -309,8 +318,8 @@ pub fn add_manuscript(
     };
     conn.execute(
         "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
-            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, send_interval_min, subject, file_name, file_data, mail_templates)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, send_interval_min, subject, file_name, file_data, mail_templates, fixed_mail_template_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         rusqlite::params![
             input.title.trim(),
             body,
@@ -330,6 +339,7 @@ pub fn add_manuscript(
             input.file_name.trim(),
             input.file_data,
             mail_templates,
+            fixed_mail_template_id,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -347,6 +357,15 @@ pub fn update_manuscript(
     let genres = json!(input.genres).to_string();
     let excluded_types = json!(input.excluded_types).to_string();
     let mail_templates = json!(input.mail_templates).to_string();
+    let fixed_mail_template_id = input.fixed_mail_template_id.trim();
+    if !fixed_mail_template_id.is_empty()
+        && !input
+            .mail_templates
+            .iter()
+            .any(|item| item.id == fixed_mail_template_id && !item.body.trim().is_empty())
+    {
+        return Err("固定使用的邮件模板不存在或正文为空".into());
+    }
     conn.execute(
         "UPDATE manuscripts SET title = ?1, body = ?2, content_type = ?3, recipients = ?4,
                 sender_name = ?5, word_count = ?6, category = ?7, reader_category = ?8,
@@ -355,6 +374,7 @@ pub fn update_manuscript(
                 subject = ?12, file_name = ?13,
                 file_data = COALESCE(?15, file_data),
                 mail_templates = ?18,
+                fixed_mail_template_id = ?20,
                 updated_at = datetime('now','localtime')
          WHERE id = ?14",
         rusqlite::params![
@@ -377,6 +397,7 @@ pub fn update_manuscript(
             json!(input.account_ids).to_string(),
             mail_templates,
             normalize_send_interval_min(input.send_interval_min),
+            fixed_mail_template_id,
         ],
     )
     .map_err(|e| e.to_string())?;

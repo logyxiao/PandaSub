@@ -69,9 +69,12 @@ pub struct Manuscript {
     pub send_interval_min: i64,
     #[serde(default)]
     pub subject: String,
-    /// 多套邮件标题/正文。发送时从中随机选用一套。
+    /// 多套邮件标题/正文。默认在发送时随机选用一套。
     #[serde(default)]
     pub mail_templates: Vec<MailTemplate>,
+    /// 固定使用的邮件模板 ID；空字符串表示每封随机选择。
+    #[serde(default)]
+    pub fixed_mail_template_id: String,
     #[serde(default)]
     pub file_name: String,
     /// 是否存有附件文件内容（列表查询用，不携带实际字节）。
@@ -118,9 +121,12 @@ pub struct ManuscriptInput {
     pub send_interval_min: i64,
     #[serde(default)]
     pub subject: String,
-    /// 多套邮件标题/正文。发送时从中随机选用一套。
+    /// 多套邮件标题/正文。默认在发送时随机选用一套。
     #[serde(default)]
     pub mail_templates: Vec<MailTemplate>,
+    /// 固定使用的邮件模板 ID；空字符串表示每封随机选择。
+    #[serde(default)]
+    pub fixed_mail_template_id: String,
     #[serde(default)]
     pub file_name: String,
     /// 上传的附件文件内容（Word / 文本）。None 表示无附件；更新时 None 保留原附件。
