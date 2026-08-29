@@ -651,6 +651,27 @@ pub fn save_default_mail_templates(
     Ok(())
 }
 
+pub fn setting_exists(conn: &Connection, key: &str) -> Result<bool, String> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM settings WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(count > 0)
+}
+
+pub fn mark_setting(conn: &Connection, key: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, '1')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [key],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn insert_delivery(
     conn: &Connection,
     task_id: Option<i64>,

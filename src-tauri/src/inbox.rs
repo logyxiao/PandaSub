@@ -19,7 +19,12 @@ pub struct FetchedMail {
     pub references: String,
     pub content_type: String,
     pub extra_headers: Vec<(String, String)>,
+    /// IMAP 服务器记录的收件时间，本地格式用于在重复主题中选择最近一次先发出的投稿。
+    pub received_at: String,
 }
+
+const AUTO_REPLY_BACKFILL_DAYS: i64 = 14;
+const AUTO_REPLY_BACKFILL_VERSION: &str = "v1";
 
 pub fn start_reply_watcher(app: AppHandle, db: Arc<Mutex<Connection>>) {
     tauri::async_runtime::spawn(async move {
@@ -77,8 +82,21 @@ fn scan_one_account(
     db: &Arc<Mutex<Connection>>,
     account: &Account,
 ) -> Result<usize, String> {
-    let fetched = fetch_new_mail(account)?;
+    let backfill_key = format!(
+        "replies.autoreply_match_backfill.{AUTO_REPLY_BACKFILL_VERSION}.{}",
+        account.id
+    );
+    let needs_backfill = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        !store::setting_exists(&conn, &backfill_key)?
+    };
+    // 此版本首次运行时回看近 14 天，补回旧匹配规则已经推进 UID、却未保存的自动回复。
+    let fetched = fetch_mail(account, needs_backfill)?;
     if fetched.is_empty() {
+        if needs_backfill {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            store::mark_setting(&conn, &backfill_key)?;
+        }
         return Ok(0);
     }
     let deliveries = {
@@ -96,7 +114,7 @@ fn scan_one_account(
         if exists {
             continue;
         }
-        let Some(delivery) = match_delivery(&mail, &deliveries) else {
+        let Some(delivery) = match_delivery(&mail, &deliveries, account.id) else {
             continue;
         };
         let classification = classify::classify(&IncomingMail {
@@ -159,11 +177,17 @@ fn scan_one_account(
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
         store::set_account_imap_uid(&conn, account.id, max_uid)?;
+        if needs_backfill {
+            store::mark_setting(&conn, &backfill_key)?;
+        }
     }
     Ok(saved)
 }
 
-fn fetch_new_mail(account: &Account) -> Result<Vec<FetchedMail>, String> {
+fn fetch_mail(
+    account: &Account,
+    include_recent_backfill: bool,
+) -> Result<Vec<FetchedMail>, String> {
     let tls = native_tls::TlsConnector::builder()
         .build()
         .map_err(|e| e.to_string())?;
@@ -178,7 +202,10 @@ fn fetch_new_mail(account: &Account) -> Result<Vec<FetchedMail>, String> {
         .map_err(|e| e.0.to_string())?;
     session.select("INBOX").map_err(|e| e.to_string())?;
 
-    let query = if account.imap_uid > 0 {
+    let query = if include_recent_backfill {
+        let since = chrono_since_days(AUTO_REPLY_BACKFILL_DAYS);
+        format!("SINCE {since}")
+    } else if account.imap_uid > 0 {
         format!("UID {}:*", account.imap_uid + 1)
     } else {
         let since = chrono_since_days(14);
@@ -187,7 +214,7 @@ fn fetch_new_mail(account: &Account) -> Result<Vec<FetchedMail>, String> {
     let uids = session.uid_search(query).map_err(|e| e.to_string())?;
     let mut uid_list: Vec<u32> = uids
         .into_iter()
-        .filter(|u| (*u as i64) > account.imap_uid)
+        .filter(|u| include_recent_backfill || (*u as i64) > account.imap_uid)
         .collect();
     uid_list.sort_unstable();
     if uid_list.is_empty() {
@@ -202,12 +229,16 @@ fn fetch_new_mail(account: &Account) -> Result<Vec<FetchedMail>, String> {
             .collect::<Vec<_>>()
             .join(",");
         let fetches = session
-            .uid_fetch(&set, "BODY.PEEK[]")
+            .uid_fetch(&set, "(INTERNALDATE BODY.PEEK[])")
             .map_err(|e| e.to_string())?;
         for fetch in fetches.iter() {
             let Some(uid) = fetch.uid else { continue };
             let Some(bytes) = fetch.body() else { continue };
-            out.push(parse_message(uid, bytes));
+            let received_at = fetch
+                .internal_date()
+                .map(|value| value.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_default();
+            out.push(parse_message(uid, bytes, received_at));
         }
     }
     let _ = session.logout();
@@ -265,7 +296,7 @@ fn chrono_since_days(days: i64) -> String {
     format!("{:02}-{}-{y}", remain + 1, MONTHS[month.min(11)])
 }
 
-fn parse_message(uid: u32, raw: &[u8]) -> FetchedMail {
+fn parse_message(uid: u32, raw: &[u8], received_at: String) -> FetchedMail {
     if let Some(parsed) = mail_parser::MessageParser::default().parse(raw) {
         let extra = collect_auto_headers(&parsed);
         return FetchedMail {
@@ -286,6 +317,7 @@ fn parse_message(uid: u32, raw: &[u8]) -> FetchedMail {
             references: header_ids(parsed.references()),
             content_type: content_type_of(&parsed),
             extra_headers: extra,
+            received_at,
         };
     }
     FetchedMail {
@@ -298,6 +330,7 @@ fn parse_message(uid: u32, raw: &[u8]) -> FetchedMail {
         references: String::new(),
         content_type: String::new(),
         extra_headers: Vec::new(),
+        received_at,
     }
 }
 
@@ -397,6 +430,26 @@ fn emails_equal(a: &str, b: &str) -> bool {
 
 fn normalize_subject(value: &str) -> String {
     let mut subject = value.trim().to_lowercase();
+    // QQ 自动回复会把原主题改成“自动回复: 原主题”，部分服务还会在此前加品牌名。
+    // 只在标记出现在主题开头附近时剥离，避免误伤正文标题里偶然出现的同名词。
+    const AUTO_MARKERS: &[&str] = &[
+        "自动回复:",
+        "自动回复：",
+        "自動回覆:",
+        "自動回覆：",
+        "autoreply:",
+        "autoreply：",
+        "auto-reply:",
+        "auto-reply：",
+    ];
+    if let Some((position, marker)) = AUTO_MARKERS
+        .iter()
+        .filter_map(|marker| subject.find(marker).map(|position| (position, *marker)))
+        .filter(|(position, _)| *position <= 32)
+        .min_by_key(|(position, _)| *position)
+    {
+        subject = subject[position + marker.len()..].trim_start().to_string();
+    }
     loop {
         let trimmed = subject.trim_start();
         let prefix = [
@@ -417,13 +470,17 @@ fn normalize_subject(value: &str) -> String {
     subject.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn match_delivery<'a>(mail: &FetchedMail, deliveries: &'a [Delivery]) -> Option<&'a Delivery> {
+fn match_delivery<'a>(
+    mail: &FetchedMail,
+    deliveries: &'a [Delivery],
+    account_id: i64,
+) -> Option<&'a Delivery> {
     let reply_ids = format!("{} {}", mail.in_reply_to, mail.references);
     let reply_norm = normalize_id(&reply_ids);
     if !reply_norm.is_empty() {
         if let Some(found) = deliveries.iter().find(|d| {
             let id = normalize_id(&d.message_id);
-            !id.is_empty() && reply_norm.contains(&id)
+            d.account_id == Some(account_id) && !id.is_empty() && reply_norm.contains(&id)
         }) {
             return Some(found);
         }
@@ -433,6 +490,9 @@ fn match_delivery<'a>(mail: &FetchedMail, deliveries: &'a [Delivery]) -> Option<
         return None;
     }
     let mut matches = deliveries.iter().filter(|d| {
+        if d.account_id != Some(account_id) {
+            return false;
+        }
         if !emails_equal(&mail.from, &d.recipient) {
             return false;
         }
@@ -440,7 +500,17 @@ fn match_delivery<'a>(mail: &FetchedMail, deliveries: &'a [Delivery]) -> Option<
         !original.is_empty() && subject == original
     });
     let matched = matches.next()?;
-    matches.next().is_none().then_some(matched)
+    let Some(second) = matches.next() else {
+        return Some(matched);
+    };
+    if mail.received_at.is_empty() {
+        return None;
+    }
+    // load_recent_deliveries 按 id 倒序；重复主题时选择收件时间之前最近的一次投递。
+    std::iter::once(matched)
+        .chain(std::iter::once(second))
+        .chain(matches)
+        .find(|item| item.sent_at.as_str() <= mail.received_at.as_str())
 }
 
 #[cfg(test)]
@@ -456,7 +526,7 @@ mod tests {
             recipient: recipient.into(),
             subject: subject.into(),
             message_id: String::new(),
-            sent_at: String::new(),
+            sent_at: format!("2026-08-{:02} 10:00:00", id),
         }
     }
 
@@ -471,6 +541,7 @@ mod tests {
             references: String::new(),
             content_type: String::new(),
             extra_headers: Vec::new(),
+            received_at: String::new(),
         }
     }
 
@@ -483,6 +554,7 @@ mod tests {
         let matched = match_delivery(
             &reply("editor@example.com", "Re: 投稿：《旧稿》"),
             &deliveries,
+            1,
         );
         assert_eq!(matched.map(|item| item.id), Some(1));
     }
@@ -493,6 +565,7 @@ mod tests {
         assert!(match_delivery(
             &reply("editor@example.com", "Re: 完全无关的主题"),
             &deliveries,
+            1,
         )
         .is_none());
     }
@@ -500,7 +573,7 @@ mod tests {
     #[test]
     fn fallback_match_rejects_ambiguous_short_subject() {
         let deliveries = vec![delivery(1, "editor@example.com", "投稿：《旧稿》")];
-        assert!(match_delivery(&reply("editor@example.com", "Re: 投稿"), &deliveries).is_none());
+        assert!(match_delivery(&reply("editor@example.com", "Re: 投稿"), &deliveries, 1).is_none());
     }
 
     #[test]
@@ -512,7 +585,59 @@ mod tests {
         assert!(match_delivery(
             &reply("editor@example.com", "Re: 投稿：《同名稿》"),
             &deliveries,
+            1,
         )
         .is_none());
+    }
+
+    #[test]
+    fn fallback_match_strips_automatic_reply_prefix() {
+        let deliveries = vec![delivery(1, "editor@example.com", "投稿：《新稿》")];
+        let matched = match_delivery(
+            &reply("editor@example.com", "自动回复: 投稿：《新稿》"),
+            &deliveries,
+            1,
+        );
+        assert_eq!(matched.map(|item| item.id), Some(1));
+    }
+
+    #[test]
+    fn fallback_match_strips_branded_automatic_reply_prefix() {
+        let deliveries = vec![delivery(1, "editor@example.com", "投稿：《新稿》")];
+        let matched = match_delivery(
+            &reply("editor@example.com", "大江禾禾 AutoReply: 投稿：《新稿》"),
+            &deliveries,
+            1,
+        );
+        assert_eq!(matched.map(|item| item.id), Some(1));
+    }
+
+    #[test]
+    fn duplicate_subject_uses_latest_delivery_before_reply() {
+        let deliveries = vec![
+            delivery(3, "editor@example.com", "投稿：《同名稿》"),
+            delivery(2, "editor@example.com", "投稿：《同名稿》"),
+            delivery(1, "editor@example.com", "投稿：《同名稿》"),
+        ];
+        let mut mail = reply("editor@example.com", "自动回复: 投稿：《同名稿》");
+        mail.received_at = "2026-08-02 10:01:00".into();
+        let matched = match_delivery(&mail, &deliveries, 1);
+        assert_eq!(matched.map(|item| item.id), Some(2));
+    }
+
+    #[test]
+    fn fallback_match_stays_with_current_sender_account() {
+        let mut other_account = delivery(2, "editor@example.com", "投稿：《新稿》");
+        other_account.account_id = Some(2);
+        let deliveries = vec![
+            other_account,
+            delivery(1, "editor@example.com", "投稿：《新稿》"),
+        ];
+        let matched = match_delivery(
+            &reply("editor@example.com", "自动回复: 投稿：《新稿》"),
+            &deliveries,
+            1,
+        );
+        assert_eq!(matched.map(|item| item.id), Some(1));
     }
 }
