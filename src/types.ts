@@ -162,6 +162,7 @@ export type LogLevel = 'info' | 'success' | 'warning' | 'error'
 export interface TaskLog {
   id: number
   task_id: number | null
+  manuscript_id: number | null
   account_id: number | null
   level: LogLevel
   category: string

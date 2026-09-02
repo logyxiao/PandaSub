@@ -7,7 +7,7 @@ import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
 import { Modal } from '../components/Modal'
 import { formatTime, parseRecipient, replyKindLabel, replyKindTone } from '../format'
 import { useNav } from '../nav'
-import type { Editor, Reply } from '../types'
+import type { Editor, Reply, Task } from '../types'
 import { isEditorFavorited } from './planShared'
 
 function replyBodyPreview(reply: Reply) {
@@ -36,6 +36,11 @@ function editorForReply(reply: Reply, byEmail: Map<string, Editor>) {
   }
 }
 
+function editorLabel(editor?: Editor) {
+  if (!editor) return '未匹配编辑'
+  return [editor.platform, editor.name].map((value) => value.trim()).filter(Boolean).join(' · ') || editor.email
+}
+
 function ReplyFavStar({ editor, onToggle }: {
   editor?: Editor
   onToggle: (editor: Editor) => void
@@ -55,7 +60,9 @@ function ReplyFavStar({ editor, onToggle }: {
 export function RepliesView({ initialKind }: { initialKind?: string }) {
   const [items, setItems] = useState<Reply[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
+  const [tasks, setTasks] = useState<Task[]>([])
   const [kind, setKind] = useState(initialKind ?? '')
+  const [taskFilter, setTaskFilter] = useState<number | ''>('')
   const [query, setQuery] = useState('')
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
@@ -71,18 +78,20 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
     const seq = ++requestSeq.current
     setLoading(true)
     try {
-      const next = await api.listReplies(kind || undefined)
+      const next = await api.listReplies(kind || undefined, taskFilter || undefined)
       if (seq !== requestSeq.current) return
       setItems(next); setNotice('')
     } catch (e) { if (seq === requestSeq.current) setNotice(String(e)) }
     finally { if (seq === requestSeq.current) setLoading(false) }
-  }, [kind])
+  }, [kind, taskFilter])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
     setKind(initialKind ?? '')
   }, [initialKind])
   useEffect(() => {
-    void api.listEditors().then(setEditors).catch((e) => setNotice(String(e)))
+    void Promise.all([api.listEditors(), api.listTasks()])
+      .then(([nextEditors, nextTasks]) => { setEditors(nextEditors); setTasks(nextTasks) })
+      .catch((e) => setNotice(String(e)))
   }, [])
 
   useEffect(() => {
@@ -91,6 +100,7 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
     onReply((reply) => {
       if (cancelled) return
       if (kind === 'accepted' ? !reply.accepted : kind && reply.kind !== kind) return
+      if (taskFilter && reply.task_id !== taskFilter) return
       setItems((prev) => [reply, ...prev.filter((r) => r.id !== reply.id)].slice(0, 300))
     }).then((u) => {
       if (cancelled) u()
@@ -100,7 +110,7 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
       cancelled = true
       un?.()
     }
-  }, [kind])
+  }, [kind, taskFilter])
 
   const scan = async () => {
     setScanning(true)
@@ -122,19 +132,6 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
     finally { setReclassifying(false) }
   }
 
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return items
-    return items.filter((r) => {
-      const { email, plan } = replyDelivery(r)
-      return replyBodyPreview(r).toLowerCase().includes(q)
-        || email.toLowerCase().includes(q)
-        || plan.toLowerCase().includes(q)
-        || (r.subject ?? '').toLowerCase().includes(q)
-        || (r.from_email ?? '').toLowerCase().includes(q)
-    })
-  }, [items, query])
-
   const editorsByEmail = useMemo(() => {
     const map = new Map<string, Editor>()
     for (const editor of editors) {
@@ -143,6 +140,23 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
     }
     return map
   }, [editors])
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return items.filter((r) => {
+      if (taskFilter && r.task_id !== taskFilter) return false
+      if (!q) return true
+      const { email, plan } = replyDelivery(r)
+      const editor = editorForReply(r, editorsByEmail)
+      const editorText = editor ? `${editor.name} ${editor.platform} ${editor.email}`.toLowerCase() : ''
+      return replyBodyPreview(r).toLowerCase().includes(q)
+        || email.toLowerCase().includes(q)
+        || plan.toLowerCase().includes(q)
+        || editorText.includes(q)
+        || (r.subject ?? '').toLowerCase().includes(q)
+        || (r.from_email ?? '').toLowerCase().includes(q)
+    })
+  }, [items, query, taskFilter, editorsByEmail])
 
   const toggleFavorite = async (editor: Editor) => {
     try {
@@ -175,8 +189,11 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
         <div className="filters">
           <label className="plan-search editor-search">
             <Search size={14} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索回复内容或邮箱" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索回复、编辑或邮箱" />
           </label>
+          <Select value={taskFilter} onChange={setTaskFilter} ariaLabel="按计划筛选" className="filter-select"
+            searchable searchPlaceholder="搜索计划"
+            options={[{ value: '' as const, label: '全部计划' }, ...tasks.map((task) => ({ value: task.id, label: task.name }))]} />
           <Select value={kind} onChange={setKind} ariaLabel="按类型筛选" className="filter-select"
             options={[
               { value: '', label: '全部回复' },
@@ -212,7 +229,7 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
           <Table
             rowKey="id"
             dataSource={visible}
-            resetKey={`${kind}\0${query}`}
+            resetKey={`${kind}\0${taskFilter}\0${query}`}
             pagination={{ pageSize: 10 }}
             empty={loading ? '正在加载回复…' : '没有匹配的回复，换个内容或邮箱关键词试试。'}
             columns={[
@@ -238,9 +255,11 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
                 width: 220,
                 render: (_value, r) => {
                   const { email, plan } = replyDelivery(r)
+                  const editor = editorForReply(r, editorsByEmail)
                   return (
                     <div className="reply-delivery">
-                      <b title={email}>{email}</b>
+                      <b title={editorLabel(editor)}>{editorLabel(editor)}</b>
+                      <small title={email}>{email}</small>
                       <small title={plan}>{plan}</small>
                     </div>
                   )

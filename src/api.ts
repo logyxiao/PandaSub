@@ -38,7 +38,7 @@ export const api = {
 
   listLogs: (taskId?: number, limit = 300) => invoke<TaskLog[]>('list_logs', { taskId: taskId ?? null, limit, offset: 0 }),
   clearLogs: (taskId?: number) => invoke('clear_logs', { taskId: taskId ?? null }),
-  exportLogs: (taskId?: number) => invoke<string>('export_logs', { taskId: taskId ?? null }),
+  exportLogs: (path: string, taskId?: number) => invoke<string>('export_logs', { path, taskId: taskId ?? null }),
 
   getSettings: () => invoke<Settings>('get_settings'),
   updateSettings: (settings: Settings) => invoke('update_settings', { settings }),
@@ -46,7 +46,7 @@ export const api = {
   saveDefaultMailTemplates: (templates: MailTemplate[]) => invoke('save_default_mail_templates', { templates }),
   setAutostart: (enabled: boolean) => invoke('set_autostart', { enabled }),
   backup: () => invoke<string>('backup_data'),
-  listReplies: (kind?: string) => invoke<Reply[]>('list_replies', { kind: kind || null }),
+  listReplies: (kind?: string, taskId?: number) => invoke<Reply[]>('list_replies', { kind: kind || null, taskId: taskId || null }),
   scanReplies: () => invoke<number>('scan_replies'),
   reclassifyReplies: () => invoke<number>('reclassify_replies'),
   extractDocx: (data: number[]) => invoke<string>('extract_docx_text', { data }),
