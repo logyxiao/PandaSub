@@ -90,6 +90,7 @@ pub async fn resend_delivery(
             store::insert_send_log(
                 &conn,
                 delivery.task_id,
+                Some(manuscript.id),
                 Some(account.id),
                 "error",
                 "storage",
@@ -109,6 +110,7 @@ pub async fn resend_delivery(
         store::insert_send_log(
             &conn,
             delivery.task_id,
+            Some(manuscript.id),
             Some(account.id),
             "success",
             "send",
@@ -133,7 +135,7 @@ pub async fn send_manual_delivery(
     recipient: String,
     account_ids: Vec<i64>,
 ) -> Result<(), String> {
-    let (manuscript, account) = {
+    let (manuscript, account, task_id) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let manuscript =
             store::load_manuscript(&conn, manuscript_id)?.ok_or("稿件不存在，无法手动发送")?;
@@ -146,7 +148,11 @@ pub async fn send_manual_delivery(
                 .find(|a| account_ids.contains(&a.id) && a.enabled)
         }
         .ok_or("没有可用的发件邮箱，请先启用")?;
-        (manuscript, account)
+        let task_id = store::load_tasks(&conn)?
+            .into_iter()
+            .find(|task| task.manuscript_ids.contains(&manuscript_id))
+            .map(|task| task.id);
+        (manuscript, account, task_id)
     };
 
     if !manuscript.recipients.iter().any(|r| {
@@ -195,7 +201,8 @@ pub async fn send_manual_delivery(
                 let conn = state.db.lock().map_err(|e| e.to_string())?;
                 store::insert_send_log(
                     &conn,
-                    None,
+                    task_id,
+                    Some(manuscript.id),
                     Some(account.id),
                     "error",
                     &category,
@@ -230,7 +237,8 @@ pub async fn send_manual_delivery(
             let conn = state.db.lock().map_err(|e| e.to_string())?;
             store::insert_send_log(
                 &conn,
-                None,
+                task_id,
+                Some(manuscript.id),
                 Some(account.id),
                 "error",
                 "storage",
@@ -249,7 +257,8 @@ pub async fn send_manual_delivery(
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         store::insert_send_log(
             &conn,
-            None,
+            task_id,
+            Some(manuscript.id),
             Some(account.id),
             "success",
             "send",

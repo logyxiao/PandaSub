@@ -45,7 +45,7 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<Dashboard, String> {
         .map_err(|e| e.to_string())?;
     let _ = store::prune_orphan_tasks(&conn);
     let tasks = store::load_tasks(&conn)?;
-    let recent_replies = store::load_replies(&conn, None, 30)?;
+    let recent_replies = store::load_replies(&conn, None, None, 30)?;
     let human_replies = store::count_replies(&conn, "human").unwrap_or(0);
     let auto_replies = store::count_replies(&conn, "auto").unwrap_or(0);
     let accepted_replies = store::count_accepted_replies(&conn).unwrap_or(0);

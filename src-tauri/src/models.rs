@@ -179,6 +179,7 @@ pub struct TaskInput {
 pub struct TaskLog {
     pub id: i64,
     pub task_id: Option<i64>,
+    pub manuscript_id: Option<i64>,
     pub account_id: Option<i64>,
     pub level: String,
     pub category: String,
@@ -259,8 +260,55 @@ pub fn normalize_editor_work_types(tags: &[String]) -> Vec<String> {
         if tag.is_empty() || EDITOR_DROPPED_TAGS.contains(&tag) {
             continue;
         }
-        if seen.insert(tag.to_string()) {
-            types.push(tag.to_string());
+        let aliases: &[&str] = match tag {
+            "中短" => &["中短篇"],
+            "全品类短篇" | "全品类短篇（题材不限）" => &["全品类", "短篇"],
+            "全品类（主收情绪流追妻+追夫）" => &["全品类", "情绪流", "追妻", "追夫"],
+            "全品类（偏爱爽文）" => &["全品类", "爽文"],
+            "女频全品类" => &["女频", "全品类"],
+            "知乎全品类" => &["知乎", "全品类"],
+            "虐恋等全品类" => &["虐恋", "全品类"],
+            "追夫追妻小程序全品类" => &["追夫", "追妻", "全品类"],
+            "2万字以上中短" => &["中短篇"],
+            "一万字短篇小程序方向：追妻虐爽" => &["短篇", "追妻", "爽文"],
+            "下沉世情" | "世情亲情" => &["世情"],
+            "世情古言大女主虐爽" => &["世情", "古言", "大女主", "爽文"],
+            "世情废稿" => &["世情", "废稿"],
+            "古穿今" => &["穿越"],
+            "复仇" | "逆袭" => &["爽文"],
+            "大女主爽文短片" => &["大女主", "爽文", "短篇"],
+            "大女主追妻" => &["大女主", "追妻"],
+            "女频追妻" => &["女频", "追妻"],
+            "小甜文" | "甜文装穷梗" => &["甜宠"],
+            "微悬疑" | "惊悚" => &["悬疑"],
+            "快节奏追妻脑洞文" => &["追妻", "脑洞"],
+            "现代短篇小说（题材不限）" => &["全品类", "短篇", "现言"],
+            "现言追妻" => &["现言", "追妻"],
+            "短篇女频" => &["短篇", "女频"],
+            "短篇爽文" => &["短篇", "爽文"],
+            "虐文" => &["虐恋"],
+            "虐爽文" => &["虐恋", "爽文"],
+            "言情中短" => &["言情", "中短篇"],
+            "追夫虐爽" => &["追夫", "虐恋", "爽文"],
+            "追夫追妻" => &["追夫", "追妻"],
+            "追妻古言脑洞" => &["追妻", "古言", "脑洞"],
+            "七猫风"
+            | "点众风"
+            | "大尺度小程序风"
+            | "区别对待"
+            | "嫡姐"
+            | "庶妹"
+            | "开学"
+            | "暑假"
+            | "热点"
+            | "番茄"
+            | "职场" => &[],
+            _ => std::slice::from_ref(&tag),
+        };
+        for alias in aliases {
+            if seen.insert((*alias).to_string()) {
+                types.push((*alias).to_string());
+            }
         }
     }
     types
@@ -408,7 +456,7 @@ pub fn canonicalize_editor_platform(raw: &str) -> String {
         .join(" ")
         .replace('樂', "乐");
     if value.is_empty() {
-        return String::new();
+        return "未知".to_string();
     }
     if let Some(alias) = editor_platform_alias(&value) {
         return alias.to_string();
@@ -604,4 +652,85 @@ pub struct Reply {
     pub created_at: String,
     pub recipient: String,
     pub task_name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_editor_library_is_valid_and_unique() {
+        let editors = default_editor_inputs().unwrap();
+        let emails = editors
+            .iter()
+            .map(|editor| editor.email.trim().to_lowercase())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(editors.len(), emails.len());
+        assert!(editors
+            .iter()
+            .all(|editor| !editor.platform.trim().is_empty() && !editor.email.trim().is_empty()));
+    }
+
+    #[test]
+    fn empty_editor_platform_is_unknown() {
+        assert_eq!(canonicalize_editor_platform(" \t"), "未知");
+    }
+
+    #[test]
+    fn singleton_descriptions_collapse_to_standard_filter_tags() {
+        let tags = [
+            "一万字短篇小程序方向：追妻虐爽",
+            "世情古言大女主虐爽",
+            "现代短篇小说（题材不限）",
+            "七猫风",
+            "暑假",
+        ]
+        .map(str::to_string);
+
+        assert_eq!(
+            normalize_editor_work_types(&tags),
+            [
+                "短篇",
+                "追妻",
+                "爽文",
+                "世情",
+                "古言",
+                "大女主",
+                "全品类",
+                "现言"
+            ]
+        );
+    }
+
+    #[test]
+    fn editor_work_type_aliases_collapse_to_filter_tags() {
+        let tags = [
+            "全品类短篇（题材不限）",
+            "全品类",
+            "短篇",
+            "中短",
+            "全品类（偏爱爽文）",
+            "女频全品类",
+            "知乎全品类",
+            "虐恋等全品类",
+            "追夫追妻小程序全品类",
+        ]
+        .map(str::to_string);
+
+        assert_eq!(
+            normalize_editor_work_types(&tags),
+            [
+                "全品类",
+                "短篇",
+                "中短篇",
+                "爽文",
+                "女频",
+                "知乎",
+                "虐恋",
+                "追夫",
+                "追妻"
+            ]
+        );
+    }
 }

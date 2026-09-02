@@ -85,7 +85,7 @@ export function editorMatchesPlan(
   if (selected.some((tag) => rejected.has(tag.trim()))) return false
   const { lengths, genres } = splitPlanTags(selected)
   if (lengths.length && !lengths.some((tag) => tags.includes(tag))) return false
-  if (genres.length && !genres.some((tag) => tags.includes(tag)) && !tags.includes('全品类')) return false
+  if (genres.length && !genres.some((tag) => tags.includes(tag))) return false
   return true
 }
 

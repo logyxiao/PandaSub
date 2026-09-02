@@ -437,12 +437,13 @@ pub fn load_logs(
         Ok(TaskLog {
             id: r.get(0)?,
             task_id: r.get(1)?,
-            account_id: r.get(2)?,
-            level: r.get(3)?,
-            category: r.get(4)?,
-            message: r.get(5)?,
-            recipient: r.get(6)?,
-            created_at: r.get(7)?,
+            manuscript_id: r.get(2)?,
+            account_id: r.get(3)?,
+            level: r.get(4)?,
+            category: r.get(5)?,
+            message: r.get(6)?,
+            recipient: r.get(7)?,
+            created_at: r.get(8)?,
         })
     };
 
@@ -450,7 +451,7 @@ pub fn load_logs(
         Some(tid) => {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, task_id, account_id, level, category, message, recipient, created_at
+                    "SELECT id, task_id, manuscript_id, account_id, level, category, message, recipient, created_at
                      FROM task_logs WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
                 )
                 .map_err(|e| e.to_string())?;
@@ -464,7 +465,7 @@ pub fn load_logs(
         None => {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, task_id, account_id, level, category, message, recipient, created_at
+                    "SELECT id, task_id, manuscript_id, account_id, level, category, message, recipient, created_at
                      FROM task_logs ORDER BY id DESC LIMIT ?1 OFFSET ?2",
                 )
                 .map_err(|e| e.to_string())?;
@@ -497,6 +498,7 @@ pub fn insert_log(
     Ok(TaskLog {
         id,
         task_id,
+        manuscript_id: None,
         account_id,
         level: level.to_string(),
         category: category.to_string(),
@@ -506,10 +508,11 @@ pub fn insert_log(
     })
 }
 
-/// 发送类日志：额外记录收件人（编辑）邮箱，供记录页「编辑邮箱」列展示。
+/// 发送类日志：额外记录计划稿件和收件人，供记录页展示。
 pub fn insert_send_log(
     conn: &Connection,
     task_id: Option<i64>,
+    manuscript_id: Option<i64>,
     account_id: Option<i64>,
     level: &str,
     category: &str,
@@ -517,8 +520,8 @@ pub fn insert_send_log(
     recipient: &str,
 ) -> Result<TaskLog, String> {
     conn.execute(
-        "INSERT INTO task_logs (task_id, account_id, level, category, message, recipient) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![task_id, account_id, level, category, message, recipient],
+        "INSERT INTO task_logs (task_id, manuscript_id, account_id, level, category, message, recipient) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![task_id, manuscript_id, account_id, level, category, message, recipient],
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
@@ -526,6 +529,7 @@ pub fn insert_send_log(
     Ok(TaskLog {
         id,
         task_id,
+        manuscript_id,
         account_id,
         level: level.to_string(),
         category: category.to_string(),
@@ -768,8 +772,8 @@ pub fn delete_manuscript_data(conn: &mut Connection, id: i64) -> Result<(), Stri
     transaction.commit().map_err(|e| e.to_string())
 }
 
-/// Returns recipients delivered by this task for this manuscript only.
-/// Delivery history from other tasks must not make a newly-created task skip recipients.
+/// Returns recipients delivered manually or by this task for this manuscript.
+/// Delivery history still associated with other tasks must not make a new task skip recipients.
 pub fn delivered_emails_for_task_manuscript(
     conn: &Connection,
     task_id: i64,
@@ -777,7 +781,8 @@ pub fn delivered_emails_for_task_manuscript(
 ) -> Result<std::collections::HashSet<String>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT DISTINCT recipient FROM deliveries WHERE task_id = ?1 AND manuscript_id = ?2",
+            "SELECT DISTINCT recipient FROM deliveries
+             WHERE (task_id = ?1 OR task_id IS NULL) AND manuscript_id = ?2",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1000,46 +1005,27 @@ fn map_reply(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reply> {
 pub fn load_replies(
     conn: &Connection,
     kind: Option<&str>,
+    task_id: Option<i64>,
     limit: i64,
 ) -> Result<Vec<Reply>, String> {
-    let sql = "SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject, r.snippet, r.body,
-                      r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid, r.received_at, r.created_at,
-                      d.recipient, t.name
-               FROM replies r
-               LEFT JOIN deliveries d ON d.id = r.delivery_id
-               LEFT JOIN tasks t ON t.id = r.task_id";
-    if kind == Some("accepted") {
-        let mut stmt = conn
-            .prepare(&format!(
-                "{sql} WHERE r.accepted = 1 ORDER BY r.id DESC LIMIT ?1"
-            ))
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![limit], map_reply)
-            .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
-    } else if let Some(k) = kind {
-        let mut stmt = conn
-            .prepare(&format!(
-                "{sql} WHERE r.kind = ?1 ORDER BY r.id DESC LIMIT ?2"
-            ))
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![k, limit], map_reply)
-            .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
-    } else {
-        let mut stmt = conn
-            .prepare(&format!("{sql} ORDER BY r.id DESC LIMIT ?1"))
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params![limit], map_reply)
-            .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
-    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject, r.snippet, r.body,
+                    r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid, r.received_at, r.created_at,
+                    d.recipient, t.name
+             FROM replies r
+             LEFT JOIN deliveries d ON d.id = r.delivery_id
+             LEFT JOIN tasks t ON t.id = r.task_id
+             WHERE (?1 IS NULL OR (?1 = 'accepted' AND r.accepted = 1) OR (?1 <> 'accepted' AND r.kind = ?1))
+               AND (?2 IS NULL OR r.task_id = ?2)
+             ORDER BY r.id DESC LIMIT ?3",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![kind, task_id, limit], map_reply)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
@@ -1092,16 +1078,58 @@ mod tests {
                     total INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '',
                     started_at TEXT, finished_at TEXT
                  );
-                 CREATE TABLE task_logs (id INTEGER PRIMARY KEY, task_id INTEGER);
+                 CREATE TABLE task_logs (
+                    id INTEGER PRIMARY KEY, task_id INTEGER, manuscript_id INTEGER,
+                    account_id INTEGER, level TEXT NOT NULL DEFAULT 'info',
+                    category TEXT NOT NULL DEFAULT 'info', message TEXT NOT NULL DEFAULT '',
+                    recipient TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                 );
                  CREATE TABLE deliveries (
                     id INTEGER PRIMARY KEY, task_id INTEGER, account_id INTEGER,
                     manuscript_id INTEGER, recipient TEXT NOT NULL, subject TEXT NOT NULL,
                     message_id TEXT NOT NULL, sent_at TEXT NOT NULL DEFAULT ''
                  );
-                 CREATE TABLE replies (id INTEGER PRIMARY KEY, delivery_id INTEGER, task_id INTEGER);",
+                 CREATE TABLE replies (
+                    id INTEGER PRIMARY KEY, delivery_id INTEGER, account_id INTEGER, task_id INTEGER,
+                    from_email TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
+                    snippet TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'human', reason TEXT NOT NULL DEFAULT '',
+                    accepted INTEGER NOT NULL DEFAULT 0, message_id TEXT NOT NULL DEFAULT '',
+                    in_reply_to TEXT NOT NULL DEFAULT '', imap_uid INTEGER NOT NULL DEFAULT 0,
+                    received_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT ''
+                 );",
             )
             .unwrap();
         connection
+    }
+
+    #[test]
+    fn replies_filter_by_plan_and_kind() {
+        let connection = test_connection();
+        connection
+            .execute_batch(
+                "INSERT INTO tasks (id, name, manuscript_ids) VALUES
+                    (7, '计划甲', '[]'), (8, '计划乙', '[]');
+                 INSERT INTO deliveries (id, task_id, recipient, subject, message_id) VALUES
+                    (1, 7, 'a@example.com', '投稿', 'a'),
+                    (2, 8, 'b@example.com', '投稿', 'b');
+                 INSERT INTO replies (id, delivery_id, task_id, kind, accepted) VALUES
+                    (1, 1, 7, 'human', 0),
+                    (2, 2, 8, 'human', 1);",
+            )
+            .unwrap();
+
+        assert_eq!(
+            load_replies(&connection, None, Some(7), 300).unwrap()[0].id,
+            1
+        );
+        assert_eq!(
+            load_replies(&connection, Some("accepted"), None, 300).unwrap()[0].id,
+            2
+        );
+        assert!(load_replies(&connection, Some("accepted"), Some(7), 300)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1147,6 +1175,49 @@ mod tests {
         assert_eq!(delivery_task, None);
         assert_eq!(sent, 0);
         assert_eq!(account_updated, 1);
+    }
+
+    #[test]
+    fn send_log_keeps_manuscript_without_task() {
+        let connection = test_connection();
+        let inserted = insert_send_log(
+            &connection,
+            None,
+            Some(10),
+            Some(1),
+            "success",
+            "send",
+            "手动发送成功",
+            "editor@example.com",
+        )
+        .unwrap();
+
+        assert_eq!(inserted.manuscript_id, Some(10));
+        assert_eq!(
+            load_logs(&connection, None, 1, 0).unwrap()[0].manuscript_id,
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn task_delivery_lookup_includes_manual_but_not_other_tasks() {
+        let connection = test_connection();
+        connection
+            .execute_batch(
+                "INSERT INTO deliveries (task_id, account_id, manuscript_id, recipient, subject, message_id) VALUES
+                    (7, 1, 10, 'Current <current@example.com>', '投稿', 'current'),
+                    (NULL, 1, 10, 'Manual <MANUAL@example.com>', '投稿', 'manual'),
+                    (8, 1, 10, 'other@example.com', '投稿', 'other');",
+            )
+            .unwrap();
+
+        let delivered = delivered_emails_for_task_manuscript(&connection, 7, 10).unwrap();
+        assert_eq!(
+            delivered,
+            ["current@example.com".into(), "manual@example.com".into()]
+                .into_iter()
+                .collect()
+        );
     }
 
     #[test]

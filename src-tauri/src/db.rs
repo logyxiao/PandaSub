@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS task_logs (
   id INTEGER PRIMARY KEY,
   task_id INTEGER,
+  manuscript_id INTEGER,
   account_id INTEGER,
   level TEXT NOT NULL DEFAULT 'info',
   category TEXT NOT NULL DEFAULT 'info',
@@ -167,6 +168,8 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     normalize_editor_style_values(&connection)?;
     seed_default_editors(&connection)?;
     refresh_bundled_editor_library(&connection)?;
+    normalize_unknown_editor_platforms(&connection)?;
+    normalize_editor_work_type_aliases(&connection)?;
     backfill_editor_rejected_types(&connection)?;
     backfill_missing_editor_types(&connection)?;
     repair_editor_types_and_platforms(&connection)?;
@@ -175,6 +178,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     drop_script_editors(&connection)?;
     add_task_account_columns(&connection)?;
     add_task_log_recipient_column(&connection)?;
+    backfill_manual_log_manuscripts(&connection)?;
     add_manuscript_file_column(&connection)?;
     add_manuscript_account_ids_column(&connection)?;
     add_manuscript_mail_templates_column(&connection)?;
@@ -208,6 +212,11 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             ("imap_uid", "imap_uid INTEGER NOT NULL DEFAULT 0"),
             ("created_at", "created_at TEXT NOT NULL DEFAULT ''"),
         ],
+    )?;
+    ensure_columns(
+        connection,
+        "task_logs",
+        &[("manuscript_id", "manuscript_id INTEGER")],
     )?;
     ensure_columns(
         connection,
@@ -531,6 +540,59 @@ fn backfill_missing_editor_types(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn normalize_unknown_editor_platforms(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE editors SET platform = '未知', updated_at = datetime('now','localtime')
+         WHERE TRIM(COALESCE(platform, '')) = ''",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn normalize_editor_work_type_aliases(conn: &Connection) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT id, work_type, rejected_types FROM editors")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    for (id, raw_work, raw_rejected) in rows {
+        let (Ok(work), Ok(rejected)) = (
+            serde_json::from_str::<Vec<String>>(&raw_work),
+            serde_json::from_str::<Vec<String>>(&raw_rejected),
+        ) else {
+            continue;
+        };
+        let next_work = crate::models::normalize_editor_work_types(&work);
+        let next_rejected = crate::models::normalize_editor_work_types(&rejected);
+        if next_work == work && next_rejected == rejected {
+            continue;
+        }
+        conn.execute(
+            "UPDATE editors SET work_type = ?1, rejected_types = ?2,
+             updated_at = datetime('now','localtime') WHERE id = ?3",
+            rusqlite::params![
+                serde_json::to_string(&next_work).map_err(|e| e.to_string())?,
+                serde_json::to_string(&next_rejected).map_err(|e| e.to_string())?,
+                id,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn repair_editor_types_and_platforms(conn: &Connection) -> Result<(), String> {
     let done: i64 = conn
         .query_row(
@@ -764,7 +826,7 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-08-21-calibrated-only";
+const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-09-02-local-library";
 
 fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
     let current: String = conn
@@ -939,6 +1001,26 @@ fn add_task_log_recipient_column(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn backfill_manual_log_manuscripts(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "UPDATE task_logs AS log
+         SET manuscript_id = (
+           SELECT delivery.manuscript_id FROM deliveries AS delivery
+           WHERE delivery.task_id IS NULL
+             AND delivery.account_id = log.account_id
+             AND instr(lower(log.recipient), lower(delivery.recipient)) > 0
+             AND abs(strftime('%s', delivery.sent_at) - strftime('%s', log.created_at)) <= 2
+           ORDER BY delivery.id DESC
+           LIMIT 1
+         )
+         WHERE log.manuscript_id IS NULL AND log.task_id IS NULL
+           AND log.message = '手动发送成功'",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 历史库补 replies.accepted 列（过稿标记）。
 fn add_reply_accepted_column(conn: &Connection) -> Result<(), String> {
     let exists: i64 = conn
@@ -1000,7 +1082,7 @@ fn reclassify_autoreply_history(conn: &Connection) -> Result<(), String> {
         )
         .unwrap_or(0);
     if exists > 0 {
-        let replies = crate::store::load_replies(conn, None, 100_000).unwrap_or_default();
+        let replies = crate::store::load_replies(conn, None, None, 100_000).unwrap_or_default();
         for reply in replies {
             if reply.kind == "bounce" || reply.kind == "auto" {
                 continue;
@@ -1175,6 +1257,47 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn manual_log_backfill_links_matching_delivery() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE task_logs (
+                    id INTEGER PRIMARY KEY, task_id INTEGER, manuscript_id INTEGER,
+                    account_id INTEGER, message TEXT, recipient TEXT, created_at TEXT
+                 );
+                 CREATE TABLE deliveries (
+                    id INTEGER PRIMARY KEY, task_id INTEGER, manuscript_id INTEGER,
+                    account_id INTEGER, recipient TEXT, sent_at TEXT
+                 );
+                 INSERT INTO task_logs VALUES
+                    (1, NULL, NULL, 2, '手动发送成功', '编辑 <editor@example.com>', '2026-01-01 10:00:00'),
+                    (2, NULL, NULL, 2, '手动发送成功', 'other@example.com', '2026-01-01 10:00:00');
+                 INSERT INTO deliveries VALUES
+                    (3, NULL, 10, 2, 'editor@example.com', '2026-01-01 10:00:01');",
+            )
+            .unwrap();
+
+        backfill_manual_log_manuscripts(&connection).unwrap();
+
+        let linked: Option<i64> = connection
+            .query_row(
+                "SELECT manuscript_id FROM task_logs WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let unmatched: Option<i64> = connection
+            .query_row(
+                "SELECT manuscript_id FROM task_logs WHERE id = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked, Some(10));
+        assert_eq!(unmatched, None);
     }
 
     #[test]

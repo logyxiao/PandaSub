@@ -537,6 +537,7 @@ async fn run_task_worker(
                     Ok(()) => store::insert_send_log(
                         &db.lock().unwrap(),
                         Some(task_id),
+                        Some(target.manuscript.id),
                         Some(account_id),
                         "success",
                         "send",
@@ -548,6 +549,7 @@ async fn run_task_worker(
                         store::insert_send_log(
                             &db.lock().unwrap(),
                             Some(task_id),
+                            Some(target.manuscript.id),
                             Some(account_id),
                             "error",
                             "storage",
@@ -691,6 +693,7 @@ async fn send_with_retry(
                         let log = store::insert_send_log(
                             &db.lock().unwrap(),
                             Some(task_id),
+                            Some(target.manuscript.id),
                             Some(account.id),
                             "error",
                             "send",
@@ -719,6 +722,7 @@ async fn send_with_retry(
                             let log = store::insert_send_log(
                                 &db.lock().unwrap(),
                                 Some(task_id),
+                                Some(target.manuscript.id),
                                 Some(account.id),
                                 "error",
                                 &category,

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileText, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api, onLog } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
 import { Table } from '../components/Table'
 import { logCategoryLabel, type Tone } from '../format'
 import { useNav } from '../nav'
-import type { Account, Task, TaskLog } from '../types'
+import type { Account, Manuscript, Task, TaskLog } from '../types'
 
 const levelMeta: Record<string, { label: string; tone: Tone }> = {
   info: { label: '信息', tone: 'info' },
@@ -27,6 +28,7 @@ function logTimeParts(value: string) {
 export function LogsView() {
   const [logs, setLogs] = useState<TaskLog[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
+  const [manuscripts, setManuscripts] = useState<Manuscript[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [taskFilter, setTaskFilter] = useState<number | ''>('')
   const [levelFilter, setLevelFilter] = useState<string>('')
@@ -43,9 +45,9 @@ export function LogsView() {
     const seq = ++requestSeq.current
     setLoading(true)
     try {
-      const [l, t, a] = await Promise.all([api.listLogs(taskFilter || undefined), api.listTasks(), api.listAccounts()])
+      const [l, t, m, a] = await Promise.all([api.listLogs(taskFilter || undefined), api.listTasks(), api.listManuscripts(), api.listAccounts()])
       if (seq !== requestSeq.current) return
-      setLogs(l); setTasks(t); setAccounts(a); setNotice('')
+      setLogs(l); setTasks(t); setManuscripts(m); setAccounts(a); setNotice('')
     } catch (e) { if (seq === requestSeq.current) setNotice(String(e)) }
     finally { if (seq === requestSeq.current) setLoading(false) }
   }, [taskFilter])
@@ -71,9 +73,10 @@ export function LogsView() {
   const accountEmail = (id: number | null) =>
     id ? accounts.find((a) => a.id === id)?.email ?? '—' : '—'
 
-  const taskName = (id: number | null) => {
-    if (!id) return '—'
-    return tasks.find((t) => t.id === id)?.name ?? `#${id}`
+  const planName = (log: TaskLog) => {
+    if (log.task_id) return tasks.find((task) => task.id === log.task_id)?.name ?? `#${log.task_id}`
+    if (log.manuscript_id) return manuscripts.find((manuscript) => manuscript.id === log.manuscript_id)?.title ?? `#${log.manuscript_id}`
+    return '—'
   }
 
   const filtered = useMemo(() => {
@@ -97,9 +100,15 @@ export function LogsView() {
   }
 
   const exportLogs = async () => {
+    const path = await saveDialog({
+      title: '导出投稿记录',
+      defaultPath: '投稿记录.xlsx',
+      filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }],
+    })
+    if (!path) return
     try {
-      const path = await api.exportLogs(taskFilter || undefined)
-      toast(`已导出到 ${path}`, 'success')
+      const saved = await api.exportLogs(path, taskFilter || undefined)
+      toast(`已导出到 ${saved}`, 'success')
     } catch (e) { toast(String(e), 'error') }
   }
 
@@ -190,7 +199,7 @@ export function LogsView() {
                 title: '计划',
                 width: 168,
                 ellipsis: true,
-                render: (_value, log) => taskName(log.task_id),
+                render: (_value, log) => planName(log),
               },
               {
                 key: 'mail',

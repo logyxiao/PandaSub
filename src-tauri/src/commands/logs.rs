@@ -1,7 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
 use rust_xlsxwriter::Workbook;
-use tauri::{AppHandle, Manager, State};
+use tauri::State;
 
 use crate::models::TaskLog;
 use crate::state::AppState;
@@ -36,8 +36,8 @@ pub fn clear_logs(state: State<'_, AppState>, task_id: Option<i64>) -> Result<()
 
 #[tauri::command]
 pub fn export_logs(
-    app: AppHandle,
     state: State<'_, AppState>,
+    path: String,
     task_id: Option<i64>,
 ) -> Result<String, String> {
     let (logs, accounts) = {
@@ -46,13 +46,10 @@ pub fn export_logs(
         let accounts = store::load_accounts(&conn).unwrap_or_default();
         (logs, accounts)
     };
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let path = dir.join(format!("投稿日志_{ts}.xlsx"));
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
 
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();

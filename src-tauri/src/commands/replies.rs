@@ -9,9 +9,15 @@ use crate::store;
 pub fn list_replies(
     state: State<'_, AppState>,
     kind: Option<String>,
+    task_id: Option<i64>,
 ) -> Result<Vec<crate::models::Reply>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    store::load_replies(&conn, kind.as_deref().filter(|s| !s.is_empty()), 300)
+    store::load_replies(
+        &conn,
+        kind.as_deref().filter(|s| !s.is_empty()),
+        task_id,
+        300,
+    )
 }
 
 #[tauri::command]
@@ -23,7 +29,7 @@ pub fn scan_replies(app: AppHandle, state: State<'_, AppState>) -> Result<usize,
 #[tauri::command]
 pub fn reclassify_replies(state: State<'_, AppState>) -> Result<usize, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let replies = store::load_replies(&conn, None, 100_000)?;
+    let replies = store::load_replies(&conn, None, None, 100_000)?;
     let mut changed = 0usize;
     for reply in replies {
         let result = crate::classify::classify(&crate::classify::IncomingMail {
