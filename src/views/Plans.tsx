@@ -12,7 +12,7 @@ import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
 import {
   categoryFromWords, countChars, createEmptyManuscript, DEFAULT_SEND_INTERVAL_FROM_SEC,
-  DEFAULT_SEND_INTERVAL_TO_SEC, latestTask, normalizeSendIntervalRange, planSendProgress,
+  DEFAULT_SEND_INTERVAL_TO_SEC, isValidSendIntervalRange, latestTask, normalizeSendIntervalRange, planSendProgress,
   syncMailFromTemplates, toInput, accountTodayQuota, defaultMailTemplates, normalizeDefaultMailTemplates,
   MAX_SEND_INTERVAL_SEC,
 } from './planShared'
@@ -41,6 +41,7 @@ export function PlansView() {
     fromSec: DEFAULT_SEND_INTERVAL_FROM_SEC,
     toSec: DEFAULT_SEND_INTERVAL_TO_SEC,
   })
+  const [draftSendIntervalTouched, setDraftSendIntervalTouched] = useState(false)
   const [creatingWasteFor, setCreatingWasteFor] = useState<number | null>(null)
   const [detail, setDetail] = useState<Manuscript | null>(null)
   const [form, setForm] = useState<ManuscriptInput>(() => createEmptyManuscript())
@@ -190,6 +191,10 @@ export function PlansView() {
 
   const persistManuscript = async (payload: ManuscriptInput) => {
     if (!payload.title.trim()) { toast('请填写作品名称', 'warning'); return null }
+    if (!isValidSendIntervalRange(payload.send_interval_from_sec, payload.send_interval_to_sec)) {
+      toast('请填写有效的发送频率：最短和最长均为 1–86400 秒，且最短需小于或等于最长', 'warning')
+      return null
+    }
     const next = syncMailFromTemplates({
       ...payload,
       word_count: payload.word_count || countChars(payload.body),
@@ -330,6 +335,7 @@ export function PlansView() {
       m.send_interval_to_sec,
       m.send_interval_min,
     ))
+    setDraftSendIntervalTouched(false)
   }
 
   const toggleDraftAccount = (accountId: number) => {
@@ -338,6 +344,10 @@ export function PlansView() {
 
   const saveAccount = async () => {
     if (!accountFor) return
+    if (!isValidSendIntervalRange(draftSendInterval.fromSec, draftSendInterval.toSec)) {
+      toast('请填写有效的发送频率：最短和最长均为 1–86400 秒，且最短需小于或等于最长', 'warning')
+      return
+    }
     setSaving(true)
     try {
       const ids = draftIds.slice()
@@ -602,10 +612,12 @@ export function PlansView() {
                   <span>最短</span>
                   <span className="send-interval-input-wrap">
                     <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
-                      value={draftSendInterval.fromSec}
+                      value={draftSendInterval.fromSec || ''}
+                      aria-invalid={draftSendIntervalTouched && !isValidSendIntervalRange(draftSendInterval.fromSec, draftSendInterval.toSec)}
+                      onBlur={() => setDraftSendIntervalTouched(true)}
                       onChange={(event) => {
-                        const value = Math.min(MAX_SEND_INTERVAL_SEC, Math.max(1, Math.round(Number(event.target.value)) || 1))
-                        setDraftSendInterval((current) => ({ fromSec: value, toSec: Math.max(value, current.toSec) }))
+                        const value = event.target.value === '' ? 0 : Math.round(Number(event.target.value))
+                        setDraftSendInterval((current) => ({ ...current, fromSec: value }))
                       }} />
                     <em>秒</em>
                   </span>
@@ -615,17 +627,25 @@ export function PlansView() {
                   <span>最长</span>
                   <span className="send-interval-input-wrap">
                     <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
-                      value={draftSendInterval.toSec}
+                      value={draftSendInterval.toSec || ''}
+                      aria-invalid={draftSendIntervalTouched && !isValidSendIntervalRange(draftSendInterval.fromSec, draftSendInterval.toSec)}
+                      onBlur={() => setDraftSendIntervalTouched(true)}
                       onChange={(event) => {
-                        const value = Math.min(MAX_SEND_INTERVAL_SEC, Math.max(1, Math.round(Number(event.target.value)) || 1))
-                        setDraftSendInterval((current) => ({ fromSec: Math.min(current.fromSec, value), toSec: value }))
+                        const value = event.target.value === '' ? 0 : Math.round(Number(event.target.value))
+                        setDraftSendInterval((current) => ({ ...current, toSec: value }))
                       }} />
                     <em>秒</em>
                   </span>
                 </label>
               </div>
-              <p className="hint">每封发送后随机等待 {draftSendInterval.fromSec}–{draftSendInterval.toSec} 秒。</p>
-              {draftSendInterval.fromSec < 30 && (
+              {isValidSendIntervalRange(draftSendInterval.fromSec, draftSendInterval.toSec) ? (
+                <p className="hint">每封发送后随机等待 {draftSendInterval.fromSec}–{draftSendInterval.toSec} 秒。</p>
+              ) : draftSendIntervalTouched ? (
+                <p className="warn-text">请填写 1–86400 秒，且最短时间需小于或等于最长时间。</p>
+              ) : (
+                <p className="hint">完成两个时间输入后会校验发送区间。</p>
+              )}
+              {isValidSendIntervalRange(draftSendInterval.fromSec, draftSendInterval.toSec) && draftSendInterval.fromSec < 30 && (
                 <p className="warn-text">最短间隔低于 30 秒，可能更容易触发邮箱发送频率限制。</p>
               )}
               <div className="plan-send-rules">

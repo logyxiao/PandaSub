@@ -2,12 +2,13 @@ import { useEffect, useId, useRef } from 'react'
 import { X } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-export function Modal({ title, onClose, children, footer, width }: {
+export function Modal({ title, onClose, children, footer, width, className = '' }: {
   title: string
   onClose: () => void
   children: ReactNode
   footer?: ReactNode
   width?: number
+  className?: string
 }) {
   const uid = useId()
   const titleId = `modal-title-${uid}`
@@ -28,7 +29,7 @@ export function Modal({ title, onClose, children, footer, width }: {
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId}
+      <div className={`modal ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId}
         tabIndex={-1} ref={ref} style={width ? { width: `min(${width}px, 100%)` } : undefined}>
         <header className="modal-head">
           <h2 id={titleId}>{title}</h2>

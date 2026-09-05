@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Check, Clock3, Copy, Eye, FileUp, FolderOpen, Heart, HeartOff, Pencil, Plus, Send, Trash2 } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
+import { GroupMemberPicker } from '../components/GroupMemberPicker'
 import { useToast } from '../components/feedback'
 import { Button, EmptyState } from '../components/ui'
 import { isValidEmail, parseRecipient, providerName } from '../format'
@@ -10,8 +11,9 @@ import {
   GENRES, LENGTH_TAGS, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
   fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
   defaultMailTemplates, editorPlatformKey, groupMatchingByPlatform, isDroppedMailTemplate,
-  isEditorFavorited, mergeEditorSelectionByPlatform, normalizeSendIntervalRange,
-  recipientEmailsForCopy, accountTodayQuota, MAX_SEND_INTERVAL_SEC,
+  isEditorFavorited, isValidSendIntervalRange, mergeEditorSelectionByPlatform, normalizeSendIntervalRange,
+  recipientEmailsForCopy, groupPlanRecipients, accountTodayQuota, MAX_SEND_INTERVAL_SEC,
+  matchingEditorGroupId, summarizeEditorGroup,
 } from './planShared'
 import { EditorsList, emptyEditorListFilters, type EditorListFilters } from './Editors'
 
@@ -47,11 +49,16 @@ export function PlanEditor({
   const [step, setStep] = useState(1)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
+  const [groupPlanIds, setGroupPlanIds] = useState<Set<number>>(new Set())
+  const [showPlanMembers, setShowPlanMembers] = useState(false)
+  const [planMemberDraft, setPlanMemberDraft] = useState<Set<number>>(new Set())
   const [orphans, setOrphans] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
   const [listCount, setListCount] = useState<number | null>(null)
   const [visibleEditors, setVisibleEditors] = useState<Editor[]>([])
-  const [editorPickMode, setEditorPickMode] = useState<'groups' | 'all'>('all')
+  const [editorPickMode, setEditorPickMode] = useState<'groups' | 'all'>(
+    () => (!editing && editorGroups.length > 0) ? 'groups' : 'all',
+  )
   const [listFilters, setListFilters] = useState<EditorListFilters>(() =>
     emptyEditorListFilters(form.genres, form.excluded_types ?? []),
   )
@@ -68,10 +75,9 @@ export function PlanEditor({
   const [editingGroup, setEditingGroup] = useState<EditorGroup | null>(null)
   const [groupName, setGroupName] = useState('')
   const [groupMemberIds, setGroupMemberIds] = useState<Set<number>>(new Set())
-  const [groupVisibleEditors, setGroupVisibleEditors] = useState<Editor[]>([])
-  const [groupSelectedOnly, setGroupSelectedOnly] = useState(false)
   const [savingGroup, setSavingGroup] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [sendIntervalTouched, setSendIntervalTouched] = useState(false)
   const initRef = useRef(false)
 
   const platforms = useMemo(
@@ -111,6 +117,12 @@ export function PlanEditor({
     }
     setSelectedIds(ids)
     setOrphans(orphanList)
+    const matched = matchingEditorGroupId(editorGroups, editors, ids)
+    if (matched) {
+      setSelectedGroupId(matched)
+      setGroupPlanIds(ids)
+      setEditorPickMode('groups')
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在进入时初始化一次
   }, [])
 
@@ -128,11 +140,8 @@ export function PlanEditor({
     })
   }, [editorGroups, editors])
 
-  const activeSelectedIds = useMemo(() => {
-    if (editorPickMode === 'all') return selectedIds
-    const selectedGroup = groupPicks.find((pick) => pick.group.id === selectedGroupId)
-    return new Set(selectedGroup?.members.map((editor) => editor.id) ?? [])
-  }, [editorPickMode, groupPicks, selectedGroupId, selectedIds])
+  // A selected group is copied into this plan, never a live reference to the library.
+  const activeSelectedIds = editorPickMode === 'all' ? selectedIds : groupPlanIds
 
   const selectedEditors = useMemo(() => {
     const map = new Map(editors.map((editor) => [editor.id, editor]))
@@ -147,9 +156,12 @@ export function PlanEditor({
     setSelectedGroupId((current) => current && availableGroupIds.has(current) ? current : null)
   }, [editorGroups])
 
-  // 两种选取方式互斥：编辑组使用整组名单；全部编辑使用手动勾选名单。
+  // 两种方式保留独立名单；组内的临时增减只作用于当前计划。
   const recipients = useMemo(
-    () => [...selectedEditors.map(editorRecipient), ...(editorPickMode === 'all' ? orphans : [])],
+    () => {
+      if (editorPickMode === 'all') return [...selectedEditors.map(editorRecipient), ...orphans]
+      return groupPlanRecipients(selectedEditors)
+    },
     [editorPickMode, selectedEditors, orphans],
   )
 
@@ -159,33 +171,23 @@ export function PlanEditor({
     if (!taskForm.account_ids.length) return enabledAccounts
     return enabledAccounts.filter((account) => taskForm.account_ids.includes(account.id))
   }, [enabledAccounts, taskForm.account_ids])
-  const sendInterval = normalizeSendIntervalRange(
+  const sendIntervalValid = isValidSendIntervalRange(
     form.send_interval_from_sec,
     form.send_interval_to_sec,
-    form.send_interval_min,
   )
+  const sendInterval = sendIntervalValid
+    ? { fromSec: form.send_interval_from_sec, toSec: form.send_interval_to_sec }
+    : normalizeSendIntervalRange(
+      form.send_interval_from_sec,
+      form.send_interval_to_sec,
+      form.send_interval_min,
+    )
   const minutes = estimateAutoMinutes(sendCount, sendInterval.fromSec, sendInterval.toSec)
   const updateSendInterval = (side: 'from' | 'to', raw: string) => {
-    const value = Math.min(MAX_SEND_INTERVAL_SEC, Math.max(1, Math.round(Number(raw)) || 1))
-    setForm((current) => {
-      const interval = normalizeSendIntervalRange(
-        current.send_interval_from_sec,
-        current.send_interval_to_sec,
-        current.send_interval_min,
-      )
-      if (side === 'from') {
-        return {
-          ...current,
-          send_interval_from_sec: value,
-          send_interval_to_sec: Math.max(value, interval.toSec),
-        }
-      }
-      return {
-        ...current,
-        send_interval_from_sec: Math.min(interval.fromSec, value),
-        send_interval_to_sec: value,
-      }
-    })
+    const value = raw === '' ? 0 : Math.round(Number(raw))
+    setForm((current) => side === 'from'
+      ? { ...current, send_interval_from_sec: value }
+      : { ...current, send_interval_to_sec: value })
   }
   const mailTemplates = (form.mail_templates?.length ? form.mail_templates : defaultMailTemplates())
     .filter((item) => !isDroppedMailTemplate(item))
@@ -195,7 +197,8 @@ export function PlanEditor({
     form.title.trim()
     && (fixedTemplate ? fixedTemplate.body.trim() : mailTemplates.some((item) => item.body.trim()))
     && sendCount > 0
-    && selectedAccounts.length,
+    && selectedAccounts.length
+    && sendIntervalValid,
   )
 
   // 勾选变化写回 form.recipients
@@ -268,6 +271,7 @@ export function PlanEditor({
     if (!pick?.members.length) return
     const selected = selectedGroupId === groupId
     setSelectedGroupId(selected ? null : groupId)
+    setGroupPlanIds(new Set(selected ? [] : pick.members.map((editor) => editor.id)))
     toast(
       selected
         ? `已取消“${pick.group.name}”的 ${pick.members.length} 位编辑`
@@ -280,8 +284,6 @@ export function PlanEditor({
     setEditingGroup(null)
     setGroupName('')
     setGroupMemberIds(new Set())
-    setGroupVisibleEditors([])
-    setGroupSelectedOnly(false)
     setShowGroupForm(true)
   }
 
@@ -290,30 +292,19 @@ export function PlanEditor({
     setEditingGroup(group)
     setGroupName(group.name)
     setGroupMemberIds(new Set(group.editor_ids.filter((id) => availableIds.has(id))))
-    setGroupVisibleEditors([])
-    setGroupSelectedOnly(false)
     setShowGroupForm(true)
   }
 
-  const toggleGroupMember = (editor: Editor, checked: boolean) => {
-    setGroupMemberIds((current) => {
-      const next = new Set(current)
-      if (checked) next.add(editor.id)
-      else next.delete(editor.id)
-      return next
-    })
+  const openPlanMembers = () => {
+    setPlanMemberDraft(new Set(groupPlanIds))
+    setShowPlanMembers(true)
   }
 
-  const toggleVisibleGroupMembers = () => {
-    const shouldSelect = groupVisibleEditors.some((editor) => !groupMemberIds.has(editor.id))
-    setGroupMemberIds((current) => {
-      const next = new Set(current)
-      for (const editor of groupVisibleEditors) {
-        if (shouldSelect) next.add(editor.id)
-        else next.delete(editor.id)
-      }
-      return next
-    })
+  const savePlanAsGroup = () => {
+    setEditingGroup(null)
+    setGroupName(`${groupPicks.find((pick) => pick.group.id === selectedGroupId)?.group.name || '投稿名单'}（新组）`)
+    setGroupMemberIds(new Set(groupPlanIds))
+    setShowGroupForm(true)
   }
 
   const saveEditorGroup = async () => {
@@ -327,7 +318,10 @@ export function PlanEditor({
       if (editingGroup) await api.updateEditorGroup(editingGroup.id, { name, editor_ids })
       else createdId = await api.createEditorGroup({ name, editor_ids })
       await onReloadEditorGroups()
-      if (createdId) setSelectedGroupId(createdId)
+      if (createdId) {
+        setSelectedGroupId(createdId)
+        setGroupPlanIds(new Set(editor_ids))
+      }
       setShowGroupForm(false)
       toast(editingGroup ? '编辑组已更新' : '编辑组已创建并选中', 'success')
     } catch (error) {
@@ -336,13 +330,6 @@ export function PlanEditor({
       setSavingGroup(false)
     }
   }
-
-  const groupPickerItems = useMemo(
-    () => groupSelectedOnly ? editors.filter((editor) => groupMemberIds.has(editor.id)) : editors,
-    [editors, groupMemberIds, groupSelectedOnly],
-  )
-  const allVisibleGroupMembersSelected = groupVisibleEditors.length > 0
-    && groupVisibleEditors.every((editor) => groupMemberIds.has(editor.id))
 
   const favoriteEditors = useMemo(
     () => visibleEditors.filter(isEditorFavorited),
@@ -415,7 +402,10 @@ export function PlanEditor({
 
   const goToStep3 = () => {
     if (!sendCount) {
-      toast('还没有选择编辑，先从编辑库勾选，或返回上一步调整筛选', 'warning')
+      toast(
+        editorPickMode === 'groups' ? '请先点选一个编辑组' : '还没有选择编辑，先从编辑库勾选，或返回上一步调整筛选',
+        'warning',
+      )
       return
     }
     setStep(3)
@@ -622,6 +612,7 @@ export function PlanEditor({
     !mailTemplates.some((item) => item.body.trim()) && '邮件正文',
     sendCount === 0 && '待发送的收件人',
     !selectedAccounts.length && '参与发送的邮箱',
+    !sendIntervalValid && '有效的发送频率',
   ].filter(Boolean) as string[]
 
   const toggleAccount = (id: number) => {
@@ -862,7 +853,7 @@ export function PlanEditor({
               <div className="plan-editor-pick-tabs" role="tablist" aria-label="选择编辑方式">
                 <button type="button" role="tab" aria-selected={editorPickMode === 'groups'}
                   className={editorPickMode === 'groups' ? 'on' : ''} onClick={() => setEditorPickMode('groups')}>
-                  <FolderOpen size={14} />编辑组<small>{selectedGroupId ? 1 : 0}</small>
+                  <FolderOpen size={14} />编辑组<small>{groupPlanIds.size}</small>
                 </button>
                 <button type="button" role="tab" aria-selected={editorPickMode === 'all'}
                   className={editorPickMode === 'all' ? 'on' : ''} onClick={() => setEditorPickMode('all')}>
@@ -876,42 +867,71 @@ export function PlanEditor({
             <div className="step-toolbar">
               <span className="step-meta">
                 {editorPickMode === 'groups'
-                  ? <>共有 <strong>{groupPicks.length}</strong> 个编辑组，当前选择 <strong>{selectedGroupId ? 1 : 0}</strong> 个组，共 <strong>{activeSelectedIds.size}</strong> 位编辑</>
+                  ? selectedGroupId
+                    ? <>已选「{groupPicks.find((pick) => pick.group.id === selectedGroupId)?.group.name}」<strong>{activeSelectedIds.size}</strong> 位，将投出 <strong>{recipients.length}</strong> 封</>
+                    : <>共 <strong>{groupPicks.length}</strong> 个编辑组，点选一组即可用于这次投稿</>
                   : <>共有 <strong>{listCount ?? 0}</strong> 条可选数据，当前选择 <strong>{selectedIds.size}</strong> 位编辑</>}
               </span>
             </div>
             {editorPickMode === 'groups' ? (
               groupPicks.length ? (
-                <div className="plan-group-choice-list" role="radiogroup" aria-label="选择一个编辑组">
-                  {groupPicks.map(({ group, members }) => {
-                    const selected = selectedGroupId === group.id
-                    const preview = members.slice(0, 5).map((editor) => editor.name.trim() || editor.email).join('、')
-                    return (
-                      <div key={group.id} className={`plan-group-choice ${selected ? 'on' : ''}`}>
-                        <button type="button" role="radio" aria-checked={selected}
-                          className="plan-group-choice-main" disabled={!members.length}
-                          onClick={() => toggleEditorGroup(group.id)}>
-                          <span className="plan-group-choice-check">{selected && <Check size={14} />}</span>
-                          <span className="plan-group-choice-copy">
-                            <b>{group.name}</b>
-                            <small>{preview || '组内暂时没有可用编辑'}{members.length > 5 ? ` 等 ${members.length} 位` : ''}</small>
-                          </span>
-                          <span className="plan-group-choice-count">
-                            <b>{members.length}</b><small>位编辑</small>
-                          </span>
-                          <span className="plan-group-choice-status">
-                            {selected ? '已选整组' : '选择整组'}
-                          </span>
-                        </button>
-                        <Button size="sm" onClick={() => openEditGroup(group)}><Pencil size={13} />编辑组</Button>
+                <div className="plan-group-board">
+                  <div className="plan-group-cards" role="radiogroup" aria-label="选择编辑组">
+                    {groupPicks.map(({ group, members }) => {
+                      const selected = selectedGroupId === group.id
+                      const summary = summarizeEditorGroup(members)
+                      return (
+                        <div key={group.id} className={`plan-group-card ${selected ? 'on' : ''} ${!members.length ? 'is-empty' : ''}`}>
+                          <button type="button" role="radio" aria-checked={selected}
+                            className="plan-group-card-main" disabled={!members.length}
+                            onClick={() => toggleEditorGroup(group.id)}>
+                            <span className="plan-group-choice-check">{selected && <Check size={13} />}</span>
+                            <span className="plan-group-card-copy">
+                              <b>{group.name}</b>
+                              <small>{summary.platformsLabel} · {summary.count} 位</small>
+                            </span>
+                          </button>
+                          <button type="button" className="plan-group-card-edit" title="管理成员"
+                            onClick={() => openEditGroup(group)}>
+                            <Pencil size={13} />
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  {selectedGroupId ? (
+                    <div className="plan-group-roster">
+                      <div className="plan-group-roster-head">
+                        <div>
+                          <b>这次将投给 {groupPlanIds.size} 位</b>
+                          <p>有效邮箱 {recipients.length} 个。临时增减只影响这次，不会改原组。</p>
+                        </div>
+                        <Button size="sm" onClick={openPlanMembers}>调整名单</Button>
+                        <Button size="sm" variant="ghost" disabled={!groupPlanIds.size} onClick={savePlanAsGroup}>存成新组</Button>
                       </div>
-                    )
-                  })}
-                  <p className="plan-group-choice-hint">一次只采用一个编辑组的全部成员；与“全部编辑”的手动选择互不叠加，切换 Tab 会改用对应名单。</p>
+                      {selectedEditors.length ? (
+                        <ul className="plan-group-faces">
+                          {selectedEditors.slice(0, 14).map((editor) => (
+                            <li key={editor.id} title={`${editor.name.trim() || '佚名'} · ${editor.email}`}>
+                              <b>{editor.name.trim() || '佚名'}</b>
+                              <small>{editor.platform.trim() || '未填平台'}</small>
+                            </li>
+                          ))}
+                          {selectedEditors.length > 14 && (
+                            <li className="plan-group-faces-more">+{selectedEditors.length - 14}</li>
+                          )}
+                        </ul>
+                      ) : (
+                        <p className="hint">名单是空的，点「调整名单」加人。</p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="plan-group-choice-hint">点选一个组，名单会复制到这次计划。之后临时加减人不会改原组。</p>
+                  )}
                 </div>
               ) : (
                 <div className="panel">
-                  <EmptyState icon={FolderOpen} title="还没有编辑组" desc="先把常用编辑整理成组，之后投稿时可一键全部选择。"
+                  <EmptyState icon={FolderOpen} title="还没有编辑组" desc="先把常投的人收成一组，之后投稿时点一下就能选入。"
                     action={<Button size="sm" variant="primary" onClick={openNewGroup}><Plus size={13} />新建编辑组</Button>} />
                 </div>
               )
@@ -1011,7 +1031,9 @@ export function PlanEditor({
                   <span>最短</span>
                   <span className="send-interval-input-wrap">
                     <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
-                      value={sendInterval.fromSec}
+                      value={form.send_interval_from_sec || ''}
+                      aria-invalid={sendIntervalTouched && !sendIntervalValid}
+                      onBlur={() => setSendIntervalTouched(true)}
                       onChange={(event) => updateSendInterval('from', event.target.value)} />
                     <em>秒</em>
                   </span>
@@ -1021,14 +1043,22 @@ export function PlanEditor({
                   <span>最长</span>
                   <span className="send-interval-input-wrap">
                     <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
-                      value={sendInterval.toSec}
+                      value={form.send_interval_to_sec || ''}
+                      aria-invalid={sendIntervalTouched && !sendIntervalValid}
+                      onBlur={() => setSendIntervalTouched(true)}
                       onChange={(event) => updateSendInterval('to', event.target.value)} />
                     <em>秒</em>
                   </span>
                 </label>
               </div>
-              <p className="plan-send-desc">当前每封间隔 {sendInterval.fromSec}–{sendInterval.toSec} 秒，默认 100–240 秒。</p>
-              {sendInterval.fromSec < 30 && (
+              <p className="plan-send-desc">
+                {sendIntervalValid
+                  ? `当前每封间隔 ${form.send_interval_from_sec}–${form.send_interval_to_sec} 秒，默认 100–240 秒。`
+                  : sendIntervalTouched
+                    ? '请填写 1–86400 秒，且最短时间需小于或等于最长时间。'
+                    : '完成两个时间输入后会校验发送区间。'}
+              </p>
+              {sendIntervalValid && form.send_interval_from_sec < 30 && (
                 <p className="warn-text">最短间隔低于 30 秒，可能更容易触发邮箱发送频率限制。</p>
               )}
               <div className="plan-send-summary">
@@ -1038,7 +1068,7 @@ export function PlanEditor({
                 </div>
                 <div className="plan-estimate">
                   <Clock3 size={15} />
-                  <span>{sendCount > 0 ? `约 ${minutes} 分钟发完 ${sendCount} 封` : '等待选择编辑'}</span>
+                  <span>{sendCount > 0 && sendIntervalValid ? `约 ${minutes} 分钟发完 ${sendCount} 封` : sendCount > 0 ? '等待有效的发送频率' : '等待选择编辑'}</span>
                 </div>
               </div>
               {overQuotaAccounts.length > 0 && (
@@ -1064,8 +1094,23 @@ export function PlanEditor({
         )}
       </div>
 
+      {showPlanMembers && (
+        <Modal title="调整这次名单" width={960} className="group-member-modal" onClose={() => setShowPlanMembers(false)}
+          footer={<>
+            <span className="editor-group-selected-count">已选 {planMemberDraft.size} 位</span>
+            <Button variant="ghost" onClick={() => setShowPlanMembers(false)}>取消</Button>
+            <Button variant="primary" onClick={() => {
+              setGroupPlanIds(new Set(planMemberDraft))
+              setShowPlanMembers(false)
+            }}>用于这次计划</Button>
+          </>}>
+          <p className="hint">只改这次投稿，不会动原来的编辑组。</p>
+          <GroupMemberPicker editors={editors} selectedIds={planMemberDraft} onChange={setPlanMemberDraft} />
+        </Modal>
+      )}
+
       {showGroupForm && (
-        <Modal title={editingGroup ? '编辑编辑组' : '新建编辑组'} width={900}
+        <Modal title={editingGroup ? '管理成员' : '新建编辑组'} width={960} className="group-member-modal"
           onClose={() => setShowGroupForm(false)}
           footer={
             <>
@@ -1073,39 +1118,17 @@ export function PlanEditor({
               <Button variant="ghost" onClick={() => setShowGroupForm(false)}>取消</Button>
               <Button variant="primary" disabled={savingGroup || !groupName.trim() || !groupMemberIds.size}
                 onClick={() => void saveEditorGroup()}>
-                {savingGroup ? '保存中…' : '保存编辑组'}
+                {savingGroup ? '保存中…' : '保存'}
               </Button>
             </>
           }>
-          <div className="editor-group-form-head">
-            <label className="field">编辑组名称
-              <input autoFocus maxLength={40} value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：短篇常投、重点编辑" />
-            </label>
-            <p>在当前投稿页面直接维护组名和成员，保存后编辑库也会同步更新。</p>
-          </div>
-          <div className="editor-group-picker">
-            <EditorsList
-              items={groupPickerItems}
-              selectable
-              selectedIds={groupMemberIds}
-              onToggleSelect={toggleGroupMember}
-              onVisibleChange={setGroupVisibleEditors}
-              onFavoriteChange={onFavoriteChange}
-              pageSize={6}
-              actions={
-                <>
-                  <Button size="sm" className={groupSelectedOnly ? 'on' : ''} onClick={() => setGroupSelectedOnly((value) => !value)}>
-                    {groupSelectedOnly ? '查看全部' : `只看已选（${groupMemberIds.size}）`}
-                  </Button>
-                  <Button size="sm" disabled={!groupVisibleEditors.length} onClick={toggleVisibleGroupMembers}>
-                    {allVisibleGroupMembersSelected ? '取消当前结果' : '选择当前结果'}
-                  </Button>
-                  <Button size="sm" variant="ghost" disabled={!groupMemberIds.size} onClick={() => setGroupMemberIds(new Set())}>清空</Button>
-                </>
-              }
-              emptyText={groupSelectedOnly ? '还没有选中编辑。切换到“查看全部”开始选择。' : '编辑库还是空的，请先添加编辑。'}
-            />
-          </div>
+          <GroupMemberPicker editors={editors} selectedIds={groupMemberIds} onChange={setGroupMemberIds} header={
+            <div className="editor-group-form-head">
+              <label className="field">编辑组名称
+                <input autoFocus={!editingGroup} maxLength={40} value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="例如：短篇常投、重点编辑" />
+              </label>
+            </div>
+          } />
         </Modal>
       )}
 

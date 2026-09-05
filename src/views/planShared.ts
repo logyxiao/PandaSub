@@ -1,5 +1,5 @@
 import { isValidEmail, parseRecipient } from '../format'
-import type { Delivery, Editor, MailTemplate, Manuscript, ManuscriptInput, Task } from '../types'
+import type { Delivery, Editor, EditorGroup, MailTemplate, Manuscript, ManuscriptInput, Task } from '../types'
 
 export const LENGTH_TAGS = ['短篇', '中短篇'] as const
 export const LENGTH_TAG_SET = new Set<string>(LENGTH_TAGS)
@@ -132,10 +132,56 @@ export function normalizeSendIntervalRange(
   return { fromSec: Math.min(first, second), toSec: Math.max(first, second) }
 }
 
+export function isValidSendIntervalRange(fromSec: number, toSec: number) {
+  return Number.isInteger(fromSec)
+    && Number.isInteger(toSec)
+    && fromSec >= 1
+    && toSec <= MAX_SEND_INTERVAL_SEC
+    && fromSec <= toSec
+}
+
 export function estimateAutoMinutes(count: number, fromSec: number, toSec: number) {
   const range = normalizeSendIntervalRange(fromSec, toSec)
   const seconds = Math.max(0, count - 1) * ((range.fromSec + range.toSec) / 2)
   return Math.max(1, Math.ceil(seconds / 60))
+}
+
+/** Build this plan's delivery list without changing the saved group. */
+export function groupPlanRecipients(editors: Editor[]) {
+  const seen = new Set<string>()
+  return editors.flatMap((editor) => {
+    const email = editor.email.trim().toLowerCase()
+    if (!editor.enabled || !isValidEmail(email) || seen.has(email)) return []
+    seen.add(email)
+    return [editorRecipient(editor)]
+  })
+}
+
+export function summarizeEditorGroup(members: Editor[]) {
+  const platforms = [...new Set(members.map((editor) => editor.platform.trim()).filter(Boolean))]
+  const platformsLabel = !members.length
+    ? '还没有成员'
+    : !platforms.length
+      ? '未填平台'
+      : platforms.length <= 2
+        ? platforms.join('、')
+        : `${platforms.slice(0, 2).join('、')} 等 ${platforms.length} 个平台`
+  return { count: members.length, platforms, platformsLabel }
+}
+
+/** Exact member match against a saved group, ignoring missing / duplicate ids. */
+export function matchingEditorGroupId(
+  groups: EditorGroup[],
+  editors: Editor[],
+  selectedIds: ReadonlySet<number>,
+) {
+  if (!selectedIds.size) return null
+  const available = new Set(editors.map((editor) => editor.id))
+  for (const group of groups) {
+    const members = [...new Set(group.editor_ids.filter((id) => available.has(id)))]
+    if (members.length === selectedIds.size && members.every((id) => selectedIds.has(id))) return group.id
+  }
+  return null
 }
 
 export function recipientEmailsForCopy(recipients: string[]) {
