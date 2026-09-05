@@ -407,6 +407,13 @@ export function latestTask(id: number, tasks: Task[]) {
   return tasks.filter((t) => t.manuscript_ids.includes(id)).sort((a, b) => b.id - a.id)[0]
 }
 
+/** Runtime progress belongs to the current task round, not lifetime delivery history. */
+export function taskSendProgress(manuscript: Pick<Manuscript, 'recipients'>, task?: Task) {
+  if (task && task.total > 0) return { sent: task.sent, total: task.total }
+  const total = new Set(manuscript.recipients.filter(isValidEmail).map((row) => parseRecipient(row).email.toLowerCase())).size
+  return { sent: task?.sent ?? 0, total: task?.total || total }
+}
+
 /** 本计划已成功投递且仍在收件名单里的人数 / 当前有效收件人数。 */
 export function planSendProgress(manuscript: Pick<Manuscript, 'id' | 'recipients'>, deliveries: Delivery[]) {
   const recipients = manuscript.recipients.filter((row) => isValidEmail(row))

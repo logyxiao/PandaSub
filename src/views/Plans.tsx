@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy, FileX2, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
-import { api, onTask } from '../api'
+import { api, onLog, onTask } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, RuntimeTrack } from '../components/ui'
 import { Table } from '../components/Table'
 import { formatTime, fromDbTime, isValidEmail, statusLabel, taskTone, toDbTime } from '../format'
 import { useNav } from '../nav'
-import type { Account, Delivery, Editor, EditorGroup, MailTemplate, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
+import type { Account, Editor, EditorGroup, MailTemplate, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
 import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
 import {
   categoryFromWords, countChars, createEmptyManuscript, DEFAULT_SEND_INTERVAL_FROM_SEC,
-  DEFAULT_SEND_INTERVAL_TO_SEC, isValidSendIntervalRange, latestTask, normalizeSendIntervalRange, planSendProgress,
+  DEFAULT_SEND_INTERVAL_TO_SEC, isValidSendIntervalRange, latestTask, normalizeSendIntervalRange, taskSendProgress,
   syncMailFromTemplates, toInput, accountTodayQuota, defaultMailTemplates, normalizeDefaultMailTemplates,
   MAX_SEND_INTERVAL_SEC,
 } from './planShared'
@@ -26,7 +26,7 @@ export function PlansView() {
   const [manuscripts, setManuscripts] = useState<Manuscript[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
-  const [deliveries, setDeliveries] = useState<Delivery[]>([])
+  const [detailRevision, setDetailRevision] = useState(0)
   const [editors, setEditors] = useState<Editor[]>([])
   const [editorGroups, setEditorGroups] = useState<EditorGroup[]>([])
   const [defaultTemplates, setDefaultTemplates] = useState<MailTemplate[]>(() => defaultMailTemplates())
@@ -54,38 +54,37 @@ export function PlansView() {
   const confirm = useConfirm()
   const { go, setChrome } = useNav()
 
-  const load = async () => {
+  const loadSeq = useRef(0)
+  const load = useCallback(async () => {
+    const seq = ++loadSeq.current
     setLoading(true)
     try {
-      const [m, t, a, s, d, e, g, templates] = await Promise.all([
-        api.listManuscripts(), api.listTasks(), api.listAccounts(), api.getSettings(), api.listDeliveries(), api.listEditors(), api.listEditorGroups(), api.getDefaultMailTemplates(),
+      const [m, t, a, s, e, g, templates] = await Promise.all([
+        api.listManuscripts(), api.listTasks(), api.listAccounts(), api.getSettings(), api.listEditors(), api.listEditorGroups(), api.getDefaultMailTemplates(),
       ])
+      if (seq !== loadSeq.current) return
       const normalizedTemplates = normalizeDefaultMailTemplates(templates)
-      setManuscripts(m); setTasks(t); setAccounts(a); setSettings(s); setDeliveries(d); setEditors(e); setEditorGroups(g); setDefaultTemplates(normalizedTemplates); setNotice('')
+      setManuscripts(m); setTasks(t); setAccounts(a); setSettings(s); setEditors(e); setEditorGroups(g); setDefaultTemplates(normalizedTemplates); setNotice('')
+      setDetail((current) => current ? m.find((item) => item.id === current.id) ?? null : null)
       if (JSON.stringify(normalizedTemplates) !== JSON.stringify(templates)) {
         void api.saveDefaultMailTemplates(normalizedTemplates).catch((error) => {
           toast(`默认模板初始化失败：${String(error)}`, 'error')
         })
       }
-    } catch (e) { setNotice(String(e)) }
-    finally { setLoading(false) }
-  }
-  useEffect(() => { void load() }, [])
+    } catch (e) { if (seq === loadSeq.current) setNotice(String(e)) }
+    finally { if (seq === loadSeq.current) setLoading(false) }
+  }, [toast])
+  useEffect(() => {
+    const sequence = loadSeq
+    void load()
+    return () => { sequence.current++ }
+  }, [load])
   useEffect(() => {
     let cancelled = false
     let un: (() => void) | undefined
-    const lastTaskProgress = new Map<number, number>()
     onTask((task) => {
       if (cancelled) return
       setTasks((prev) => [task, ...prev.filter((x) => x.id !== task.id)])
-      const previousSent = lastTaskProgress.get(task.id)
-      lastTaskProgress.set(task.id, task.sent)
-      const terminal = ['completed', 'stopped'].includes(task.status)
-      if (previousSent === undefined || previousSent !== task.sent || terminal) {
-        void api.listDeliveries().then((d) => {
-          if (!cancelled) setDeliveries(d)
-        })
-      }
     }).then((u) => {
       if (cancelled) u()
       else un = u
@@ -99,6 +98,20 @@ export function PlansView() {
     setChrome(showEditor)
     return () => setChrome(false)
   }, [showEditor, setChrome])
+
+  const detailId = detail?.id
+  useEffect(() => {
+    if (detailId === undefined) return
+    let cancelled = false
+    let timer: number | undefined
+    let un: (() => void) | undefined
+    onLog((log) => {
+      if (log.manuscript_id !== detailId) return
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => { if (!cancelled) setDetailRevision(v => v + 1) }, 150)
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; window.clearTimeout(timer); un?.() }
+  }, [detailId])
 
   const enabledAccounts = accounts.filter((a) => a.enabled)
 
@@ -114,8 +127,8 @@ export function PlansView() {
   }, [tasks])
 
   const progressByManuscript = useMemo(
-    () => new Map(manuscripts.map((m) => [m.id, planSendProgress(m, deliveries)])),
-    [manuscripts, deliveries],
+    () => new Map(manuscripts.map((m) => [m.id, taskSendProgress(m, taskByManuscript.get(m.id))])),
+    [manuscripts, taskByManuscript],
   )
 
   const saveDefaultTemplates = (templates: MailTemplate[]) => {
@@ -302,13 +315,9 @@ export function PlansView() {
     await control(task.id, 'start')
   }
 
-  const openDetail = async (m: Manuscript) => {
+  const openDetail = (m: Manuscript) => {
+    setDetailRevision(v => v + 1)
     setDetail(m)
-    // 打开详情时刷新一次投递记录和编辑库，保证发送状态是最新的。
-    try {
-      const [d, e] = await Promise.all([api.listDeliveries(), api.listEditors()])
-      setDeliveries(d); setEditors(e)
-    } catch { /* 忽略，使用已有数据 */ }
   }
 
   const remove = async (m: Manuscript) => {
@@ -535,7 +544,7 @@ export function PlansView() {
                         {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
                         {task && ['running', 'paused'].includes(task.status) && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
                         <Button size="sm" onClick={() => void openDetail(m)}>记录</Button>
-                        <Button size="sm" onClick={() => openEdit(m)}>编辑</Button>
+                        <Button size="sm" disabled={Boolean(task && ['running', 'paused'].includes(task.status))} onClick={() => openEdit(m)}>编辑</Button>
                       </div>
                       <div className="plan-row-actions-icons">
                         {isWastePlan ? (
@@ -547,7 +556,7 @@ export function PlansView() {
                           </Button>
                         )}
                         <IconButton title="复制计划" onClick={() => openCopy(m)}><Copy size={15} /></IconButton>
-                        <IconButton title="配置投稿邮箱" onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
+                        <IconButton title="配置投稿邮箱" disabled={Boolean(task && ['running', 'paused'].includes(task.status))} onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
                         {!(task && ['running', 'paused'].includes(task.status)) && (
                           <IconButton title="删除" className="danger" onClick={() => void remove(m)}><Trash2 size={15} /></IconButton>
                         )}
@@ -564,14 +573,13 @@ export function PlansView() {
       {detail && (
         <SendDetailModal
           manuscript={detail}
-          deliveries={deliveries}
+          revision={detailRevision}
           editors={editors}
           enabledAccounts={enabledAccounts}
           locked={(() => {
-            const t = latestTask(detail.id, tasks)
-            return Boolean(t && ['running', 'paused'].includes(t.status))
+            return tasks.some(t => t.manuscript_ids.includes(detail.id) && ['running', 'paused'].includes(t.status))
           })()}
-          onChanged={() => void load()}
+          onChanged={() => { setDetailRevision(v => v + 1); void load() }}
           onClose={() => setDetail(null)}
         />
       )}
@@ -584,7 +592,7 @@ export function PlansView() {
               <Button variant="primary" disabled={saving} onClick={() => void saveAccount()}>保存</Button>
             </>
           }>
-          <p className="plan-acct-hint">为《{accountFor.title || '未命名'}》指定投稿邮箱和发送频率；邮箱留空表示使用全部启用邮箱。已发送的计划会同时更新对应的发送任务。</p>
+          <p className="plan-acct-hint">为《{accountFor.title || '未命名'}》指定投稿邮箱和发送频率；邮箱留空表示使用全部启用邮箱。运行或暂停中的计划请先停止，再修改配置。</p>
           <div className="plan-acct-list">
             <div className="plan-acct-row">
               <div className="plan-acct-title"><b>投稿邮箱</b><small>可多选</small></div>

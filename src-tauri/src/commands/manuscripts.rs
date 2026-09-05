@@ -3,7 +3,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::models::{legacy_send_interval_min, normalize_send_interval_secs, Manuscript};
 use crate::smtp;
-use crate::state::AppState;
+use crate::state::{ensure_no_manual_sends, AppState, ManualSendLease};
 use crate::store;
 
 // ---------- 重新发送单条投递 ----------
@@ -15,30 +15,34 @@ pub async fn resend_delivery(
     state: State<'_, AppState>,
     delivery_id: i64,
 ) -> Result<(), String> {
-    let (delivery, manuscript, account) = {
+    let (delivery, manuscript, account, settings, attachment, _lease) = {
+        let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+        let mut pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let delivery = store::load_delivery(&conn, delivery_id)?.ok_or("投递记录不存在")?;
         let manuscript = match delivery.manuscript_id {
             Some(mid) => store::load_manuscript(&conn, mid)?.ok_or("原稿件已删除，无法重发")?,
             None => return Err("这条投递没有关联稿件，无法重发".into()),
         };
+        store::ensure_manuscript_idle(&conn, &registry, manuscript.id)?;
+        ensure_no_manual_sends(&pending, &[manuscript.id])?;
         let account = store::load_account(&conn, delivery.account_id.unwrap_or(0))?
             .ok_or("原发件账号已删除，无法重发")?;
-        (delivery, manuscript, account)
+        let settings = store::load_settings(&conn)?;
+        let attachment = store::load_manuscript_attachment(&conn, manuscript.id)?;
+        let lease = ManualSendLease::reserve(
+            &state.manual_sends,
+            &mut pending,
+            manuscript.id,
+            account.id,
+            delivery.task_id,
+        )?;
+        (delivery, manuscript, account, settings, attachment, lease)
     };
 
     if !account.enabled {
         return Err(format!("发件账号 {} 已禁用，请先启用", account.email));
     }
-
-    let settings = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        store::load_settings(&conn).unwrap_or_default()
-    };
-    let attachment = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        store::load_manuscript_attachment(&conn, manuscript.id).unwrap_or(None)
-    };
 
     let (_editor_name, recipient_email) = smtp::parse_recipient(&delivery.recipient);
     let (subject, body) = smtp::resolve_outgoing_mail(
@@ -52,7 +56,20 @@ pub async fn resend_delivery(
         manuscript.sender_name.clone()
     };
 
-    let message_id = smtp::send_email(
+    let message_id = smtp::make_message_id();
+    store::begin_send_attempt(
+        &*state.db.lock().map_err(|e| e.to_string())?,
+        &store::SuccessfulDelivery {
+            task_id: delivery.task_id,
+            account_id: account.id,
+            manuscript_id: manuscript.id,
+            recipient: &recipient_email,
+            subject: &subject,
+            message_id: &message_id,
+            increment_task_progress: false,
+        },
+    )?;
+    let send_result = smtp::send_email_with_id(
         &account,
         &recipient_email,
         &sender_name,
@@ -62,12 +79,11 @@ pub async fn resend_delivery(
         attachment
             .as_ref()
             .map(|(name, data)| (name.as_str(), data.as_slice())),
+        &message_id,
     )
-    .await
-    .map_err(|err| {
-        let (_, msg) = smtp::classify_error(&err);
-        msg
-    })?;
+    .await;
+    settle_send_error(&state, &message_id, &send_result)?;
+    let message_id = send_result.map_err(|err| smtp::classify_error(&err).1)?;
 
     let recorded = {
         let mut conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -121,6 +137,7 @@ pub async fn resend_delivery(
     if let Ok(log) = log {
         let _ = app.emit("log", &log);
     }
+    emit_current_task(&app, &state, delivery.task_id);
     Ok(())
 }
 
@@ -135,11 +152,15 @@ pub async fn send_manual_delivery(
     recipient: String,
     account_ids: Vec<i64>,
 ) -> Result<(), String> {
-    let (manuscript, account, task_id) = {
+    let (manuscript, account, task_id, settings, attachment, _lease) = {
+        let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+        let mut pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let manuscript =
             store::load_manuscript(&conn, manuscript_id)?.ok_or("稿件不存在，无法手动发送")?;
-        let accounts = store::load_accounts(&conn)?;
+        store::ensure_manuscript_idle(&conn, &registry, manuscript_id)?;
+        ensure_no_manual_sends(&pending, &[manuscript_id])?;
+        let accounts = store::load_enabled_account_configs(&conn)?;
         let account = if account_ids.is_empty() {
             accounts.into_iter().find(|a| a.enabled)
         } else {
@@ -152,7 +173,16 @@ pub async fn send_manual_delivery(
             .into_iter()
             .find(|task| task.manuscript_ids.contains(&manuscript_id))
             .map(|task| task.id);
-        (manuscript, account, task_id)
+        let settings = store::load_settings(&conn)?;
+        let attachment = store::load_manuscript_attachment(&conn, manuscript.id)?;
+        let lease = ManualSendLease::reserve(
+            &state.manual_sends,
+            &mut pending,
+            manuscript.id,
+            account.id,
+            task_id,
+        )?;
+        (manuscript, account, task_id, settings, attachment, lease)
     };
 
     if !manuscript.recipients.iter().any(|r| {
@@ -163,15 +193,6 @@ pub async fn send_manual_delivery(
         return Err("该收件人不在当前稿件的收件名单中".into());
     }
 
-    let settings = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        store::load_settings(&conn).unwrap_or_default()
-    };
-    let attachment = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        store::load_manuscript_attachment(&conn, manuscript.id).unwrap_or(None)
-    };
-
     let (_editor_name, recipient_email) = smtp::parse_recipient(&recipient);
     let (subject, body) =
         smtp::resolve_outgoing_mail(&manuscript, &recipient, settings.anti_spam_mutation);
@@ -181,7 +202,20 @@ pub async fn send_manual_delivery(
         manuscript.sender_name.clone()
     };
 
-    let send_result = smtp::send_email(
+    let message_id = smtp::make_message_id();
+    store::begin_send_attempt(
+        &*state.db.lock().map_err(|e| e.to_string())?,
+        &store::SuccessfulDelivery {
+            task_id,
+            account_id: account.id,
+            manuscript_id: manuscript.id,
+            recipient: &recipient_email,
+            subject: &subject,
+            message_id: &message_id,
+            increment_task_progress: false,
+        },
+    )?;
+    let send_result = smtp::send_email_with_id(
         &account,
         &recipient_email,
         &sender_name,
@@ -191,8 +225,10 @@ pub async fn send_manual_delivery(
         attachment
             .as_ref()
             .map(|(name, data)| (name.as_str(), data.as_slice())),
+        &message_id,
     )
     .await;
+    settle_send_error(&state, &message_id, &send_result)?;
     let message_id = match send_result {
         Ok(message_id) => message_id,
         Err(err) => {
@@ -269,7 +305,21 @@ pub async fn send_manual_delivery(
     if let Ok(log) = log {
         let _ = app.emit("log", &log);
     }
+    emit_current_task(&app, &state, task_id);
     Ok(())
+}
+
+fn emit_current_task(app: &AppHandle, state: &AppState, task_id: Option<i64>) {
+    if let Some(id) = task_id {
+        let task = state
+            .db
+            .lock()
+            .ok()
+            .and_then(|conn| store::load_task(&conn, id).ok().flatten());
+        if let Some(task) = task {
+            let _ = app.emit("task", task);
+        }
+    }
 }
 
 // ---------- Manuscripts ----------
@@ -365,7 +415,11 @@ pub fn update_manuscript(
     id: i64,
     input: crate::models::ManuscriptInput,
 ) -> Result<(), String> {
+    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+    ensure_no_manual_sends(&pending, &[id])?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::ensure_manuscript_idle(&conn, &registry, id)?;
     let recipients = json!(input.recipients).to_string();
     let genres = json!(input.genres).to_string();
     let excluded_types = json!(input.excluded_types).to_string();
@@ -429,6 +483,14 @@ pub fn delete_manuscript(state: State<'_, AppState>, id: i64) -> Result<(), Stri
     // start can then only reserve the task before this check (and be rejected)
     // or after deletion (and fail because the task no longer exists).
     let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+    ensure_no_manual_sends(&pending, &[id])?;
+    // Deleting a manuscript also prunes orphan tasks and detaches their history.
+    // Keep those task references stable until every pending manual send is recorded.
+    if !pending.is_empty() {
+        return Err("有手动发送或重发尚未完成，请完成后再删除稿件".into());
+    }
+
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     let tasks = store::load_tasks(&conn)?;
     for task in &tasks {
@@ -472,4 +534,88 @@ fn docx_xml_to_text(xml: &str) -> String {
         .replace("&amp;", "&")
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
+}
+
+fn settle_send_error(
+    state: &AppState,
+    message_id: &str,
+    result: &Result<String, smtp::SendError>,
+) -> Result<(), String> {
+    if let Err(error) = result {
+        if smtp::definitely_not_sent(error) {
+            store::mark_attempt_not_sent(
+                &*state.db.lock().map_err(|e| e.to_string())?,
+                message_id,
+            )?;
+        } else {
+            return Err(format!(
+                "发送结果待确认：{}。请在计划记录中核对后处理",
+                smtp::classify_error(error).1
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_pending_sends(
+    state: State<'_, AppState>,
+    manuscript_id: i64,
+) -> Result<Vec<store::PendingSend>, String> {
+    store::pending_sends(&*state.db.lock().map_err(|e| e.to_string())?, manuscript_id)
+}
+
+#[tauri::command]
+pub fn resolve_pending_send(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    sent: bool,
+) -> Result<(), String> {
+    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (mid, task_id): (i64, Option<i64>) = conn
+        .query_row(
+            "SELECT manuscript_id,task_id FROM outgoing_attempts WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    // Do not use ensure_manuscript_idle here: pending is exactly what we resolve.
+    if store::load_tasks(&conn)?.iter().any(|t| {
+        registry.contains_key(&t.id) && (Some(t.id) == task_id || t.manuscript_ids.contains(&mid))
+    }) {
+        return Err("请先停止相关任务并等待发送结束，再确认结果".into());
+    }
+    ensure_no_manual_sends(&pending, &[mid])?;
+    let attempt = store::pending_sends(&conn, mid)?
+        .into_iter()
+        .find(|attempt| attempt.id == id);
+    store::resolve_send_attempt(&mut conn, id, sent)?;
+    let log = attempt.and_then(|attempt| {
+        store::insert_send_log(
+            &conn,
+            task_id,
+            Some(mid),
+            Some(attempt.account_id),
+            if sent { "success" } else { "info" },
+            "reconcile",
+            if sent {
+                "已人工核对并补记投递成功，未重新发送邮件"
+            } else {
+                "已人工核对邮件未发出，解除待确认状态"
+            },
+            &attempt.recipient,
+        )
+        .ok()
+    });
+    drop(conn);
+    drop(pending);
+    drop(registry);
+    if let Some(log) = log {
+        let _ = app.emit("log", &log);
+    }
+    emit_current_task(&app, &state, task_id);
+    Ok(())
 }

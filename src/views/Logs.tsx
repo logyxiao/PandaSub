@@ -3,7 +3,7 @@ import { Download, FileText, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api, onLog } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
-import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
+import { Badge, Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
 import { Table } from '../components/Table'
 import { logCategoryLabel, type Tone } from '../format'
 import { useNav } from '../nav'
@@ -33,6 +33,15 @@ export function LogsView() {
   const [taskFilter, setTaskFilter] = useState<number | ''>('')
   const [levelFilter, setLevelFilter] = useState<string>('')
   const [emailQuery, setEmailQuery] = useState('')
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [total, setTotal] = useState(0)
+  const [exporting, setExporting] = useState(false)
+  useEffect(() => {
+    const timer = window.setTimeout(() => { setSearch(emailQuery); setPage(1) }, 200)
+    return () => window.clearTimeout(timer)
+  }, [emailQuery])
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
@@ -45,50 +54,48 @@ export function LogsView() {
     const seq = ++requestSeq.current
     setLoading(true)
     try {
-      const [l, t, m, a] = await Promise.all([api.listLogs(taskFilter || undefined), api.listTasks(), api.listManuscripts(), api.listAccounts()])
+      const next = await api.listLogsPage(taskFilter, levelFilter, search, pageSize, (page - 1) * pageSize)
       if (seq !== requestSeq.current) return
-      setLogs(l); setTasks(t); setManuscripts(m); setAccounts(a); setNotice('')
+      const lastPage = Math.max(1, Math.ceil(next.total / pageSize))
+      if (page > lastPage) { setPage(lastPage); return }
+      setLogs(next.items); setTotal(next.total); setExpanded(new Set()); setNotice('')
     } catch (e) { if (seq === requestSeq.current) setNotice(String(e)) }
     finally { if (seq === requestSeq.current) setLoading(false) }
-  }, [taskFilter])
+  }, [taskFilter, levelFilter, search, page, pageSize])
   useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([api.listTasks(), api.listManuscripts(), api.listAccounts()])
+      .then(([t, m, a]) => { if (!cancelled) { setTasks(t); setManuscripts(m); setAccounts(a) } })
+      .catch((e) => { if (!cancelled) setNotice(String(e)) })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
+    let timer: number | undefined
     let un: (() => void) | undefined
+    const sequence = requestSeq
     onLog((log) => {
-      if (cancelled) return
-      if (taskFilter && log.task_id !== taskFilter) return
-      setLogs((prev) => (prev.some((x) => x.id === log.id) ? prev : [log, ...prev].slice(0, 300)))
-    }).then((u) => {
-      if (cancelled) u()
-      else un = u
-    })
-    return () => {
-      cancelled = true
-      un?.()
-    }
-  }, [taskFilter])
+      if (cancelled || (taskFilter && log.task_id !== taskFilter)) return
+      // Throttle rather than continuously postpone under a stream of log events.
+      if (timer === undefined) timer = window.setTimeout(() => {
+        timer = undefined
+        if (!cancelled) void load()
+      }, 200)
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; window.clearTimeout(timer); un?.(); sequence.current++ }
+  }, [taskFilter, load])
 
-  const accountEmail = (id: number | null) =>
-    id ? accounts.find((a) => a.id === id)?.email ?? '—' : '—'
-
+  const accountNames = useMemo(() => new Map(accounts.map((a) => [a.id, a.email])), [accounts])
+  const taskNames = useMemo(() => new Map(tasks.map((t) => [t.id, t.name])), [tasks])
+  const manuscriptNames = useMemo(() => new Map(manuscripts.map((m) => [m.id, m.title])), [manuscripts])
+  const accountEmail = (id: number | null) => id ? accountNames.get(id) ?? '—' : '—'
   const planName = (log: TaskLog) => {
-    if (log.task_id) return tasks.find((task) => task.id === log.task_id)?.name ?? `#${log.task_id}`
-    if (log.manuscript_id) return manuscripts.find((manuscript) => manuscript.id === log.manuscript_id)?.title ?? `#${log.manuscript_id}`
+    if (log.task_id) return taskNames.get(log.task_id) ?? `#${log.task_id}`
+    if (log.manuscript_id) return manuscriptNames.get(log.manuscript_id) ?? `#${log.manuscript_id}`
     return '—'
   }
-
-  const filtered = useMemo(() => {
-    const q = emailQuery.trim().toLowerCase()
-    return logs.filter((l) => {
-      if (levelFilter && l.level !== levelFilter) return false
-      if (!q) return true
-      const sender = (l.account_id ? accounts.find((a) => a.id === l.account_id)?.email ?? '' : '').toLowerCase()
-      const recipient = (l.recipient ?? '').toLowerCase()
-      return sender.includes(q) || recipient.includes(q)
-    })
-  }, [logs, levelFilter, emailQuery, accounts])
 
   const toggleMsg = (id: number) => {
     setExpanded((prev) => {
@@ -100,22 +107,24 @@ export function LogsView() {
   }
 
   const exportLogs = async () => {
-    const path = await saveDialog({
-      title: '导出投稿记录',
-      defaultPath: '投稿记录.xlsx',
-      filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }],
-    })
-    if (!path) return
+    if (exporting) return
+    setExporting(true)
     try {
-      const saved = await api.exportLogs(path, taskFilter || undefined)
+      const path = await saveDialog({
+        title: '导出当前筛选的全部投稿记录', defaultPath: '投稿记录.xlsx',
+        filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }],
+      })
+      if (!path) return
+      const saved = await api.exportLogs(path, taskFilter || undefined, levelFilter, emailQuery.trim())
       toast(`已导出到 ${saved}`, 'success')
     } catch (e) { toast(String(e), 'error') }
+    finally { setExporting(false) }
   }
 
   const clear = async () => {
     const ok = await confirm({
       title: '清空记录？',
-      message: taskFilter ? '将清空当前这个计划的发送记录，无法恢复。' : '将清空全部发送记录，无法恢复。',
+      message: `${taskFilter ? '将清空当前计划的全部日志' : '将清空全部计划的日志'}，忽略结果和邮箱筛选。此操作不可撤销；投递历史、成功数量和去重记录保留，对应的失败统计会随日志清除。`,
       confirmLabel: '清空',
       tone: 'danger',
     })
@@ -131,9 +140,9 @@ export function LogsView() {
             <Search size={14} />
             <input value={emailQuery} onChange={(e) => setEmailQuery(e.target.value)} placeholder="搜索发件 / 编辑邮箱" />
           </label>
-          <Select value={taskFilter} onChange={setTaskFilter} ariaLabel="按计划筛选" className="filter-select"
+          <Select value={taskFilter} onChange={(value) => { setTaskFilter(value); setPage(1) }} ariaLabel="按计划筛选" className="filter-select"
             options={[{ value: '' as const, label: '全部计划' }, ...tasks.map((t) => ({ value: t.id, label: t.name }))]} />
-          <Select value={levelFilter} onChange={setLevelFilter} ariaLabel="按结果筛选" className="filter-select"
+          <Select value={levelFilter} onChange={(value) => { setLevelFilter(value); setPage(1) }} ariaLabel="按结果筛选" className="filter-select"
             options={[
               { value: '', label: '全部结果' },
               { value: 'success', label: '成功' },
@@ -143,16 +152,16 @@ export function LogsView() {
             ]} />
         </div>
         <div className="toolbar-actions">
-          <Button variant="ghost" onClick={() => void exportLogs()}><Download size={15} />导出 Excel</Button>
+          <Button variant="ghost" disabled={exporting} onClick={() => void exportLogs()}><Download size={15} />{exporting ? '正在导出…' : '导出 Excel'}</Button>
           <Button variant="ghost" onClick={() => void clear()}><Trash2 size={15} />清空</Button>
           <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
         </div>
       </div>
       {notice && <div className="notice notice-error">{notice}</div>}
 
-      {!loading && !filtered.length ? (
+      {!loading && !logs.length ? (
         <div className="panel">
-          {logs.length ? (
+          {taskFilter || levelFilter || search.trim() ? (
             <EmptyState icon={Search} title="没有匹配的记录"
               desc="换个发件 / 编辑邮箱，或调整筛选条件试试。" />
           ) : (
@@ -166,10 +175,8 @@ export function LogsView() {
           <Table
             className="logs-table"
             rowKey="id"
-            dataSource={filtered}
+            dataSource={logs}
             empty={loading ? '正在加载记录…' : '暂无记录'}
-            resetKey={`${emailQuery}\0${taskFilter}\0${levelFilter}`}
-            pagination={{ pageSize: 20 }}
             columns={[
               {
                 key: 'time',
@@ -242,6 +249,8 @@ export function LogsView() {
               },
             ]}
           />
+          <Pager page={page} pageCount={Math.max(1, Math.ceil(total / pageSize))} pageSize={pageSize}
+            total={total} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1) }} />
         </div>
       )}
     </>

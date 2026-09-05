@@ -90,6 +90,23 @@ CREATE TABLE IF NOT EXISTS deliveries (
   sent_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS outgoing_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER,
+  run_id INTEGER NOT NULL,
+  increment_task_progress INTEGER NOT NULL DEFAULT 0,
+  account_id INTEGER NOT NULL,
+  manuscript_id INTEGER NOT NULL,
+  recipient TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','not_sent')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS outgoing_pending_manuscript
+  ON outgoing_attempts(manuscript_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS outgoing_task_status ON outgoing_attempts(task_id, status);
+
 CREATE TABLE IF NOT EXISTS replies (
   id INTEGER PRIMARY KEY,
   delivery_id INTEGER,
@@ -108,7 +125,7 @@ CREATE TABLE IF NOT EXISTS replies (
   received_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS replies_account_uid ON replies(account_id, imap_uid);
+
 CREATE INDEX IF NOT EXISTS deliveries_task_manuscript ON deliveries(task_id, manuscript_id);
 CREATE INDEX IF NOT EXISTS deliveries_manuscript_recipient ON deliveries(manuscript_id, recipient);
 CREATE INDEX IF NOT EXISTS task_logs_task_id ON task_logs(task_id, id DESC);
@@ -152,7 +169,9 @@ CREATE INDEX IF NOT EXISTS editor_group_members_group_position ON editor_group_m
 pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     let connection = Connection::open(path).map_err(|e| e.to_string())?;
     connection
-        .execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = OFF;")
+        .execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = OFF;",
+        )
         .map_err(|e| e.to_string())?;
     migrate(&connection)?;
     connection
@@ -188,12 +207,116 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_send_interval_column(&connection)?;
     add_manuscript_send_interval_seconds_columns(&connection)?;
     add_reply_accepted_column(&connection)?;
+    migrate_delivery_reliability(&connection)?;
+    add_runtime_query_indexes(&connection)?;
     repair_orphan_relations(&connection)?;
     reclassify_autoreply_history(&connection)?;
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
     Ok(connection)
+}
+
+fn add_runtime_query_indexes(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(&format!("CREATE INDEX IF NOT EXISTS deliveries_summary_recipient ON deliveries(manuscript_id, {}, id DESC);",
+        crate::store::delivery_recipient_sql("recipient"))).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS deliveries_message_id ON deliveries(message_id);
+        CREATE INDEX IF NOT EXISTS tasks_status ON tasks(status);
+        CREATE INDEX IF NOT EXISTS replies_received_at ON replies(received_at);
+        CREATE INDEX IF NOT EXISTS task_logs_level_id ON task_logs(level, id DESC);
+        CREATE INDEX IF NOT EXISTS task_logs_level_created ON task_logs(level, created_at);",
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Additive migration: retain historical deliveries and isolate future send rounds.
+fn migrate_delivery_reliability(conn: &Connection) -> Result<(), String> {
+    if crate::store::setting_exists(conn, "schema.delivery_reliability.v1")? {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    ensure_columns(
+        &tx,
+        "accounts",
+        &[(
+            "imap_uid_validity",
+            "imap_uid_validity INTEGER NOT NULL DEFAULT 0",
+        )],
+    )?;
+    ensure_columns(
+        &tx,
+        "replies",
+        &[(
+            "imap_uid_validity",
+            "imap_uid_validity INTEGER NOT NULL DEFAULT 0",
+        )],
+    )?;
+    ensure_columns(
+        &tx,
+        "accounts",
+        &[(
+            "imap_generation",
+            "imap_generation INTEGER NOT NULL DEFAULT 0",
+        )],
+    )?;
+    ensure_columns(
+        &tx,
+        "replies",
+        &[(
+            "imap_generation",
+            "imap_generation INTEGER NOT NULL DEFAULT 0",
+        )],
+    )?;
+    ensure_columns(
+        &tx,
+        "tasks",
+        &[("run_id", "run_id INTEGER NOT NULL DEFAULT 0")],
+    )?;
+    ensure_columns(
+        &tx,
+        "deliveries",
+        &[("run_id", "run_id INTEGER NOT NULL DEFAULT 0")],
+    )?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS account_ids (id INTEGER PRIMARY KEY AUTOINCREMENT);
+         CREATE TABLE IF NOT EXISTS task_runs (id INTEGER PRIMARY KEY AUTOINCREMENT);
+         INSERT OR IGNORE INTO account_ids(id)
+         SELECT id FROM accounts UNION SELECT account_id FROM deliveries WHERE account_id IS NOT NULL
+         UNION SELECT account_id FROM replies WHERE account_id IS NOT NULL
+         UNION SELECT account_id FROM task_logs WHERE account_id IS NOT NULL;
+         DROP INDEX IF EXISTS replies_account_uid;
+         CREATE UNIQUE INDEX IF NOT EXISTS replies_account_validity_uid
+             ON replies(account_id, imap_generation, imap_uid_validity, imap_uid);
+         CREATE INDEX IF NOT EXISTS deliveries_sent_at ON deliveries(sent_at, account_id);
+         CREATE INDEX IF NOT EXISTS deliveries_account_sent ON deliveries(account_id, sent_at);
+         CREATE INDEX IF NOT EXISTS deliveries_task_run ON deliveries(task_id, run_id, manuscript_id);
+         CREATE INDEX IF NOT EXISTS replies_task_kind ON replies(task_id, kind, id DESC);
+         CREATE INDEX IF NOT EXISTS replies_account_message ON replies(account_id, imap_generation, message_id);
+         CREATE INDEX IF NOT EXISTS editors_email_lower ON editors(lower(email));"
+    ).map_err(|e| e.to_string())?;
+    // Reserve even deleted account IDs still referenced by a saved plan. Never turn
+    // a selected-but-missing account into the empty-list (= all accounts) fallback.
+    for table in ["tasks", "manuscripts"] {
+        let mut stmt = tx
+            .prepare(&format!("SELECT account_ids FROM {table}"))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            for id in serde_json::from_str::<Vec<i64>>(&row.map_err(|e| e.to_string())?)
+                .unwrap_or_default()
+            {
+                if id > 0 {
+                    tx.execute("INSERT OR IGNORE INTO account_ids(id) VALUES (?1)", [id])
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    crate::store::mark_setting(&tx, "schema.delivery_reliability.v1")?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// Bring legacy/partial schemas forward without deleting user data.
@@ -1434,6 +1557,448 @@ mod tests {
         assert_eq!(
             ranges,
             vec![(50, 70), (108, 132), (100, 240), (288, 312), (468, 492)]
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_database() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    migrate_delivery_reliability(&conn).unwrap();
+    add_runtime_query_indexes(&conn).unwrap();
+    conn
+}
+
+#[cfg(test)]
+mod reliability_tests {
+    use super::*;
+    use crate::{state::TaskHandle, store};
+    use std::{collections::HashMap, sync::Arc};
+
+    fn connection() -> Connection {
+        test_database()
+    }
+
+    fn seed(conn: &Connection) {
+        conn.execute_batch("INSERT INTO accounts (id,email,password,smtp_host) VALUES (1,'sender@example.com','fixture','localhost');
+            INSERT INTO manuscripts (id,title,body,recipients) VALUES (1,'作品','正文','[\"a@example.com\",\"b@example.com\",\"c@example.com\"]');
+            INSERT INTO tasks (id,name,manuscript_ids,account_ids) VALUES (1,'计划','[1]','[1]');").unwrap();
+    }
+
+    fn deliver(conn: &mut Connection, recipient: &str, task_id: Option<i64>) {
+        store::record_successful_delivery(
+            conn,
+            store::SuccessfulDelivery {
+                task_id,
+                account_id: 1,
+                manuscript_id: 1,
+                recipient,
+                subject: "投稿",
+                message_id: &crate::smtp::make_message_id(),
+                increment_task_progress: task_id.is_some(),
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn account_ids_never_reuse_deleted_or_dangling_plan_ids() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        seed(&conn);
+        conn.execute("UPDATE tasks SET account_ids = '[1,99]'", [])
+            .unwrap();
+        migrate_delivery_reliability(&conn).unwrap();
+        let first = store::reserve_account_id(&conn).unwrap();
+        assert_eq!(first, 100);
+        conn.execute("INSERT INTO accounts(id,email,password,smtp_host) VALUES(?1,'next@example.com','fixture','localhost')", [first]).unwrap();
+        conn.execute("DELETE FROM accounts WHERE id = ?1", [first])
+            .unwrap();
+        migrate_delivery_reliability(&conn).unwrap();
+        assert_eq!(store::reserve_account_id(&conn).unwrap(), 101);
+        assert_eq!(
+            store::load_task(&conn, 1).unwrap().unwrap().account_ids,
+            vec![1, 99]
+        );
+    }
+
+    #[test]
+    fn resend_stop_resume_only_deduplicates_current_round() {
+        let mut conn = connection();
+        seed(&conn);
+        for recipient in ["a@example.com", "b@example.com", "c@example.com"] {
+            deliver(&mut conn, recipient, Some(1));
+        }
+        store::mark_task_finished(&conn, 1, "completed").unwrap();
+        store::reset_task_progress(&conn, 1).unwrap();
+        assert!(store::delivered_emails_for_task_manuscript(&conn, 1, 1)
+            .unwrap()
+            .is_empty());
+        store::mark_task_running(&conn, 1).unwrap();
+        deliver(&mut conn, "a@example.com", Some(1));
+        store::mark_task_finished(&conn, 1, "stopped").unwrap();
+        store::mark_task_running(&conn, 1).unwrap();
+        let sent = store::delivered_emails_for_task_manuscript(&conn, 1, 1).unwrap();
+        assert_eq!(sent, ["a@example.com".to_string()].into_iter().collect());
+        // Manual delivery during a stopped round belongs to that round, not the next.
+        store::mark_task_finished(&conn, 1, "stopped").unwrap();
+        deliver(&mut conn, "b@example.com", None);
+        assert_eq!(
+            store::delivered_emails_for_task_manuscript(&conn, 1, 1)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 2);
+        store::reset_task_progress(&conn, 1).unwrap();
+        assert!(store::delivered_emails_for_task_manuscript(&conn, 1, 1)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM deliveries", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            5
+        );
+    }
+
+    #[test]
+    fn reliability_migration_preserves_legacy_resume_progress() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        seed(&conn);
+        conn.execute_batch("UPDATE tasks SET sent=1,status='stopped';
+            INSERT INTO deliveries(task_id,account_id,manuscript_id,recipient,message_id) VALUES(1,1,1,'a@example.com','old');").unwrap();
+        migrate_delivery_reliability(&conn).unwrap();
+        migrate_delivery_reliability(&conn).unwrap();
+        assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 1);
+        assert!(store::delivered_emails_for_task_manuscript(&conn, 1, 1)
+            .unwrap()
+            .contains("a@example.com"));
+    }
+
+    #[test]
+    fn active_and_paused_tasks_lock_config() {
+        let conn = connection();
+        seed(&conn);
+        let handle = Arc::new(TaskHandle::new());
+        let mut registry = HashMap::from([(1, handle.clone())]);
+        assert!(store::ensure_manuscript_idle(&conn, &registry, 1).is_err());
+        assert!(store::ensure_account_idle(&conn, &registry, 1).is_err());
+        assert!(store::ensure_account_idle(&conn, &registry, 2).is_ok());
+        handle.pause();
+        assert!(store::ensure_manuscript_idle(&conn, &registry, 1).is_err());
+        handle.stop(); // still locked until the worker exits
+        assert!(store::ensure_manuscript_idle(&conn, &registry, 1).is_err());
+        registry.clear();
+        assert!(store::ensure_manuscript_idle(&conn, &registry, 1).is_ok());
+    }
+
+    #[test]
+    fn stopped_handle_is_never_resurrected() {
+        let handle = TaskHandle::new();
+        handle.stop();
+        handle.pause();
+        handle.resume();
+        assert!(handle.is_stopped());
+    }
+
+    #[test]
+    fn mailbox_generation_preserves_old_replies_and_accepts_reused_uids() {
+        let conn = connection();
+        seed(&conn);
+        conn.execute("UPDATE accounts SET imap_uid=500, imap_uid_validity=10", [])
+            .unwrap();
+        store::mark_setting(&conn, "replies.autoreply_match_backfill.v1.1").unwrap();
+        let insert = |generation, message: &str| {
+            store::insert_reply(
+                &conn,
+                None,
+                1,
+                Some(1),
+                "editor@example.com",
+                "回复",
+                "摘录",
+                "内容",
+                "human",
+                "人工",
+                false,
+                message,
+                "original",
+                7,
+                10,
+                generation,
+                "2026-01-02 03:04:05",
+            )
+            .unwrap()
+        };
+        let old = insert(0, "old-message");
+        store::reset_account_mailbox(&conn, 1).unwrap();
+        let account = store::load_account(&conn, 1).unwrap().unwrap();
+        assert_eq!(
+            (
+                account.imap_uid,
+                account.imap_uid_validity,
+                account.imap_generation
+            ),
+            (0, 0, 1)
+        );
+        assert!(!store::setting_exists(&conn, "replies.autoreply_match_backfill.v1.1").unwrap());
+        assert!(!store::reply_exists(&conn, &account, 7, 10, "new-message").unwrap());
+        let new = insert(1, "new-message");
+        assert_ne!(old.id, new.id);
+        assert_eq!(new.received_at, "2026-01-02 03:04:05");
+        let page = store::query_replies(&conn, None, None, "", 20, 0).unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.items[0].received_at, "2026-01-02 03:04:05");
+        assert_ne!(page.items[0].created_at, page.items[0].received_at);
+        assert!(store::reply_exists(&conn, &account, 7, 10, "").unwrap());
+        assert!(!store::reply_exists(&conn, &account, 7, 11, "").unwrap());
+        assert!(store::reply_exists(&conn, &account, 8, 11, "new-message").unwrap());
+    }
+
+    #[test]
+    fn replies_page_and_search_include_records_older_than_300() {
+        let mut conn = connection();
+        seed(&conn);
+        conn.execute(
+            "INSERT INTO editors(name,email,platform) VALUES('老编辑','old@example.com','平台甲')",
+            [],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        for uid in 1..=305 {
+            tx.execute("INSERT INTO replies(account_id,imap_uid,task_id,kind,from_email,body,accepted) VALUES(1,?1,1,'human',?2,?3,?4)",
+                rusqlite::params![uid, if uid==1 {"old@example.com"} else {"other@example.com"}, if uid==1 {"最早的回复"} else {"普通回复"}, uid==1]).unwrap();
+        }
+        tx.commit().unwrap();
+        let page = store::query_replies(&conn, None, None, "", 20, 300).unwrap();
+        assert_eq!(page.total, 305);
+        assert_eq!(page.items.len(), 5);
+        assert_eq!(page.items[4].imap_uid, 1);
+        for query in ["最早", "老编辑", "平台甲", "OLD@EXAMPLE.COM"] {
+            let found =
+                store::query_replies(&conn, Some("accepted"), Some(1), query, 20, 0).unwrap();
+            assert_eq!(found.total, 1, "{query}");
+            assert_eq!(found.items[0].imap_uid, 1);
+        }
+        assert_eq!(
+            store::query_replies(&conn, None, Some(2), "", 20, 0)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            store::query_replies(&conn, None, None, "%", 20, 0)
+                .unwrap()
+                .total,
+            0
+        );
+    }
+
+    #[test]
+    fn plan_history_does_not_expire_after_a_year() {
+        let mut conn = connection();
+        seed(&conn);
+        deliver(&mut conn, "a@example.com", Some(1));
+        conn.execute("UPDATE deliveries SET sent_at = '2020-01-01 00:00:00'", [])
+            .unwrap();
+        assert_eq!(
+            store::load_manuscript_deliveries(&conn, 1).unwrap().len(),
+            1
+        );
+        assert_eq!(store::load_account_deliveries(&conn, 1).unwrap().len(), 1);
+    }
+    #[test]
+    fn logs_filter_and_export_cover_old_history_with_literal_email_search() {
+        let conn = connection();
+        seed(&conn);
+        for id in 1..=305 {
+            store::insert_send_log(
+                &conn,
+                Some(1),
+                Some(1),
+                Some(1),
+                if id == 1 { "error" } else { "success" },
+                "send",
+                "fixture",
+                if id == 1 {
+                    "old_100%@example.com"
+                } else {
+                    "other@example.com"
+                },
+            )
+            .unwrap();
+        }
+        let page = store::query_logs(&conn, None, None, None, 20, 300).unwrap();
+        assert_eq!(page.total, 305);
+        assert_eq!(page.items.len(), 5);
+        assert_eq!(page.items.last().unwrap().id, 1);
+        let page = store::query_logs(
+            &conn,
+            Some(1),
+            Some("error"),
+            Some(" OLD_100%@EXAMPLE.COM "),
+            20,
+            -1,
+        )
+        .unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].id, 1);
+        assert_eq!(
+            store::query_logs(&conn, None, None, Some("%"), 20, 0)
+                .unwrap()
+                .total,
+            1
+        );
+        assert_eq!(
+            store::query_logs(&conn, None, None, Some("SENDER@EXAMPLE.COM"), 20, 0)
+                .unwrap()
+                .total,
+            305
+        );
+        assert_eq!(
+            store::query_logs(&conn, Some(2), None, None, 20, 0)
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            store::query_logs(&conn, None, Some("success"), Some("old_"), 20, 0)
+                .unwrap()
+                .total,
+            0
+        );
+        let (exported, accounts) =
+            crate::commands::logs::export_rows(&conn, Some(1), Some("error"), Some("old_"))
+                .unwrap();
+        assert_eq!(exported.iter().map(|l| l.id).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(accounts.get(&1).unwrap(), "sender@example.com");
+        conn.execute("DELETE FROM accounts WHERE id=1", []).unwrap();
+        assert_eq!(
+            store::query_logs(&conn, None, None, Some("old_"), 20, 0)
+                .unwrap()
+                .total,
+            1
+        );
+    }
+
+    #[test]
+    fn oversized_log_export_is_reported_instead_of_truncated() {
+        let conn = connection();
+        conn.execute_batch(
+            "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<100001)
+            INSERT INTO task_logs(level,category,message) SELECT 'info','test','fixture' FROM seq;",
+        )
+        .unwrap();
+        let result = crate::commands::logs::export_rows(&conn, None, None, None);
+        assert!(result.unwrap_err().contains("100001"));
+        assert!(
+            crate::commands::logs::export_rows(&conn, None, Some("error"), None)
+                .unwrap()
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn dashboard_success_survives_log_clear_and_read_does_not_delete_tasks() {
+        let mut conn = connection();
+        seed(&conn);
+        deliver(&mut conn, "a@example.com", Some(1));
+        // Boundaries are compared in local dates, including exactly midnight.
+        conn.execute(
+            "UPDATE deliveries SET sent_at = date('now','localtime') || ' 00:00:00'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("INSERT INTO deliveries(account_id,manuscript_id,recipient,message_id,sent_at)
+            VALUES(1,1,'old@example.com','old',date('now','localtime','-1 day') || ' 23:59:59'),
+                  (1,1,'future@example.com','future',date('now','localtime','+1 day') || ' 00:00:00');
+            INSERT INTO tasks(name,manuscript_ids,status) VALUES('orphan','[999]','running');").unwrap();
+        store::insert_send_log(
+            &conn,
+            Some(1),
+            Some(1),
+            Some(1),
+            "error",
+            "send",
+            "failure",
+            "a@example.com",
+        )
+        .unwrap();
+        let before = crate::commands::dashboard::load_dashboard(&conn).unwrap();
+        assert_eq!(before.sent_today, 1);
+        assert_eq!(before.failed_today, 1);
+        assert_eq!(before.running_tasks, 1);
+        conn.execute("DELETE FROM task_logs", []).unwrap();
+        let after = crate::commands::dashboard::load_dashboard(&conn).unwrap();
+        assert_eq!(after.sent_today, 1);
+        assert_eq!(after.failed_today, 0); // failure metrics deliberately derive from logs
+        assert_eq!(after.tasks.len(), before.tasks.len());
+        assert_eq!(
+            store::load_accounts(&conn).unwrap()[0].sent_today,
+            after.sent_today
+        );
+    }
+
+    #[test]
+    fn runtime_indexes_install_after_previous_migration_and_are_idempotent() {
+        let conn = connection();
+        add_runtime_query_indexes(&conn).unwrap();
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM tasks WHERE status='running'",
+                [],
+                |r| r.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("tasks_status"), "{plan}");
+        let plan: String = conn.query_row("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM deliveries WHERE sent_at >= date('now','localtime') AND sent_at < date('now','localtime','+1 day')", [], |r| r.get(3)).unwrap();
+        assert!(plan.contains("deliveries_sent_at"), "{plan}");
+        let plan: String = conn.query_row("EXPLAIN QUERY PLAN SELECT id FROM task_logs WHERE level='error' ORDER BY id DESC LIMIT 20", [], |r| r.get(3)).unwrap();
+        assert!(plan.contains("task_logs_level_id"), "{plan}");
+    }
+    #[test]
+    fn manual_progress_ignores_duplicate_manuscript_ids_and_blank_recipients() {
+        let mut conn = connection();
+        seed(&conn);
+        conn.execute_batch(r#"UPDATE tasks SET manuscript_ids='[1,1]';
+            UPDATE manuscripts SET recipients='["编辑甲 <a@example.com>", "A@example.com", "  ", "b@example.com"]';"#).unwrap();
+        deliver(&mut conn, "a@example.com", None);
+        let task = store::load_task(&conn, 1).unwrap().unwrap();
+        assert_eq!((task.sent, task.total), (1, 2));
+    }
+    #[test]
+    fn failed_delivery_record_rolls_back_progress_and_account_bookkeeping() {
+        let mut conn = connection();
+        seed(&conn);
+        conn.execute_batch("CREATE TRIGGER deny_delivery AFTER INSERT ON deliveries BEGIN SELECT RAISE(ABORT,'fixture storage failure'); END;").unwrap();
+        let result = store::record_successful_delivery(
+            &mut conn,
+            store::SuccessfulDelivery {
+                task_id: Some(1),
+                account_id: 1,
+                manuscript_id: 1,
+                recipient: "a@example.com",
+                subject: "fixture",
+                message_id: "fixture",
+                increment_task_progress: true,
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 0);
+        assert!(store::load_account(&conn, 1)
+            .unwrap()
+            .unwrap()
+            .last_sent_at
+            .is_none());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM deliveries", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
         );
     }
 }

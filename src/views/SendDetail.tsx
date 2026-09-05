@@ -4,10 +4,10 @@ import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { Table } from '../components/Table'
 import { useConfirm, useToast } from '../components/feedback'
-import { Badge, Button, EmptyState, IconButton } from '../components/ui'
+import { Badge, Button, EmptyState, IconButton, Pager } from '../components/ui'
 import { formatTime, parseRecipient } from '../format'
 import { useNav } from '../nav'
-import type { Account, Delivery, Editor, Manuscript } from '../types'
+import type { Account, DeliverySummaryPage, PendingSend, Editor, Manuscript } from '../types'
 import { EditorIdentity, EditorTagsPop, EditorTypeChips, moreRect } from './Editors'
 import { editorRecipient, compareEditorsByFavorite, normalizeEditorTags, toInput } from './planShared'
 
@@ -23,11 +23,12 @@ interface DetailRow {
   sent: boolean
   sentCount: number
   lastSentAt: string | null
+  latestId: number | null
 }
 
-export function SendDetailModal({ manuscript, deliveries, editors, enabledAccounts, locked, onClose, onChanged }: {
+export function SendDetailModal({ manuscript, revision, editors, enabledAccounts, locked, onClose, onChanged }: {
   manuscript: Manuscript
-  deliveries: Delivery[]
+  revision: number
   editors: Editor[]
   enabledAccounts: Account[]
   locked: boolean
@@ -46,53 +47,78 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   const [resending, setResending] = useState<string | null>(null)
   const [more, setMore] = useState<{ key: string; top: number; left: number; width: number; workTypes: string[]; rejectedTypes: string[] } | null>(null)
 
-  // 只看这个计划自己的投递记录，按收件人邮箱归组。
-  const sentByEmail = useMemo(() => {
-    const map = new Map<string, Delivery[]>()
-    for (const d of deliveries) {
-      if (d.manuscript_id !== manuscript.id) continue
-      const email = parseRecipient(d.recipient).email.toLowerCase()
-      const list = map.get(email) ?? []
-      list.push(d)
-      map.set(email, list)
-    }
-    return map
-  }, [deliveries, manuscript.id])
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [result, setResult] = useState<DeliverySummaryPage | null>(null)
+  const [pending, setPending] = useState<PendingSend[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [resolving, setResolving] = useState(false)
+  const [refresh, setRefresh] = useState(0)
 
-  // 按默认发送顺序（收件人保存顺序）排列，并补充编辑资料与发送状态。
-  const rows = useMemo<DetailRow[]>(() => recipients.map((raw, i) => {
-    const parsed = parseRecipient(raw)
-    const email = parsed.email.toLowerCase()
-    const editor = editors.find((e) => e.email.toLowerCase() === email)
-    const profile = editor ? normalizeEditorTags(editor) : null
-    const sent = sentByEmail.get(email) ?? []
-    return {
-      order: i + 1,
-      raw,
-      name: profile?.name.trim() || parsed.name || parsed.email,
-      platform: profile?.platform.trim() || '—',
-      email: parsed.email,
-      notes: (profile?.notes ?? '').trim(),
-      work_type: profile?.work_type ?? [],
-      rejected_types: profile?.rejected_types ?? [],
-      sent: sent.length > 0,
-      sentCount: sent.length,
-      // API returns deliveries newest-first; the first row is the latest send.
-      lastSentAt: sent.length ? sent[0].sent_at : null,
-    }
-  }), [recipients, editors, sentByEmail])
-
-  const filtered = useMemo(() => {
+  const rows = useMemo<DetailRow[]>(() => {
+    const byEmail = new Map(editors.map(e => [e.email.trim().toLowerCase(), normalizeEditorTags(e)]))
+    return recipients.map((raw, i) => {
+      const parsed = parseRecipient(raw)
+      const profile = byEmail.get(parsed.email.trim().toLowerCase())
+      return {
+        order: i + 1, raw, name: profile?.name.trim() || parsed.name || parsed.email,
+        platform: profile?.platform.trim() || '—', email: parsed.email,
+        notes: (profile?.notes ?? '').trim(), work_type: profile?.work_type ?? [],
+        rejected_types: profile?.rejected_types ?? [], sent: false, sentCount: 0, lastSentAt: null, latestId: null,
+      }
+    })
+  }, [recipients, editors])
+  const emails = useMemo(() => rows.map(r => r.email), [rows])
+  const matching = useMemo(() => {
     const q = query.trim().toLowerCase()
-    let list = rows
-    if (filter === 'sent') list = list.filter((r) => r.sent)
-    else if (filter === 'unsent') list = list.filter((r) => !r.sent)
-    if (!q) return list
-    return list.filter((r) =>
-      [r.name, r.platform, r.email, r.notes, r.raw, ...r.work_type, ...r.rejected_types].join(' ').toLowerCase().includes(q))
-  }, [rows, query, filter])
+    return rows.flatMap((r, i) => !q || [r.name, r.platform, r.email, r.notes, r.raw, ...r.work_type, ...r.rejected_types]
+      .join(' ').toLowerCase().includes(q) ? [i] : [])
+  }, [rows, query])
 
-  const sentCount = rows.filter((r) => r.sent).length
+  useEffect(() => { setPage(1) }, [query, filter, pageSize, recipients])
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    setResult(null)
+    Promise.all([
+      api.deliverySummaryPage(manuscript.id, emails, matching, filter, pageSize, (page - 1) * pageSize),
+      api.listPendingSends(manuscript.id),
+    ]).then(([next, pending]) => {
+      if (cancelled) return
+      setResult(next)
+      setPending(pending)
+      setPage(p => Math.min(p, Math.max(1, Math.ceil(next.total / pageSize))))
+    }).catch(e => { if (!cancelled) setError(String(e)) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [manuscript.id, emails, matching, filter, pageSize, page, revision, refresh, locked])
+
+  const filtered = useMemo(() => (result?.items ?? []).flatMap(summary => {
+    const row = rows[summary.row_index]
+    return row ? [{ ...row, sent: summary.sent_count > 0, sentCount: summary.sent_count,
+      latestId: summary.latest_id, lastSentAt: summary.last_sent_at }] : []
+  }), [rows, result])
+  const sentCount = result?.sent_total
+  const busy = locked || resending !== null || loading || Boolean(error) || pending.length > 0 || resolving
+  const changed = () => { setRefresh(v => v + 1); onChanged() }
+  const resolvePending = async (attempt: PendingSend, sent: boolean) => {
+    if (locked || resending !== null || resolving || loading) return
+    const ok = await confirm({
+      title: sent ? '确认邮件已发出？' : '确认邮件未发出？',
+      message: sent
+        ? `请核对邮箱服务端或收件人反馈。确认后将补记 ${attempt.recipient} 的投递记录，不再发送邮件。`
+        : `只有确认 ${attempt.recipient} 未收到这次投递时才继续。仅凭发件箱没有记录不足以确认；解除待确认状态后，后续发送可能产生重复邮件。`,
+      confirmLabel: sent ? '已核对，补记成功' : '已核对，解除待确认',
+    })
+    if (!ok) return
+    setResolving(true)
+    try { await api.resolvePendingSend(attempt.id, sent); toast('发送结果已确认', 'success'); changed() }
+    catch (e) { toast(String(e), 'error') }
+    finally { setResolving(false) }
+  }
+
   const manualAccounts = useMemo(() => {
     if (!manuscript.account_ids.length) return enabledAccounts
     return enabledAccounts.filter((account) => manuscript.account_ids.includes(account.id))
@@ -129,12 +155,12 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
       await api.updateManuscript(manuscript.id, { ...toInput(manuscript), recipients: next })
       setRecipients(next)
       toast(okMsg, 'success')
-      onChanged()
+      changed()
     } catch (e) { toast(String(e), 'error') }
   }
 
   const removeRecipient = (email: string) => {
-    if (locked) { toast('计划正在发送，请先停止再修改收件人', 'warning'); return }
+    if (busy) { toast('请等待当前发送结束后再修改收件人', 'warning'); return }
     void mutateRecipients(
       recipients.filter((r) => parseRecipient(r).email.toLowerCase() !== email.toLowerCase()),
       '已从计划中移除该编辑',
@@ -142,9 +168,8 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
   }
 
   const resend = async (row: DetailRow) => {
-    const sent = sentByEmail.get(row.email.toLowerCase()) ?? []
-    const latest = sent[0]
-    if (!latest) { toast('没有找到可重发的投递记录', 'warning'); return }
+    if (busy) { toast('请等待当前发送结束后再重发', 'warning'); return }
+    if (row.latestId === null) { toast('没有找到可重发的投递记录', 'warning'); return }
     const ok = await confirm({
       title: '重新发送？',
       message: `将把「${row.name}」的稿件邮件重新发送一份到 ${row.email}，使用原发件账号。`,
@@ -153,22 +178,22 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     if (!ok) return
     setResending(row.email.toLowerCase())
     try {
-      await api.resendDelivery(latest.id)
+      await api.resendDelivery(row.latestId)
       toast('已重新发送', 'success')
-      onChanged()
+      changed()
     } catch (e) { toast(String(e), 'error') }
-    finally { setResending(null) }
+    finally { setResending(null); setRefresh(v => v + 1) }
   }
 
   const addEditor = (editor: Editor) => {
-    if (locked) { toast('计划正在发送，请先停止再修改收件人', 'warning'); return }
+    if (busy) { toast('请等待当前发送结束后再修改收件人', 'warning'); return }
     void mutateRecipients([...recipients, editorRecipient(editor)], '已加入计划，将按新顺序发送')
     setShowPicker(false)
     setPickQuery('')
   }
 
   const manualSend = async (row: DetailRow) => {
-    if (locked) { toast('这个计划正在发送，请先停止', 'warning'); return }
+    if (busy) { toast('这个计划正在发送，请先停止', 'warning'); return }
     if (!manualAccounts.length) { toast('计划配置的发件邮箱不可用，请先检查邮箱设置', 'warning'); return }
     const accountLabel = manualAccounts.length === 1
       ? manualAccounts[0].email
@@ -183,9 +208,9 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
     try {
       await api.sendManualDelivery(manuscript.id, row.raw, manualAccounts.map((a) => a.id))
       toast('已手动发送', 'success')
-      onChanged()
+      changed()
     } catch (e) { toast(String(e), 'error') }
-    finally { setResending(null) }
+    finally { setResending(null); setRefresh(v => v + 1) }
   }
 
   return (
@@ -193,16 +218,30 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
       <div className="send-detail-head">
         <div className="send-detail-title">
           <h3>{manuscript.title}</h3>
-          <p>按默认发送顺序排列 · 共 {recipients.length} 位收件人 · 已发送 {sentCount} · 未发送 {recipients.length - sentCount}</p>
+          <p>按默认发送顺序排列 · 共 {recipients.length} 位收件人 · 已发送 {sentCount ?? '…'} · 未发送 {sentCount === undefined ? '…' : recipients.length - sentCount}</p>
         </div>
         <div className="send-detail-actions">
           <label className="plan-search send-detail-search">
             <Search size={14} />
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索姓名、平台、邮箱或备注" />
           </label>
-          <Button size="sm" disabled={locked} onClick={() => setShowPicker((v) => !v)}><Plus size={14} />添加编辑</Button>
+          <Button size="sm" disabled={busy} onClick={() => setShowPicker((v) => !v)}><Plus size={14} />添加编辑</Button>
         </div>
       </div>
+
+      {pending.map(attempt => (
+        <div key={attempt.id} className="send-detail-pending" role="status">
+          <strong>发送结果待确认</strong>
+          <p>{attempt.recipient} · {attempt.subject} · {formatTime(attempt.created_at)}</p>
+          <p>发件邮箱：{attempt.account_email || `账号 #${attempt.account_id}`}</p>
+          <p>Message-ID：{attempt.message_id}。请先核对邮箱服务端或收件人反馈，暂缓重发。</p>
+          <div className="send-detail-pending-actions">
+          <Button size="sm" disabled={locked || resolving || resending !== null || loading} onClick={() => void resolvePending(attempt, true)}>已发出，补记成功</Button>
+          <Button size="sm" disabled={locked || resolving || resending !== null || loading} onClick={() => void resolvePending(attempt, false)}>未发出，解除待确认</Button>
+          </div>
+        </div>
+      ))}
+      {error && <p className="warn-text" role="alert">{error} <Button size="sm" onClick={() => setRefresh(v => v + 1)}>重试加载</Button></p>}
 
       {locked && (
         <p className="warn-text send-detail-locked">这个计划正在发送，收件人修改和手动发送已暂停，停止后才能操作。</p>
@@ -292,8 +331,8 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
               rowKey={(r) => `${r.order}-${r.email}`}
               dataSource={filtered}
               resetKey={`${query}\0${filter}`}
-              pagination={{ pageSize: 10, pageSizeOptions: [10, 20, 50] }}
-              empty={filter === 'sent' ? '还没有发送成功的记录。' : filter === 'unsent' ? '没有未发送的收件人。' : '没有匹配的收件人'}
+              pagination={false}
+              empty={loading ? '正在加载记录…' : error ? '记录加载失败，请重试' : filter === 'sent' ? '还没有发送成功的记录。' : filter === 'unsent' ? '没有未发送的收件人。' : '没有匹配的收件人'}
               columns={[
                 {
                   key: 'editor',
@@ -347,18 +386,18 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
                   render: (_value, r) => (
                     <div className="row-actions">
                       {!r.sent && (
-                        <Button size="sm" disabled={locked || resending !== null} onClick={() => void manualSend(r)}>
+                        <Button size="sm" disabled={busy} onClick={() => void manualSend(r)}>
                           {resending === r.email.toLowerCase() ? '发送中…' : '手动发送'}
                         </Button>
                       )}
                       {r.sent && (
                         <IconButton title={resending === r.email.toLowerCase() ? '发送中…' : '重新发送该编辑'}
-                          disabled={resending !== null} onClick={() => void resend(r)}>
+                          disabled={busy} onClick={() => void resend(r)}>
                           <RotateCcw size={14} />
                         </IconButton>
                       )}
                       <IconButton title={locked ? '计划正在发送，先停止再移除' : '移除该编辑'} className="danger"
-                        disabled={locked} onClick={() => removeRecipient(r.email)}>
+                        disabled={busy} onClick={() => removeRecipient(r.email)}>
                         <X size={14} />
                       </IconButton>
                     </div>
@@ -366,6 +405,8 @@ export function SendDetailModal({ manuscript, deliveries, editors, enabledAccoun
                 },
               ]}
             />
+            {result && !loading && !error && <Pager page={page} pageCount={Math.max(1, Math.ceil(result.total / pageSize))}
+              pageSize={pageSize} total={result.total} onPage={setPage} onPageSize={setPageSize} />}
           </div>
         </>
       )}

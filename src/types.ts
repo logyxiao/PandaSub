@@ -247,3 +247,13 @@ export interface StatsReport {
   groups: StatsGroup[]
   totals: StatsGroup
 }
+
+export interface DeliverySummaryPage {
+  items: { row_index: number; sent_count: number; latest_id: number | null; last_sent_at: string | null }[]
+  total: number
+  sent_total: number
+}
+export interface PendingSend {
+  id: number; task_id: number | null; account_id: number; manuscript_id: number
+  recipient: string; subject: string; message_id: string; created_at: string; account_email: string
+}

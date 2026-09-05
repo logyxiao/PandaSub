@@ -1013,6 +1013,10 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 .editor-row-status { display: grid; gap: 3px; justify-items: start; }
 .editor-row-status small { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .send-detail-locked { margin: 0 0 12px; }
+.send-detail-pending { margin: 0 0 14px; padding: 12px; border: 1px solid var(--warning-border); border-radius: var(--r-md); background: var(--warning-soft); color: #8F5A0E; overflow-wrap: anywhere; }
+.send-detail-pending p { margin: 6px 0; font-size: 12.5px; }
+.send-detail-pending-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
 .send-detail-filter { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 12px; }
 .seg-btn { padding: 4px 13px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: 12.5px; line-height: 1.5; cursor: pointer; transition: all .15s ease; }
 .seg-btn:hover { border-color: var(--brand); color: var(--ink); }

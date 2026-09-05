@@ -3,7 +3,7 @@ import { Heart, Inbox, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { api, onReply } from '../api'
 import { Table } from '../components/Table'
 import { useConfirm, useToast } from '../components/feedback'
-import { Badge, Button, EmptyState, IconButton, Select } from '../components/ui'
+import { Badge, Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
 import { Modal } from '../components/Modal'
 import { formatTime, parseRecipient, replyKindLabel, replyKindTone } from '../format'
 import { useNav } from '../nav'
@@ -64,6 +64,14 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
   const [kind, setKind] = useState(initialKind ?? '')
   const [taskFilter, setTaskFilter] = useState<number | ''>('')
   const [query, setQuery] = useState('')
+  const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [total, setTotal] = useState(0)
+  useEffect(() => {
+    const timer = window.setTimeout(() => { setSearch(query); setPage(1) }, 200)
+    return () => window.clearTimeout(timer)
+  }, [query])
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
@@ -78,15 +86,17 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
     const seq = ++requestSeq.current
     setLoading(true)
     try {
-      const next = await api.listReplies(kind || undefined, taskFilter || undefined)
+      const next = await api.listRepliesPage(kind, taskFilter, search, pageSize, (page - 1) * pageSize)
       if (seq !== requestSeq.current) return
-      setItems(next); setNotice('')
+      const lastPage = Math.max(1, Math.ceil(next.total / pageSize))
+      if (page > lastPage) { setPage(lastPage); return }
+      setItems(next.items); setTotal(next.total); setNotice('')
     } catch (e) { if (seq === requestSeq.current) setNotice(String(e)) }
     finally { if (seq === requestSeq.current) setLoading(false) }
-  }, [kind, taskFilter])
+  }, [kind, taskFilter, search, page, pageSize])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
-    setKind(initialKind ?? '')
+    setKind(initialKind ?? ''); setPage(1)
   }, [initialKind])
   useEffect(() => {
     void Promise.all([api.listEditors(), api.listTasks()])
@@ -96,21 +106,15 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
 
   useEffect(() => {
     let cancelled = false
+    const sequence = requestSeq
+    let timer: number | undefined
     let un: (() => void) | undefined
-    onReply((reply) => {
-      if (cancelled) return
-      if (kind === 'accepted' ? !reply.accepted : kind && reply.kind !== kind) return
-      if (taskFilter && reply.task_id !== taskFilter) return
-      setItems((prev) => [reply, ...prev.filter((r) => r.id !== reply.id)].slice(0, 300))
-    }).then((u) => {
-      if (cancelled) u()
-      else un = u
-    })
-    return () => {
-      cancelled = true
-      un?.()
-    }
-  }, [kind, taskFilter])
+    onReply(() => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => { if (!cancelled) void load() }, 200)
+    }).then((u) => { if (cancelled) u(); else un = u })
+    return () => { cancelled = true; window.clearTimeout(timer); un?.(); sequence.current++ }
+  }, [load])
 
   const scan = async () => {
     setScanning(true)
@@ -140,23 +144,6 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
     }
     return map
   }, [editors])
-
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return items.filter((r) => {
-      if (taskFilter && r.task_id !== taskFilter) return false
-      if (!q) return true
-      const { email, plan } = replyDelivery(r)
-      const editor = editorForReply(r, editorsByEmail)
-      const editorText = editor ? `${editor.name} ${editor.platform} ${editor.email}`.toLowerCase() : ''
-      return replyBodyPreview(r).toLowerCase().includes(q)
-        || email.toLowerCase().includes(q)
-        || plan.toLowerCase().includes(q)
-        || editorText.includes(q)
-        || (r.subject ?? '').toLowerCase().includes(q)
-        || (r.from_email ?? '').toLowerCase().includes(q)
-    })
-  }, [items, query, taskFilter, editorsByEmail])
 
   const toggleFavorite = async (editor: Editor) => {
     try {
@@ -191,10 +178,10 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
             <Search size={14} />
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索回复、编辑或邮箱" />
           </label>
-          <Select value={taskFilter} onChange={setTaskFilter} ariaLabel="按计划筛选" className="filter-select"
+          <Select value={taskFilter} onChange={(value) => { setTaskFilter(value); setPage(1) }} ariaLabel="按计划筛选" className="filter-select"
             searchable searchPlaceholder="搜索计划"
             options={[{ value: '' as const, label: '全部计划' }, ...tasks.map((task) => ({ value: task.id, label: task.name }))]} />
-          <Select value={kind} onChange={setKind} ariaLabel="按类型筛选" className="filter-select"
+          <Select value={kind} onChange={(value) => { setKind(value); setPage(1) }} ariaLabel="按类型筛选" className="filter-select"
             options={[
               { value: '', label: '全部回复' },
               { value: 'human', label: '人工回复' },
@@ -218,7 +205,7 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
         主题包含「自动回复 / 自動回覆 / AutoReply」判为自动回复，其余按人工回复；退信按投递失败标记识别。
       </p>
 
-      {!loading && !items.length ? (
+      {!loading && !total && !search && !kind && !taskFilter ? (
         <div className="panel">
           <EmptyState icon={Inbox} title="还没有识别到回复"
             desc="发出投稿后，后台会定期检查收件箱，并把回复分成人工、自动或退信。"
@@ -228,9 +215,9 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
         <div className="panel">
           <Table
             rowKey="id"
-            dataSource={visible}
+            dataSource={items}
             resetKey={`${kind}\0${taskFilter}\0${query}`}
-            pagination={{ pageSize: 10 }}
+            pagination={false}
             empty={loading ? '正在加载回复…' : '没有匹配的回复，换个内容或邮箱关键词试试。'}
             columns={[
               {
@@ -294,6 +281,8 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
               },
             ]}
           />
+          <Pager page={page} pageCount={Math.max(1, Math.ceil(total / pageSize))} pageSize={pageSize}
+            total={total} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1) }} />
         </div>
       )}
 

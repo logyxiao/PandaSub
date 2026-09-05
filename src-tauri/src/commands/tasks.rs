@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use rusqlite::Connection;
 use serde_json::json;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::models::TaskInput;
-use crate::state::{AppState, TaskHandle};
+use crate::state::{ensure_no_manual_sends, ensure_no_manual_task, AppState, TaskHandle};
 use crate::{scheduler, store};
 
 // ---------- Tasks ----------
@@ -22,7 +22,16 @@ pub fn update_task_accounts(
     id: i64,
     account_ids: Vec<i64>,
 ) -> Result<(), String> {
+    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    if registry.contains_key(&id) {
+        return Err("任务正在执行或暂停，请停止后再修改邮箱".into());
+    }
+    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+    ensure_no_manual_task(&pending, id)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    if let Some(current) = store::load_task(&conn, id)? {
+        ensure_no_manual_sends(&pending, &current.manuscript_ids)?;
+    }
     conn.execute(
         "UPDATE tasks SET account_ids = ?1 WHERE id = ?2",
         rusqlite::params![json!(account_ids).to_string(), id],
@@ -77,6 +86,9 @@ fn validate_task_input(conn: &Connection, input: &TaskInput) -> Result<(), Strin
             "所选邮箱不存在或未启用，请重新勾选参与发送的邮箱".into()
         });
     }
+    for id in &input.manuscript_ids {
+        store::ensure_manuscript_resolved(conn, *id)?;
+    }
     let manuscripts = store::load_manuscripts(conn, &input.manuscript_ids)?;
     if manuscripts.len() != input.manuscript_ids.len() {
         return Err("部分稿件不存在，请刷新后重试".into());
@@ -104,7 +116,9 @@ pub fn create_task(
         "stopped"
     };
     let id = {
+        let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
         let conn = state.db.lock().map_err(|e| e.to_string())?;
+        ensure_no_manual_sends(&pending, &input.manuscript_ids)?;
         validate_task_input(&conn, &input)?;
         conn.execute(
             "INSERT INTO tasks (name, manuscript_ids, account_ids, status, schedule_type, scheduled_at, retry_max)
@@ -143,7 +157,14 @@ pub fn update_task(
         "stopped"
     };
     let updated = (|| -> Result<(), String> {
+        let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+        ensure_no_manual_task(&pending, id)?;
         let conn = state.db.lock().map_err(|e| e.to_string())?;
+        ensure_no_manual_sends(&pending, &input.manuscript_ids)?;
+        if let Some(old) = store::load_task(&conn, id)? {
+            ensure_no_manual_sends(&pending, &old.manuscript_ids)?;
+        }
+        store::ensure_task_resolved(&conn, id)?;
         validate_task_input(&conn, &input)?;
         let changed = conn
             .execute(
@@ -328,7 +349,12 @@ pub fn delete_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     if registry.contains_key(&id) {
         return Err("任务正在启动、发送或暂停，请先停止并等待状态更新后再删除".into());
     }
+    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+    ensure_no_manual_task(&pending, id)?;
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    if let Some(current) = store::load_task(&conn, id)? {
+        ensure_no_manual_sends(&pending, &current.manuscript_ids)?;
+    }
     store::delete_task_data(&mut conn, id)
 }
 
@@ -362,7 +388,13 @@ fn start_reserved_task(
     handle: Arc<TaskHandle>,
 ) -> Result<(), String> {
     let prepared = (|| -> Result<(), String> {
+        let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+        let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+        ensure_no_manual_task(&pending, id)?;
         let conn = state.db.lock().map_err(|e| e.to_string())?;
+        if let Some(current) = store::load_task(&conn, id)? {
+            ensure_no_manual_sends(&pending, &current.manuscript_ids)?;
+        }
         let task = store::load_task(&conn, id)?.ok_or("任务不存在")?;
         if task.status == "running" {
             return Err("任务已在运行".into());
@@ -370,8 +402,16 @@ fn start_reserved_task(
         if task.status == "paused" {
             return Err("任务已暂停，请点击「继续」".into());
         }
+        if !store::load_accounts(&conn)?.iter().any(|account| {
+            account.enabled
+                && (task.account_ids.is_empty() || task.account_ids.contains(&account.id))
+        }) {
+            return Err("任务没有可用的发件邮箱，请重新配置邮箱".into());
+        }
+        store::ensure_task_resolved(&conn, id)?;
+        scheduler::claim_manuscripts(&registry, id, &task.manuscript_ids)?;
         // 已完成的重新发送要清零进度从头投递；已停止且发过部分的任务保留进度，继续投递剩余收件人（跳过已投递的）。
-        if task.sent == 0 || task.status == "completed" {
+        if task.status == "completed" {
             store::reset_task_progress(&conn, id)?;
         }
         Ok(())
@@ -391,24 +431,54 @@ fn start_reserved_task(
     Ok(())
 }
 
-#[tauri::command]
-pub fn pause_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    let handle = registry
-        .get(&id)
-        .ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
-    handle.pause();
+fn set_pause_state(
+    conn: &Connection,
+    handle: &TaskHandle,
+    id: i64,
+    paused: bool,
+) -> Result<crate::models::Task, String> {
+    if handle.is_stopped() {
+        return Err("任务正在停止，请等待状态更新".into());
+    }
+    let task = store::load_task(conn, id)?.ok_or("任务不存在")?;
+    if !matches!(task.status.as_str(), "running" | "paused") {
+        return Err("任务尚未运行或已结束，请刷新后重试".into());
+    }
+    store::set_task_status(conn, id, if paused { "paused" } else { "running" })?;
+    if paused {
+        handle.pause();
+    } else {
+        handle.resume();
+    }
+    store::load_task(conn, id)?.ok_or("任务不存在".into())
+}
+
+fn control_pause(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    paused: bool,
+) -> Result<(), String> {
+    let task = {
+        let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+        let handle = registry
+            .get(&id)
+            .ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        set_pause_state(&conn, handle, id, paused)?
+    };
+    let _ = app.emit("task", task);
     Ok(())
 }
 
 #[tauri::command]
-pub fn resume_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    let handle = registry
-        .get(&id)
-        .ok_or("任务未在运行（可能已结束，或应用重启后已自动停止）")?;
-    handle.resume();
-    Ok(())
+pub fn pause_task(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    control_pause(app, state, id, true)
+}
+
+#[tauri::command]
+pub fn resume_task(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    control_pause(app, state, id, false)
 }
 
 #[tauri::command]
@@ -428,4 +498,39 @@ pub fn stop_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+
+    #[test]
+    fn pause_persists_immediately_and_does_not_resurrect_finished_or_stopping_tasks() {
+        let conn = crate::db::test_database();
+        conn.execute_batch(
+            "INSERT INTO tasks(id,name,manuscript_ids,status) VALUES(1,'fixture','[]','running');",
+        )
+        .unwrap();
+        let handle = TaskHandle::new();
+        assert_eq!(
+            set_pause_state(&conn, &handle, 1, true).unwrap().status,
+            "paused"
+        );
+        assert!(handle.is_paused());
+        assert_eq!(
+            set_pause_state(&conn, &handle, 1, false).unwrap().status,
+            "running"
+        );
+        assert!(!handle.is_paused());
+        handle.stop();
+        assert!(set_pause_state(&conn, &handle, 1, false).is_err());
+        assert!(handle.is_stopped());
+        let handle = TaskHandle::new();
+        store::mark_task_finished(&conn, 1, "completed").unwrap();
+        assert!(set_pause_state(&conn, &handle, 1, true).is_err());
+        assert_eq!(
+            store::load_task(&conn, 1).unwrap().unwrap().status,
+            "completed"
+        );
+    }
 }

@@ -15,6 +15,10 @@ pub struct Account {
     pub imap_port: u16,
     pub check_replies: bool,
     pub imap_uid: i64,
+    #[serde(default)]
+    pub imap_uid_validity: i64,
+    #[serde(default)]
+    pub imap_generation: i64,
     pub created_at: String,
     /// 今日已成功发出的邮件数（投递记录，不入库）。
     #[serde(default)]
@@ -689,10 +693,26 @@ pub struct Reply {
     pub message_id: String,
     pub in_reply_to: String,
     pub imap_uid: i64,
+    #[serde(default)]
+    pub imap_uid_validity: i64,
+    #[serde(default)]
+    pub imap_generation: i64,
     pub received_at: String,
     pub created_at: String,
     pub recipient: String,
     pub task_name: String,
+}
+
+#[derive(Serialize)]
+pub struct LogPage {
+    pub items: Vec<TaskLog>,
+    pub total: i64,
+}
+
+#[derive(Serialize)]
+pub struct ReplyPage {
+    pub items: Vec<Reply>,
+    pub total: i64,
 }
 
 #[cfg(test)]

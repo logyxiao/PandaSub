@@ -47,7 +47,8 @@ pub fn build_mailer(account: &Account) -> Result<AsyncSmtpTransport<Tokio1Execut
 pub fn parse_recipient(raw: &str) -> (String, String) {
     let raw = raw.trim();
     if let Some(start) = raw.find('<') {
-        if let Some(end) = raw.find('>') {
+        if let Some(relative_end) = raw[start + 1..].find('>') {
+            let end = start + 1 + relative_end;
             let name = raw[..start].trim();
             let email = raw[start + 1..end].trim();
             let name = if name.is_empty() {
@@ -249,7 +250,40 @@ pub async fn send_email(
     content_type: &str,
     attachment: Option<(&str, &[u8])>,
 ) -> Result<String, SendError> {
-    let mailer = build_mailer(account).map_err(SendError::Smtp)?;
+    send_email_with_id(
+        account,
+        recipient,
+        sender_name,
+        subject,
+        body,
+        content_type,
+        attachment,
+        &make_message_id(),
+    )
+    .await
+}
+
+/// A transport failure without a server rejection can occur after DATA was
+/// accepted. It is deliberately not eligible for automatic retry.
+pub fn definitely_not_sent(error: &SendError) -> bool {
+    match error {
+        SendError::Build(_) => true,
+        SendError::Smtp(error) => error.status().is_some_and(|code| u16::from(code) >= 400),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn send_email_with_id(
+    account: &Account,
+    recipient: &str,
+    sender_name: &str,
+    subject: &str,
+    body: &str,
+    content_type: &str,
+    attachment: Option<(&str, &[u8])>,
+    message_id: &str,
+) -> Result<String, SendError> {
+    let mailer = build_mailer(account).map_err(|e| SendError::Build(e.to_string()))?;
     let from_src = if sender_name.trim().is_empty() {
         account.email.clone()
     } else {
@@ -262,12 +296,11 @@ pub async fn send_email(
     } else {
         ContentType::TEXT_PLAIN
     };
-    let message_id = make_message_id();
     let builder = Message::builder()
         .from(from)
         .to(to)
         .subject(subject)
-        .message_id(Some(message_id.clone()));
+        .message_id(Some(message_id.to_owned()));
     let message = if let Some((name, data)) = attachment {
         // 正文 + 附件（multipart/mixed），正文在前、附件在后。
         let part = Attachment::new(name.to_string()).body(
@@ -285,7 +318,7 @@ pub async fn send_email(
     }
     .map_err(|e| SendError::Build(e.to_string()))?;
     mailer.send(message).await.map_err(SendError::Smtp)?;
-    Ok(message_id)
+    Ok(message_id.to_owned())
 }
 
 fn smtp_error_detail(text: &str) -> Option<&str> {
@@ -431,6 +464,25 @@ mod tests {
     }
 
     #[test]
+    fn malformed_recipient_delimiters_do_not_panic() {
+        assert_eq!(
+            parse_recipient("> 编辑 <editor@example.com").1,
+            "> 编辑 <editor@example.com"
+        );
+        assert_eq!(
+            parse_recipient("> 编辑 <editor@example.com>").1,
+            "editor@example.com"
+        );
+        assert_eq!(
+            parse_recipient("编辑甲 <Editor@Example.com>"),
+            ("编辑甲".into(), "Editor@Example.com".into())
+        );
+        for input in ["", ">", "<", "><", "中文 > 名 <", "<>"] {
+            let _ = parse_recipient(input);
+        }
+    }
+
+    #[test]
     fn fixed_mail_template_is_always_selected() {
         let manuscript = manuscript_with_templates("second");
         for _ in 0..20 {
@@ -439,5 +491,76 @@ mod tests {
                 ("标题二".into(), "正文二".into())
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+    use std::io::{BufRead, Write};
+
+    /// A loopback protocol fixture, never a real email provider or account.
+    async fn server_outcome(explicit_rejection: bool) -> SendError {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            stream.write_all(b"220 fixture\r\n").unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut in_data = false;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
+                if in_data {
+                    if line == ".\r\n" {
+                        if explicit_rejection {
+                            stream
+                                .write_all(b"450 fixture temporary rejection\r\n")
+                                .unwrap();
+                        }
+                        // Otherwise simulate accepting DATA then losing the acknowledgement.
+                        break;
+                    }
+                } else if line.starts_with("EHLO") {
+                    stream
+                        .write_all(b"250-fixture\r\n250 8BITMIME\r\n")
+                        .unwrap();
+                } else if line.starts_with("DATA") {
+                    stream.write_all(b"354 fixture\r\n").unwrap();
+                    in_data = true;
+                } else {
+                    stream.write_all(b"250 fixture\r\n").unwrap();
+                }
+            }
+        });
+        let mailer = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
+            .port(port)
+            .timeout(Some(std::time::Duration::from_secs(2)))
+            .build();
+        let mail = Message::builder()
+            .from("fixture@example.com".parse().unwrap())
+            .to("recipient@example.com".parse().unwrap())
+            .body("fixture body".to_string())
+            .unwrap();
+        let error = mailer.send(mail).await.unwrap_err();
+        server.join().unwrap();
+        SendError::Smtp(error)
+    }
+
+    #[tokio::test]
+    async fn lost_data_acknowledgement_requires_review_not_retry() {
+        assert!(!definitely_not_sent(&server_outcome(false).await));
+    }
+    #[tokio::test]
+    async fn explicit_negative_data_response_can_retry() {
+        assert!(definitely_not_sent(&server_outcome(true).await));
+        assert!(definitely_not_sent(&SendError::Build(
+            "invalid address".into()
+        )));
     }
 }

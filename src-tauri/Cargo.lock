@@ -69,6 +69,7 @@ name = "app"
 version = "0.2.3"
 dependencies = [
  "calamine",
+ "chrono",
  "encoding_rs",
  "imap",
  "lettre",

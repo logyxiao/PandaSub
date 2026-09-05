@@ -61,25 +61,30 @@ export default function App() {
 
   useEffect(() => {
     let inFlight = false
+    let cancelled = false
+    let pending = false
+    let eventTimer: number | undefined
     const refresh = () => {
-      if (inFlight) return
+      if (cancelled) return
+      if (inFlight) { pending = true; return }
       inFlight = true
-      api.dashboard()
-        .then((d) => { setRunning(d.running_tasks); setEngineError(false) })
-        .catch(() => setEngineError(true))
-        .finally(() => { inFlight = false })
+      api.runningTaskCount()
+        .then((count) => { if (!cancelled) { setRunning(count); setEngineError(false) } })
+        .catch(() => { if (!cancelled) setEngineError(true) })
+        .finally(() => { inFlight = false; if (pending) { pending = false; refresh() } })
     }
     refresh()
     const timer = window.setInterval(refresh, 15000)
-    let cancelled = false
     let un: (() => void) | undefined
-    onTask(() => { if (!cancelled) refresh() }).then((u) => {
-      if (cancelled) u()
-      else un = u
-    })
+    onTask(() => {
+      if (!cancelled && eventTimer === undefined) eventTimer = window.setTimeout(() => {
+        eventTimer = undefined; refresh()
+      }, 200)
+    }).then((u) => { if (cancelled) u(); else un = u })
     return () => {
       cancelled = true
       window.clearInterval(timer)
+      window.clearTimeout(eventTimer)
       un?.()
     }
   }, [])

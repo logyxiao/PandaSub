@@ -76,6 +76,8 @@ pub fn run() {
                 db: db.clone(),
                 tasks: tasks.clone(),
                 quitting: quitting.clone(),
+                reply_scan: Arc::new(Mutex::new(())),
+                manual_sends: Arc::new(Mutex::new(HashMap::new())),
                 tray: Mutex::new(None),
             });
 
@@ -128,8 +130,17 @@ pub fn run() {
                 )?;
             }
 
-            scheduler::start_scheduler_watcher(app.handle().clone(), db.clone(), tasks.clone());
-            inbox::start_reply_watcher(app.handle().clone(), db.clone());
+            scheduler::start_scheduler_watcher(
+                app.handle().clone(),
+                db.clone(),
+                tasks.clone(),
+                app.state::<AppState>().manual_sends.clone(),
+            );
+            inbox::start_reply_watcher(
+                app.handle().clone(),
+                db.clone(),
+                app.state::<AppState>().reply_scan.clone(),
+            );
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -149,6 +160,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard,
+            commands::running_task_count,
             commands::get_stats,
             commands::list_accounts,
             commands::add_account,
@@ -176,6 +188,7 @@ pub fn run() {
             commands::resume_task,
             commands::stop_task,
             commands::list_logs,
+            commands::list_logs_page,
             commands::clear_logs,
             commands::export_logs,
             commands::get_settings,
@@ -186,10 +199,14 @@ pub fn run() {
             commands::backup_data,
             commands::show_main_window,
             commands::list_replies,
+            commands::list_replies_page,
             commands::scan_replies,
             commands::reclassify_replies,
             commands::extract_docx_text,
             commands::list_deliveries,
+            commands::delivery_summary_page,
+            commands::list_pending_sends,
+            commands::resolve_pending_send,
             commands::list_editors,
             commands::list_editor_groups,
             commands::create_editor_group,

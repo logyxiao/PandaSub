@@ -8,7 +8,7 @@ use crate::models::{
 const ACCOUNT_COLS: &str =
     "id, email, password, smtp_host, smtp_port, sender_name, provider, enabled,
                     last_sent_at,
-                    imap_host, imap_port, check_replies, imap_uid, created_at";
+                    imap_host, imap_port, check_replies, imap_uid, created_at, imap_uid_validity, imap_generation";
 
 fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     Ok(Account {
@@ -25,6 +25,8 @@ fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         imap_port: r.get::<_, i64>(10)? as u16,
         check_replies: r.get::<_, i64>(11)? != 0,
         imap_uid: r.get(12)?,
+        imap_uid_validity: r.get(14)?,
+        imap_generation: r.get(15)?,
         created_at: r.get(13)?,
         sent_today: 0,
     })
@@ -32,6 +34,19 @@ fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
 
 fn parse_list<T: serde::de::DeserializeOwned>(raw: &str) -> Vec<T> {
     serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn parse_required_list<T: serde::de::DeserializeOwned>(
+    raw: &str,
+    column: usize,
+) -> rusqlite::Result<Vec<T>> {
+    serde_json::from_str(raw).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
 }
 
 const MANUSCRIPT_COLS: &str = "id, title, body, content_type, recipients, sender_name,
@@ -51,7 +66,7 @@ fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
         title: r.get(1)?,
         body: r.get(2)?,
         content_type: r.get(3)?,
-        recipients: parse_list(&raw_recipients),
+        recipients: parse_required_list(&raw_recipients, 4)?,
         sender_name: r.get(5)?,
         word_count: r.get(6)?,
         category: r.get(7)?,
@@ -60,12 +75,12 @@ fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
         style: r.get(10)?,
         genres: parse_list(&raw_genres),
         excluded_types: parse_list(&raw_excluded),
-        account_ids: parse_list::<i64>(&raw_accounts),
+        account_ids: parse_required_list::<i64>(&raw_accounts, 18)?,
         send_interval_min: r.get(20)?,
         send_interval_from_sec: r.get(22)?,
         send_interval_to_sec: r.get(23)?,
         subject: r.get(12)?,
-        mail_templates: parse_list(&raw_templates),
+        mail_templates: parse_required_list(&raw_templates, 19)?,
         fixed_mail_template_id: r.get(21)?,
         file_name: r.get(13)?,
         has_file: r.get::<_, i64>(16)? != 0,
@@ -74,10 +89,64 @@ fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
     })
 }
 
+/// Call inside the transaction that inserts the account. Rows are never deleted.
+pub fn reserve_account_id(conn: &Connection) -> Result<i64, String> {
+    conn.execute("INSERT INTO account_ids DEFAULT VALUES", [])
+        .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn ensure_manuscript_idle(
+    conn: &Connection,
+    registry: &std::collections::HashMap<i64, std::sync::Arc<crate::state::TaskHandle>>,
+    id: i64,
+) -> Result<(), String> {
+    ensure_manuscript_resolved(conn, id)?;
+    if load_tasks(conn)?
+        .iter()
+        .any(|t| t.manuscript_ids.contains(&id) && registry.contains_key(&t.id))
+    {
+        return Err("计划正在执行或暂停，请停止后再修改配置".into());
+    }
+    Ok(())
+}
+
+pub fn ensure_account_idle(
+    conn: &Connection,
+    registry: &std::collections::HashMap<i64, std::sync::Arc<crate::state::TaskHandle>>,
+    id: i64,
+) -> Result<(), String> {
+    let pending: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM outgoing_attempts WHERE account_id=?1 AND status='pending')", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if pending {
+        return Err("该邮箱存在发送结果待确认的邮件，请先核对计划记录".into());
+    }
+    if load_tasks(conn)?.iter().any(|t| {
+        registry.contains_key(&t.id) && (t.account_ids.is_empty() || t.account_ids.contains(&id))
+    }) {
+        return Err("邮箱正在参与任务，请停止相关任务后再修改或删除".into());
+    }
+    Ok(())
+}
+
 pub fn now_str(connection: &Connection) -> Result<String, String> {
     connection
         .query_row("SELECT datetime('now','localtime')", [], |r| r.get(0))
         .map_err(|e| e.to_string())
+}
+
+/// Scheduler needs configuration, not per-day delivery aggregates.
+pub fn load_enabled_account_configs(conn: &Connection) -> Result<Vec<Account>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {ACCOUNT_COLS} FROM accounts WHERE enabled = 1 ORDER BY id ASC"
+        ))
+        .map_err(|e| e.to_string())?;
+    let result = stmt
+        .query_map([], map_account)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string());
+    result
 }
 
 pub fn load_accounts(conn: &Connection) -> Result<Vec<Account>, String> {
@@ -101,7 +170,8 @@ fn sent_today_by_account(conn: &Connection) -> Result<std::collections::HashMap<
     let mut stmt = conn
         .prepare(
             "SELECT account_id, COUNT(*) FROM deliveries
-             WHERE account_id IS NOT NULL AND date(sent_at) = date('now','localtime')
+             WHERE account_id IS NOT NULL AND sent_at >= date('now','localtime')
+               AND sent_at < date('now','localtime', '+1 day')
              GROUP BY account_id",
         )
         .map_err(|e| e.to_string())?;
@@ -179,8 +249,16 @@ pub fn load_manuscript_attachment(
         .optional()
         .map_err(|e| e.to_string())?;
     match row {
-        Some((name, Some(data))) if !data.is_empty() => Ok(Some((name, data))),
-        _ => Ok(None),
+        Some((name, Some(data))) if !name.trim().is_empty() && !data.is_empty() => {
+            Ok(Some((name, data)))
+        }
+        Some((name, data))
+            if name.trim().is_empty() && data.as_ref().map_or(true, Vec::is_empty) =>
+        {
+            Ok(None)
+        }
+        Some(_) => Err("附件名称或内容缺失，请重新选择附件后再发送".into()),
+        None => Err("稿件不存在，请刷新后重试".into()),
     }
 }
 
@@ -333,8 +411,8 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
             Ok(Task {
                 id: r.get(0)?,
                 name: r.get(1)?,
-                manuscript_ids: parse_list::<i64>(&raw_ids),
-                account_ids: parse_list::<i64>(&raw_accounts),
+                manuscript_ids: parse_required_list::<i64>(&raw_ids, 2)?,
+                account_ids: parse_required_list::<i64>(&raw_accounts, 3)?,
                 status: r.get(4)?,
                 schedule_type: r.get(5)?,
                 scheduled_at: r.get(6)?,
@@ -367,8 +445,8 @@ pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
             Ok(Task {
                 id: r.get(0)?,
                 name: r.get(1)?,
-                manuscript_ids: parse_list::<i64>(&raw_ids),
-                account_ids: parse_list::<i64>(&raw_accounts),
+                manuscript_ids: parse_required_list::<i64>(&raw_ids, 2)?,
+                account_ids: parse_required_list::<i64>(&raw_accounts, 3)?,
                 status: r.get(4)?,
                 schedule_type: r.get(5)?,
                 scheduled_at: r.get(6)?,
@@ -430,57 +508,79 @@ pub fn prune_orphan_tasks(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+fn map_log(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskLog> {
+    Ok(TaskLog {
+        id: r.get(0)?,
+        task_id: r.get(1)?,
+        manuscript_id: r.get(2)?,
+        account_id: r.get(3)?,
+        level: r.get(4)?,
+        category: r.get(5)?,
+        message: r.get(6)?,
+        recipient: r.get(7)?,
+        created_at: r.get(8)?,
+    })
+}
+
+// Page, count and export share the exact same predicates. INSTR treats %, _ literally.
+pub fn query_logs(
+    conn: &Connection,
+    task_id: Option<i64>,
+    level: Option<&str>,
+    query: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<crate::models::LogPage, String> {
+    let mut clauses = vec!["1 = 1"];
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    if let Some(id) = task_id {
+        clauses.push("l.task_id = ?");
+        values.push(id.into());
+    }
+    if let Some(level) = level.filter(|v| !v.is_empty()) {
+        clauses.push("l.level = ?");
+        values.push(level.to_owned().into());
+    }
+    if let Some(query) = query.map(str::trim).filter(|v| !v.is_empty()) {
+        clauses.push(
+            "(instr(lower(COALESCE(l.recipient, '')), ?) > 0 OR EXISTS
+            (SELECT 1 FROM accounts a WHERE a.id = l.account_id AND instr(lower(a.email), ?) > 0))",
+        );
+        values.push(query.to_lowercase().into());
+        values.push(query.to_lowercase().into());
+    }
+    let predicate = clauses.join(" AND ");
+    let total = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM task_logs l WHERE {predicate}"),
+            rusqlite::params_from_iter(&values),
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    values.push(limit.into());
+    values.push(offset.max(0).into());
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT l.id, l.task_id, l.manuscript_id, l.account_id,
+        l.level, l.category, l.message, l.recipient, l.created_at FROM task_logs l
+        WHERE {predicate} ORDER BY l.id DESC LIMIT ? OFFSET ?"
+        ))
+        .map_err(|e| e.to_string())?;
+    let items = stmt
+        .query_map(rusqlite::params_from_iter(&values), map_log)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(crate::models::LogPage { items, total })
+}
+
 pub fn load_logs(
     conn: &Connection,
     task_id: Option<i64>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<TaskLog>, String> {
-    let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<TaskLog> {
-        Ok(TaskLog {
-            id: r.get(0)?,
-            task_id: r.get(1)?,
-            manuscript_id: r.get(2)?,
-            account_id: r.get(3)?,
-            level: r.get(4)?,
-            category: r.get(5)?,
-            message: r.get(6)?,
-            recipient: r.get(7)?,
-            created_at: r.get(8)?,
-        })
-    };
-
-    let result = match task_id {
-        Some(tid) => {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, task_id, manuscript_id, account_id, level, category, message, recipient, created_at
-                     FROM task_logs WHERE task_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
-                )
-                .map_err(|e| e.to_string())?;
-            let collected: Vec<TaskLog> = stmt
-                .query_map(params![tid, limit, offset], map_row)
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            collected
-        }
-        None => {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, task_id, manuscript_id, account_id, level, category, message, recipient, created_at
-                     FROM task_logs ORDER BY id DESC LIMIT ?1 OFFSET ?2",
-                )
-                .map_err(|e| e.to_string())?;
-            let collected: Vec<TaskLog> = stmt
-                .query_map(params![limit, offset], map_row)
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            collected
-        }
-    };
-    Ok(result)
+    Ok(query_logs(conn, task_id, None, None, limit, offset)?.items)
 }
 
 pub fn insert_log(
@@ -512,6 +612,7 @@ pub fn insert_log(
 }
 
 /// 发送类日志：额外记录计划稿件和收件人，供记录页展示。
+#[allow(clippy::too_many_arguments)]
 pub fn insert_send_log(
     conn: &Connection,
     task_id: Option<i64>,
@@ -579,12 +680,16 @@ pub fn increment_task_sent(conn: &Connection, id: i64) -> Result<(), String> {
 
 /// Clear progress so a stopped/completed task can be run again from the start.
 pub fn reset_task_progress(conn: &Connection, id: i64) -> Result<(), String> {
-    conn.execute(
-        "UPDATE tasks SET sent = 0, total = 0, started_at = NULL, finished_at = NULL WHERE id = ?1",
-        [id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    ensure_task_resolved(conn, id)?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO task_runs DEFAULT VALUES", [])
+        .map_err(|e| e.to_string())?;
+    let run_id = tx.last_insert_rowid();
+    tx.execute(
+        "UPDATE tasks SET sent = 0, total = 0, run_id = ?2, started_at = NULL, finished_at = NULL WHERE id = ?1",
+        params![id, run_id],
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// 记录一次成功发送：仅更新「上次发送时间」，用于界面展示。
@@ -689,12 +794,141 @@ pub fn insert_delivery(
     message_id: &str,
 ) -> Result<i64, String> {
     conn.execute(
-        "INSERT INTO deliveries (task_id, account_id, manuscript_id, recipient, subject, message_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO deliveries (task_id, account_id, manuscript_id, recipient, subject, message_id, run_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, COALESCE(
+             (SELECT run_id FROM tasks WHERE id = ?1),
+             (SELECT run_id FROM tasks WHERE ?1 IS NULL AND EXISTS
+                 (SELECT 1 FROM json_each(tasks.manuscript_ids) WHERE value = ?3)
+              ORDER BY id DESC LIMIT 1), 0))",
         params![task_id, account_id, manuscript_id, recipient, subject, message_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Persisted before any network work. A pending attempt always requires
+/// explicit reconciliation; restarting/resetting tasks never clears it.
+pub fn ensure_manuscript_resolved(conn: &Connection, id: i64) -> Result<(), String> {
+    let pending: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM outgoing_attempts WHERE manuscript_id=?1 AND status='pending')",
+        [id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if pending {
+        return Err("存在发送结果待确认的邮件，请在计划记录中核对后处理".into());
+    }
+    Ok(())
+}
+
+pub fn ensure_task_resolved(conn: &Connection, id: i64) -> Result<(), String> {
+    let pending: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM outgoing_attempts WHERE task_id=?1 AND status='pending')",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if pending {
+        return Err("任务存在发送结果待确认的邮件，请先核对计划记录".into());
+    }
+    if let Some(task) = load_task(conn, id)? {
+        for mid in task.manuscript_ids {
+            ensure_manuscript_resolved(conn, mid)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn begin_send_attempt(
+    conn: &Connection,
+    delivery: &SuccessfulDelivery<'_>,
+) -> Result<(), String> {
+    ensure_manuscript_resolved(conn, delivery.manuscript_id)?;
+    conn.execute("INSERT INTO outgoing_attempts(task_id,run_id,account_id,manuscript_id,recipient,subject,message_id,increment_task_progress)
+        VALUES(?1, COALESCE((SELECT run_id FROM tasks WHERE id=?1),
+        (SELECT run_id FROM tasks WHERE ?1 IS NULL AND EXISTS
+        (SELECT 1 FROM json_each(tasks.manuscript_ids) WHERE value=?3) ORDER BY id DESC LIMIT 1),0), ?2,?3,?4,?5,?6,?7)",
+        params![delivery.task_id, delivery.account_id, delivery.manuscript_id,
+            delivery.recipient.trim().to_lowercase(), delivery.subject, delivery.message_id, delivery.increment_task_progress])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn mark_attempt_not_sent(conn: &Connection, message_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE outgoing_attempts SET status='not_sent' WHERE message_id=?1 AND status='pending'",
+        [message_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct PendingSend {
+    pub id: i64,
+    pub task_id: Option<i64>,
+    pub account_id: i64,
+    pub manuscript_id: i64,
+    pub recipient: String,
+    pub subject: String,
+    pub message_id: String,
+    pub created_at: String,
+    pub increment_task_progress: bool,
+    pub account_email: String,
+}
+
+pub fn pending_sends(conn: &Connection, manuscript_id: i64) -> Result<Vec<PendingSend>, String> {
+    let mut stmt = conn.prepare("SELECT id,task_id,account_id,manuscript_id,recipient,subject,message_id,created_at,increment_task_progress,
+        COALESCE((SELECT email FROM accounts WHERE accounts.id=outgoing_attempts.account_id),'')
+        FROM outgoing_attempts WHERE manuscript_id=?1 AND status='pending' ORDER BY id").map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([manuscript_id], |r| {
+            Ok(PendingSend {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                account_id: r.get(2)?,
+                manuscript_id: r.get(3)?,
+                recipient: r.get(4)?,
+                subject: r.get(5)?,
+                message_id: r.get(6)?,
+                created_at: r.get(7)?,
+                increment_task_progress: r.get(8)?,
+                account_email: r.get(9)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string());
+    rows
+}
+
+/// User has checked the server/recipient. This operation itself sends no mail.
+pub fn resolve_send_attempt(conn: &mut Connection, id: i64, sent: bool) -> Result<(), String> {
+    let mid: i64 = conn
+        .query_row(
+            "SELECT manuscript_id FROM outgoing_attempts WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let pending = pending_sends(conn, mid)?.into_iter().find(|p| p.id == id);
+    let Some(pending) = pending else {
+        return Ok(());
+    }; // idempotent double click
+    if !sent {
+        return mark_attempt_not_sent(conn, &pending.message_id);
+    }
+    record_delivery_at(
+        conn,
+        SuccessfulDelivery {
+            task_id: pending.task_id,
+            account_id: pending.account_id,
+            manuscript_id: mid,
+            recipient: &pending.recipient,
+            subject: &pending.subject,
+            message_id: &pending.message_id,
+            increment_task_progress: pending.increment_task_progress,
+        },
+        Some(&pending.created_at),
+    )
 }
 
 pub struct SuccessfulDelivery<'a> {
@@ -711,7 +945,31 @@ pub fn record_successful_delivery(
     conn: &mut Connection,
     delivery: SuccessfulDelivery<'_>,
 ) -> Result<(), String> {
+    record_delivery_at(conn, delivery, None)
+}
+
+fn record_delivery_at(
+    conn: &mut Connection,
+    delivery: SuccessfulDelivery<'_>,
+    original_attempt_at: Option<&str>,
+) -> Result<(), String> {
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let already_recorded: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM deliveries WHERE message_id=?1)",
+            [delivery.message_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if already_recorded {
+        return Ok(());
+    }
+    transaction
+        .execute(
+            "UPDATE outgoing_attempts SET status='sent' WHERE message_id=?1 AND status='pending'",
+            [delivery.message_id],
+        )
+        .map_err(|e| e.to_string())?;
     if delivery.increment_task_progress {
         let task_id = delivery.task_id.ok_or("任务投递缺少任务 ID")?;
         increment_task_sent(&transaction, task_id)?;
@@ -726,10 +984,77 @@ pub fn record_successful_delivery(
         delivery.subject,
         delivery.message_id,
     )?;
+    transaction
+        .execute(
+            "UPDATE deliveries SET
+        run_id = (SELECT run_id FROM outgoing_attempts WHERE message_id=?1)
+        WHERE message_id=?1 AND EXISTS(SELECT 1 FROM outgoing_attempts WHERE message_id=?1)",
+            [delivery.message_id],
+        )
+        .map_err(|e| e.to_string())?;
+    if let Some(at) = original_attempt_at {
+        transaction
+            .execute(
+                "UPDATE deliveries SET sent_at=?2 WHERE message_id=?1",
+                params![delivery.message_id, at],
+            )
+            .map_err(|e| e.to_string())?;
+        transaction.execute("UPDATE accounts SET last_sent_at=(SELECT MAX(sent_at) FROM deliveries WHERE account_id=?1) WHERE id=?1", [delivery.account_id]).map_err(|e| e.to_string())?;
+    }
+    if !delivery.increment_task_progress {
+        let task_id = match delivery.task_id {
+            Some(id) => Some(id),
+            None => transaction.query_row("SELECT id FROM tasks WHERE EXISTS (SELECT 1 FROM json_each(tasks.manuscript_ids) WHERE value = ?1) ORDER BY id DESC LIMIT 1",
+                [delivery.manuscript_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?,
+        };
+        if let Some(id) = task_id {
+            refresh_idle_task_progress(&transaction, id)?;
+        }
+    }
     transaction.commit().map_err(|e| e.to_string())
 }
 
+fn refresh_idle_task_progress(conn: &Connection, task_id: i64) -> Result<(), String> {
+    let Some(task) = load_task(conn, task_id)? else {
+        return Ok(());
+    };
+    if task.schedule_type == "loop" || matches!(task.status.as_str(), "running" | "paused") {
+        return Ok(());
+    }
+    let mut sent = 0usize;
+    let mut total = 0usize;
+    for id in task
+        .manuscript_ids
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>()
+    {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT recipients FROM manuscripts WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let targets = parse_list::<String>(raw.as_deref().unwrap_or("[]"))
+            .iter()
+            .map(|r| crate::smtp::parse_recipient(r).1.trim().to_lowercase())
+            .filter(|email| !email.is_empty())
+            .collect::<std::collections::HashSet<_>>();
+        let delivered = delivered_emails_for_task_manuscript(conn, task_id, id)?;
+        sent += targets.intersection(&delivered).count();
+        total += targets.len();
+    }
+    conn.execute(
+        "UPDATE tasks SET sent = ?1, total = ?2 WHERE id = ?3",
+        params![sent as i64, total as i64, task_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn delete_task_data(conn: &mut Connection, id: i64) -> Result<(), String> {
+    ensure_task_resolved(conn, id)?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
     transaction
         .execute(
@@ -753,6 +1078,7 @@ pub fn delete_task_data(conn: &mut Connection, id: i64) -> Result<(), String> {
 }
 
 pub fn delete_manuscript_data(conn: &mut Connection, id: i64) -> Result<(), String> {
+    ensure_manuscript_resolved(conn, id)?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
     transaction
         .execute(
@@ -785,7 +1111,8 @@ pub fn delivered_emails_for_task_manuscript(
     let mut stmt = conn
         .prepare(
             "SELECT DISTINCT recipient FROM deliveries
-             WHERE (task_id = ?1 OR task_id IS NULL) AND manuscript_id = ?2",
+             WHERE (task_id = ?1 OR task_id IS NULL) AND manuscript_id = ?2
+               AND run_id = COALESCE((SELECT run_id FROM tasks WHERE id = ?1), 0)",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -817,15 +1144,6 @@ pub fn delivered_emails_for_manuscript(
         .map_err(|e| e.to_string())
 }
 
-pub fn task_delivery_count(conn: &Connection, task_id: i64) -> Result<i64, String> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM deliveries WHERE task_id = ?1",
-        [task_id],
-        |r| r.get(0),
-    )
-    .map_err(|e| e.to_string())
-}
-
 /// 按 id 读取一条投递记录，用于「重新发送」。
 pub fn load_delivery(conn: &Connection, id: i64) -> Result<Option<Delivery>, String> {
     let mut stmt = conn
@@ -853,16 +1171,41 @@ pub fn load_delivery(conn: &Connection, id: i64) -> Result<Option<Delivery>, Str
 }
 
 pub fn load_recent_deliveries(conn: &Connection, days: i64) -> Result<Vec<Delivery>, String> {
+    load_deliveries_where(
+        conn,
+        "sent_at >= datetime('now','localtime', '-' || ?1 || ' days')",
+        days,
+    )
+}
+
+pub fn load_account_deliveries(
+    conn: &Connection,
+    account_id: i64,
+) -> Result<Vec<Delivery>, String> {
+    load_deliveries_where(conn, "account_id = ?1", account_id)
+}
+
+pub fn load_manuscript_deliveries(
+    conn: &Connection,
+    manuscript_id: i64,
+) -> Result<Vec<Delivery>, String> {
+    load_deliveries_where(conn, "manuscript_id = ?1", manuscript_id)
+}
+
+// Predicates are internal constants; user-supplied values stay bound parameters.
+fn load_deliveries_where(
+    conn: &Connection,
+    predicate: &str,
+    value: i64,
+) -> Result<Vec<Delivery>, String> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id, task_id, account_id, manuscript_id, recipient, subject, message_id, sent_at
-             FROM deliveries
-             WHERE sent_at >= datetime('now','localtime', '-' || ?1 || ' days')
-             ORDER BY id DESC",
-        )
+         FROM deliveries WHERE {predicate} ORDER BY id DESC"
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([days], |r| {
+        .query_map([value], |r| {
             Ok(Delivery {
                 id: r.get(0)?,
                 task_id: r.get(1)?,
@@ -879,20 +1222,48 @@ pub fn load_recent_deliveries(conn: &Connection, days: i64) -> Result<Vec<Delive
         .map_err(|e| e.to_string())
 }
 
-pub fn set_account_imap_uid(conn: &Connection, account_id: i64, uid: i64) -> Result<(), String> {
+pub fn reset_account_mailbox(conn: &Connection, account_id: i64) -> Result<(), String> {
+    conn.execute("UPDATE accounts SET imap_uid = 0, imap_uid_validity = 0, imap_generation = imap_generation + 1 WHERE id = ?1", [account_id]).map_err(|e| e.to_string())?;
     conn.execute(
-        "UPDATE accounts SET imap_uid = ?1 WHERE id = ?2",
-        params![uid, account_id],
+        "DELETE FROM settings WHERE key LIKE ?1",
+        [format!("replies.autoreply_match_backfill.%.{account_id}")],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-pub fn reply_exists(conn: &Connection, account_id: i64, imap_uid: i64) -> Result<bool, String> {
+pub fn set_account_imap_cursor(
+    conn: &Connection,
+    account_id: i64,
+    uid: i64,
+    validity: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE accounts SET imap_uid = ?1, imap_uid_validity = ?3 WHERE id = ?2",
+        params![uid, account_id, validity],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn reply_exists(
+    conn: &Connection,
+    account: &Account,
+    imap_uid: i64,
+    validity: i64,
+    message_id: &str,
+) -> Result<bool, String> {
     let n: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM replies WHERE account_id = ?1 AND imap_uid = ?2",
-            params![account_id, imap_uid],
+            "SELECT COUNT(*) FROM replies WHERE account_id = ?1 AND imap_generation = ?2
+         AND ((imap_uid_validity = ?3 AND imap_uid = ?4) OR (?5 <> '' AND message_id = ?5))",
+            params![
+                account.id,
+                account.imap_generation,
+                validity,
+                imap_uid,
+                message_id
+            ],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
@@ -915,10 +1286,13 @@ pub fn insert_reply(
     message_id: &str,
     in_reply_to: &str,
     imap_uid: i64,
+    imap_uid_validity: i64,
+    imap_generation: i64,
+    received_at: &str,
 ) -> Result<Reply, String> {
     conn.execute(
-        "INSERT INTO replies (delivery_id, account_id, task_id, from_email, subject, snippet, body, kind, reason, accepted, message_id, in_reply_to, imap_uid)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        "INSERT INTO replies (delivery_id, account_id, task_id, from_email, subject, snippet, body, kind, reason, accepted, message_id, in_reply_to, imap_uid, imap_uid_validity, imap_generation, received_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, COALESCE(NULLIF(?16, ''), datetime('now','localtime')))",
         params![
             delivery_id,
             account_id,
@@ -932,7 +1306,10 @@ pub fn insert_reply(
             accepted,
             message_id,
             in_reply_to,
-            imap_uid
+            imap_uid,
+            imap_uid_validity,
+            imap_generation,
+            received_at
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -975,7 +1352,13 @@ pub fn insert_reply(
         message_id: message_id.into(),
         in_reply_to: in_reply_to.into(),
         imap_uid,
-        received_at: created_at.clone(),
+        imap_uid_validity,
+        imap_generation,
+        received_at: if received_at.is_empty() {
+            created_at.clone()
+        } else {
+            received_at.into()
+        },
         created_at,
         recipient,
         task_name,
@@ -998,11 +1381,58 @@ fn map_reply(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reply> {
         message_id: r.get(11)?,
         in_reply_to: r.get(12)?,
         imap_uid: r.get(13)?,
+        imap_uid_validity: r.get(18)?,
+        imap_generation: r.get(19)?,
         received_at: r.get(14)?,
         created_at: r.get(15)?,
         recipient: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
         task_name: r.get::<_, Option<String>>(17)?.unwrap_or_default(),
     })
+}
+
+const REPLY_FROM: &str = "FROM replies r
+    LEFT JOIN deliveries d ON d.id = r.delivery_id
+    LEFT JOIN tasks t ON t.id = r.task_id
+    LEFT JOIN manuscripts m ON m.id = d.manuscript_id";
+const REPLY_FILTER: &str = "WHERE
+    (?1 IS NULL OR (?1 = 'accepted' AND r.accepted = 1) OR (?1 <> 'accepted' AND r.kind = ?1))
+    AND (?2 IS NULL OR r.task_id = ?2)
+    AND (?3 = '' OR instr(lower(r.body || ' ' || r.snippet || ' ' || r.subject || ' ' || r.from_email
+        || ' ' || COALESCE(d.recipient, '') || ' ' || COALESCE(t.name, m.title, '')), ?3) > 0
+        OR EXISTS (SELECT 1 FROM editors e
+            WHERE (lower(e.email) = lower(d.recipient) OR lower(e.email) = lower(r.from_email))
+            AND instr(lower(e.name || ' ' || e.platform || ' ' || e.email), ?3) > 0))";
+
+pub fn query_replies(
+    conn: &Connection,
+    kind: Option<&str>,
+    task_id: Option<i64>,
+    query: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<crate::models::ReplyPage, String> {
+    let query = query.trim().to_lowercase();
+    let total = conn
+        .query_row(
+            &format!("SELECT COUNT(*) {REPLY_FROM} {REPLY_FILTER}"),
+            params![kind, task_id, query],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let sql = format!("SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject,
+        r.snippet, r.body, r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid,
+        r.received_at, r.created_at, d.recipient, COALESCE(t.name, m.title, ''), r.imap_uid_validity, r.imap_generation
+        {REPLY_FROM} {REPLY_FILTER} ORDER BY r.id DESC LIMIT ?4 OFFSET ?5");
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let items = stmt
+        .query_map(
+            params![kind, task_id, query, limit.max(1), offset.max(0)],
+            map_reply,
+        )
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(crate::models::ReplyPage { items, total })
 }
 
 pub fn load_replies(
@@ -1011,24 +1441,7 @@ pub fn load_replies(
     task_id: Option<i64>,
     limit: i64,
 ) -> Result<Vec<Reply>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject, r.snippet, r.body,
-                    r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid, r.received_at, r.created_at,
-                    d.recipient, t.name
-             FROM replies r
-             LEFT JOIN deliveries d ON d.id = r.delivery_id
-             LEFT JOIN tasks t ON t.id = r.task_id
-             WHERE (?1 IS NULL OR (?1 = 'accepted' AND r.accepted = 1) OR (?1 <> 'accepted' AND r.kind = ?1))
-               AND (?2 IS NULL OR r.task_id = ?2)
-             ORDER BY r.id DESC LIMIT ?3",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![kind, task_id, limit], map_reply)
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    Ok(query_replies(conn, kind, task_id, "", limit, 0)?.items)
 }
 
 pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
@@ -1072,14 +1485,20 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE accounts (id INTEGER PRIMARY KEY, last_sent_at TEXT);
-                 CREATE TABLE manuscripts (id INTEGER PRIMARY KEY);
+                 CREATE TABLE manuscripts (id INTEGER PRIMARY KEY, title TEXT NOT NULL DEFAULT '', recipients TEXT NOT NULL DEFAULT '[]');
+                 CREATE TABLE editors (id INTEGER PRIMARY KEY, email TEXT, name TEXT, platform TEXT);
                  CREATE TABLE tasks (
                     id INTEGER PRIMARY KEY, name TEXT NOT NULL, manuscript_ids TEXT NOT NULL,
                     account_ids TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'stopped',
                     schedule_type TEXT NOT NULL DEFAULT 'immediate', scheduled_at TEXT,
                     retry_max INTEGER NOT NULL DEFAULT 3, sent INTEGER NOT NULL DEFAULT 0,
                     total INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '',
-                    started_at TEXT, finished_at TEXT
+                    started_at TEXT, finished_at TEXT, run_id INTEGER NOT NULL DEFAULT 0
+                 );
+                 CREATE TABLE task_runs (id INTEGER PRIMARY KEY AUTOINCREMENT);
+                 CREATE TABLE outgoing_attempts (
+                    id INTEGER PRIMARY KEY, task_id INTEGER, account_id INTEGER, manuscript_id INTEGER,
+                    recipient TEXT, subject TEXT, message_id TEXT, status TEXT, run_id INTEGER, created_at TEXT
                  );
                  CREATE TABLE task_logs (
                     id INTEGER PRIMARY KEY, task_id INTEGER, manuscript_id INTEGER,
@@ -1090,7 +1509,7 @@ mod tests {
                  CREATE TABLE deliveries (
                     id INTEGER PRIMARY KEY, task_id INTEGER, account_id INTEGER,
                     manuscript_id INTEGER, recipient TEXT NOT NULL, subject TEXT NOT NULL,
-                    message_id TEXT NOT NULL, sent_at TEXT NOT NULL DEFAULT ''
+                    message_id TEXT NOT NULL, sent_at TEXT NOT NULL DEFAULT '', run_id INTEGER NOT NULL DEFAULT 0
                  );
                  CREATE TABLE replies (
                     id INTEGER PRIMARY KEY, delivery_id INTEGER, account_id INTEGER, task_id INTEGER,
@@ -1099,7 +1518,7 @@ mod tests {
                     kind TEXT NOT NULL DEFAULT 'human', reason TEXT NOT NULL DEFAULT '',
                     accepted INTEGER NOT NULL DEFAULT 0, message_id TEXT NOT NULL DEFAULT '',
                     in_reply_to TEXT NOT NULL DEFAULT '', imap_uid INTEGER NOT NULL DEFAULT 0,
-                    received_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT ''
+                    received_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '', imap_uid_validity INTEGER NOT NULL DEFAULT 0, imap_generation INTEGER NOT NULL DEFAULT 0
                  );",
             )
             .unwrap();
@@ -1318,4 +1737,281 @@ mod tests {
             0
         );
     }
+}
+
+#[derive(serde::Serialize)]
+pub struct DeliverySummary {
+    pub row_index: usize,
+    pub sent_count: i64,
+    pub latest_id: Option<i64>,
+    pub last_sent_at: Option<String>,
+}
+#[derive(serde::Serialize)]
+pub struct DeliverySummaryPage {
+    pub items: Vec<DeliverySummary>,
+    pub total: i64,
+    pub sent_total: i64,
+}
+
+// Only internal column identifiers are passed here, never user input.
+pub(crate) fn delivery_recipient_sql(column: &str) -> String {
+    format!("lower(trim(CASE WHEN instr({column},'<')>0 AND instr(substr({column},instr({column},'<')+1),'>')>0
+        THEN substr({column},instr({column},'<')+1,instr(substr({column},instr({column},'<')+1),'>')-1)
+        ELSE {column} END))")
+}
+
+/// One row per requested recipient, never one row per historical delivery.
+/// Recipient ordering/search is supplied by the editor-enriched UI; status
+/// filtering, aggregation, totals and pagination are performed in SQLite.
+#[allow(clippy::too_many_arguments)]
+pub fn delivery_summary_page(
+    conn: &Connection,
+    manuscript_id: i64,
+    emails: &[String],
+    matching: &[usize],
+    filter: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<DeliverySummaryPage, String> {
+    if !matches!(filter, "all" | "sent" | "unsent") {
+        return Err("未知发送状态筛选".into());
+    }
+    let emails = serde_json::to_string(
+        &emails
+            .iter()
+            .map(|e| crate::smtp::parse_recipient(e).1.trim().to_lowercase())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| e.to_string())?;
+    let matching = serde_json::to_string(matching).map_err(|e| e.to_string())?;
+    let recipient_key = delivery_recipient_sql("d.recipient");
+    let cte = format!(
+        "WITH summary AS (
+        SELECT CAST(r.key AS INTEGER) row_index, COUNT(d.id) sent_count, MAX(d.id) latest_id
+        FROM json_each(?2) r LEFT JOIN deliveries d
+          ON d.manuscript_id=?1 AND {recipient_key}=r.value
+        GROUP BY r.key), filtered AS (
+        SELECT * FROM summary WHERE row_index IN (SELECT value FROM json_each(?3))
+        AND (?4='all' OR (?4='sent' AND sent_count>0) OR (?4='unsent' AND sent_count=0)))"
+    );
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let (total, sent_total) = tx
+        .query_row(
+            &format!(
+                "{cte} SELECT (SELECT COUNT(*) FROM filtered),
+        (SELECT COUNT(*) FROM summary WHERE sent_count>0)"
+            ),
+            params![manuscript_id, emails, matching, filter],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let items = {
+        let mut stmt = tx
+            .prepare(&format!(
+                "{cte} SELECT row_index,sent_count,latest_id,
+            (SELECT sent_at FROM deliveries WHERE id=latest_id) FROM filtered
+            ORDER BY row_index LIMIT ?5 OFFSET ?6"
+            ))
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                params![
+                    manuscript_id,
+                    emails,
+                    matching,
+                    filter,
+                    limit.clamp(1, 100),
+                    offset.max(0)
+                ],
+                |r| {
+                    Ok(DeliverySummary {
+                        row_index: r.get::<_, u32>(0)? as usize,
+                        sent_count: r.get(1)?,
+                        latest_id: r.get(2)?,
+                        last_sent_at: r.get(3)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(DeliverySummaryPage {
+        items,
+        total,
+        sent_total,
+    })
+}
+
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+    fn fixture() -> Connection {
+        let conn = crate::db::test_database();
+        conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'fixture@example.com','','localhost');
+            INSERT INTO manuscripts(id,title,body,recipients) VALUES(10,'稿件','正文','[\"a@example.com\",\"b@example.com\"]');
+            INSERT INTO tasks(id,name,manuscript_ids) VALUES(1,'任务','[10]');").unwrap();
+        conn
+    }
+    fn attempt(message_id: &str) -> SuccessfulDelivery<'_> {
+        SuccessfulDelivery {
+            task_id: Some(1),
+            account_id: 1,
+            manuscript_id: 10,
+            recipient: "a@example.com",
+            subject: "投稿",
+            message_id,
+            increment_task_progress: true,
+        }
+    }
+    #[test]
+    fn pending_blocks_restarts_resets_deletion_and_new_attempts() {
+        let mut conn = fixture();
+        begin_send_attempt(&conn, &attempt("m1")).unwrap();
+        assert!(ensure_task_resolved(&conn, 1).is_err());
+        assert!(reset_task_progress(&conn, 1).is_err());
+        assert!(delete_task_data(&mut conn, 1).is_err());
+        assert!(delete_manuscript_data(&mut conn, 10).is_err());
+        assert!(begin_send_attempt(&conn, &attempt("m2")).is_err());
+        assert!(ensure_account_idle(&conn, &std::collections::HashMap::new(), 1).is_err());
+        let id = pending_sends(&conn, 10).unwrap()[0].id;
+        resolve_send_attempt(&mut conn, id, false).unwrap();
+        assert!(pending_sends(&conn, 10).unwrap().is_empty());
+        assert_eq!(load_manuscript_deliveries(&conn, 10).unwrap().len(), 0);
+        begin_send_attempt(&conn, &attempt("m2")).unwrap();
+    }
+    #[test]
+    fn successful_bookkeeping_and_outbox_settlement_are_atomic_and_idempotent() {
+        let mut conn = fixture();
+        begin_send_attempt(&conn, &attempt("m1")).unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_delivery BEFORE INSERT ON deliveries BEGIN SELECT RAISE(FAIL,'disk fault fixture'); END;").unwrap();
+        assert!(record_successful_delivery(&mut conn, attempt("m1")).is_err());
+        assert_eq!(pending_sends(&conn, 10).unwrap().len(), 1);
+        assert_eq!(load_task(&conn, 1).unwrap().unwrap().sent, 0);
+        assert_eq!(load_account(&conn, 1).unwrap().unwrap().last_sent_at, None);
+        conn.execute_batch("DROP TRIGGER fail_delivery").unwrap();
+        record_successful_delivery(&mut conn, attempt("m1")).unwrap();
+        record_successful_delivery(&mut conn, attempt("m1")).unwrap();
+        assert!(pending_sends(&conn, 10).unwrap().is_empty());
+        assert_eq!(load_manuscript_deliveries(&conn, 10).unwrap().len(), 1);
+        assert_eq!(load_task(&conn, 1).unwrap().unwrap().sent, 1);
+    }
+    #[test]
+    fn confirmed_sent_restores_progress_without_resending_or_changing_original_time() {
+        let mut conn = fixture();
+        begin_send_attempt(&conn, &attempt("m1")).unwrap();
+        conn.execute(
+            "UPDATE outgoing_attempts SET created_at='2025-01-02 03:04:05'",
+            [],
+        )
+        .unwrap();
+        let id = pending_sends(&conn, 10).unwrap()[0].id;
+        resolve_send_attempt(&mut conn, id, true).unwrap();
+        resolve_send_attempt(&mut conn, id, true).unwrap();
+        let deliveries = load_manuscript_deliveries(&conn, 10).unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].sent_at, "2025-01-02 03:04:05");
+        assert_eq!(load_task(&conn, 1).unwrap().unwrap().sent, 1);
+        assert!(delivered_emails_for_task_manuscript(&conn, 1, 10)
+            .unwrap()
+            .contains("a@example.com"));
+    }
+    #[test]
+    fn crash_writer_fixture() {
+        let Ok(path) = std::env::var("NOVELSUB_CRASH_FIXTURE") else {
+            return;
+        };
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+            .unwrap();
+        begin_send_attempt(&conn, &attempt("crash-message")).unwrap();
+        // No SMTP involved. Exit without dropping Connection, exactly in the
+        // journal-committed / delivery-not-committed crash window.
+        std::process::exit(0);
+    }
+    #[test]
+    fn pending_survives_process_exit_before_delivery_commit() {
+        let path = std::env::temp_dir().join(format!(
+            "novelsub-outbox-{}-{}.sqlite",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let conn = fixture();
+        conn.execute("VACUUM INTO ?1", [path.to_str().unwrap()])
+            .unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "store::outbox_tests::crash_writer_fixture",
+                "--nocapture",
+            ])
+            .env("NOVELSUB_CRASH_FIXTURE", &path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mut reopened = Connection::open(&path).unwrap();
+        assert_eq!(pending_sends(&reopened, 10).unwrap().len(), 1);
+        assert!(ensure_task_resolved(&reopened, 1).is_err());
+        let id = pending_sends(&reopened, 10).unwrap()[0].id;
+        resolve_send_attempt(&mut reopened, id, true).unwrap();
+        assert_eq!(load_manuscript_deliveries(&reopened, 10).unwrap().len(), 1);
+        drop(reopened);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+    #[test]
+    fn summary_paginates_recipients_over_complete_history_and_filters_before_paging() {
+        let conn = fixture();
+        conn.execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000)
+            INSERT INTO deliveries(manuscript_id,recipient,message_id,sent_at)
+            SELECT 10,'编辑 <A@EXAMPLE.COM>',CAST(x AS TEXT),'2026-01-01 00:00:00' FROM n;
+            INSERT INTO deliveries(manuscript_id,recipient,message_id,sent_at) VALUES(10,'a@example.com','new','2026-02-01 00:00:00'),(99,'b@example.com','other','2026-02-01 00:00:00');").unwrap();
+        let emails = vec![
+            "a@example.com".into(),
+            "b@example.com".into(),
+            "a@example.com".into(),
+        ];
+        let page = delivery_summary_page(&conn, 10, &emails, &[0, 1, 2], "all", 1, 0).unwrap();
+        assert_eq!((page.total, page.sent_total, page.items.len()), (3, 2, 1));
+        assert_eq!(page.items[0].sent_count, 1001);
+        assert_eq!(
+            page.items[0].last_sent_at.as_deref(),
+            Some("2026-02-01 00:00:00")
+        );
+        assert_eq!(page.items[0].latest_id, Some(1001));
+        let page = delivery_summary_page(&conn, 10, &emails, &[0, 1, 2], "unsent", 10, 0).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].row_index, 1);
+        let page = delivery_summary_page(&conn, 10, &emails, &[2], "sent", 10, 0).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].row_index, 2);
+        assert!(
+            delivery_summary_page(&conn, 10, &emails, &[0, 1, 2], "all", 10, 999)
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert!(delivery_summary_page(&conn, 10, &emails, &[], "all", 10, 0)
+            .unwrap()
+            .items
+            .is_empty());
+    }
+}
+
+/// Begin an intentional loop cycle without erasing cumulative progress.
+pub fn advance_loop_cycle(conn: &Connection, task_id: i64) -> Result<(), String> {
+    ensure_task_resolved(conn, task_id)?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO task_runs DEFAULT VALUES", [])
+        .map_err(|e| e.to_string())?;
+    let run_id = tx.last_insert_rowid();
+    tx.execute(
+        "UPDATE tasks SET run_id=?2 WHERE id=?1",
+        params![task_id, run_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }

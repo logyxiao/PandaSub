@@ -1,12 +1,13 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
-  Account, AccountInput, Dashboard, Delivery, Editor, EditorGroup, EditorGroupImportResult, EditorGroupInput, EditorImportResult, EditorInput, MailTemplate, Manuscript, ManuscriptInput,
+  Account, AccountInput, Dashboard, Delivery, DeliverySummaryPage, PendingSend, Editor, EditorGroup, EditorGroupImportResult, EditorGroupInput, EditorImportResult, EditorInput, MailTemplate, Manuscript, ManuscriptInput,
   Reply, Settings, StatsReport, Task, TaskInput, TaskLog,
 } from './types'
 
 export const api = {
   dashboard: () => invoke<Dashboard>('get_dashboard'),
+  runningTaskCount: () => invoke<number>('running_task_count'),
   getStats: (start?: string, end?: string, group?: string) =>
     invoke<StatsReport>('get_stats', { start: start || null, end: end || null, group: group || null }),
 
@@ -37,8 +38,11 @@ export const api = {
   stopTask: (id: number) => invoke('stop_task', { id }),
 
   listLogs: (taskId?: number, limit = 300) => invoke<TaskLog[]>('list_logs', { taskId: taskId ?? null, limit, offset: 0 }),
+  listLogsPage: (taskId: number | '', level: string, query: string, limit: number, offset: number) =>
+    invoke<{ items: TaskLog[]; total: number }>('list_logs_page', { taskId: taskId || null, level: level || null, query, limit, offset }),
   clearLogs: (taskId?: number) => invoke('clear_logs', { taskId: taskId ?? null }),
-  exportLogs: (path: string, taskId?: number) => invoke<string>('export_logs', { path, taskId: taskId ?? null }),
+  exportLogs: (path: string, taskId?: number, level?: string, query?: string) =>
+    invoke<string>('export_logs', { path, taskId: taskId ?? null, level: level || null, query: query || null }),
 
   getSettings: () => invoke<Settings>('get_settings'),
   updateSettings: (settings: Settings) => invoke('update_settings', { settings }),
@@ -47,10 +51,16 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke('set_autostart', { enabled }),
   backup: () => invoke<string>('backup_data'),
   listReplies: (kind?: string, taskId?: number) => invoke<Reply[]>('list_replies', { kind: kind || null, taskId: taskId || null }),
+  listRepliesPage: (kind: string, taskId: number | '', query: string, limit: number, offset: number) =>
+    invoke<{ items: Reply[]; total: number }>('list_replies_page', { kind: kind || null, taskId: taskId || null, query, limit, offset }),
   scanReplies: () => invoke<number>('scan_replies'),
   reclassifyReplies: () => invoke<number>('reclassify_replies'),
   extractDocx: (data: number[]) => invoke<string>('extract_docx_text', { data }),
-  listDeliveries: () => invoke<Delivery[]>('list_deliveries'),
+  listDeliveries: (manuscriptId?: number) => invoke<Delivery[]>('list_deliveries', { manuscriptId: manuscriptId ?? null }),
+  deliverySummaryPage: (manuscriptId: number, emails: string[], matching: number[], filter: string, limit: number, offset: number) =>
+    invoke<DeliverySummaryPage>('delivery_summary_page', { manuscriptId, emails, matching, filter, limit, offset }),
+  listPendingSends: (manuscriptId: number) => invoke<PendingSend[]>('list_pending_sends', { manuscriptId }),
+  resolvePendingSend: (id: number, sent: boolean) => invoke('resolve_pending_send', { id, sent }),
   resendDelivery: (deliveryId: number) => invoke('resend_delivery', { deliveryId }),
   sendManualDelivery: (manuscriptId: number, recipient: string, accountIds: number[]) =>
     invoke('send_manual_delivery', { manuscriptId, recipient, accountIds }),

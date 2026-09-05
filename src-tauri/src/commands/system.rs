@@ -26,9 +26,7 @@ pub fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result
 }
 
 #[tauri::command]
-pub fn get_default_mail_templates(
-    state: State<'_, AppState>,
-) -> Result<Vec<MailTemplate>, String> {
+pub fn get_default_mail_templates(state: State<'_, AppState>) -> Result<Vec<MailTemplate>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     store::load_default_mail_templates(&conn)
 }
@@ -97,9 +95,15 @@ pub fn backup_database(data_dir: &Path) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn list_deliveries(state: State<'_, AppState>) -> Result<Vec<crate::models::Delivery>, String> {
+pub fn list_deliveries(
+    state: State<'_, AppState>,
+    manuscript_id: Option<i64>,
+) -> Result<Vec<crate::models::Delivery>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    store::load_recent_deliveries(&conn, 365)
+    match manuscript_id {
+        Some(id) => store::load_manuscript_deliveries(&conn, id),
+        None => store::load_recent_deliveries(&conn, 365),
+    }
 }
 
 /// 供 tray 使用的窗口显示命令。
@@ -110,4 +114,31 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
         window.set_focus().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn delivery_summary_page(
+    state: State<'_, AppState>,
+    manuscript_id: i64,
+    emails: Vec<String>,
+    matching: Vec<usize>,
+    filter: String,
+    limit: i64,
+    offset: i64,
+) -> Result<store::DeliverySummaryPage, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        store::delivery_summary_page(
+            &conn,
+            manuscript_id,
+            &emails,
+            &matching,
+            &filter,
+            limit,
+            offset,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

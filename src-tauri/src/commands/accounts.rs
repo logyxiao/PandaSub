@@ -17,10 +17,12 @@ pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<crate::models::Ac
 pub fn add_account(state: State<'_, AppState>, input: AccountInput) -> Result<i64, String> {
     validate_account(&input)?;
     let (imap_host, imap_port) = resolve_imap(&input);
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = db.transaction().map_err(|e| e.to_string())?;
+    let id = store::reserve_account_id(&conn)?;
     conn.execute(
-        "INSERT INTO accounts (email, password, smtp_host, smtp_port, sender_name, provider, enabled, imap_host, imap_port, check_replies)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO accounts (email, password, smtp_host, smtp_port, sender_name, provider, enabled, imap_host, imap_port, check_replies, id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
             input.email.trim(),
             input.password,
@@ -31,11 +33,13 @@ pub fn add_account(state: State<'_, AppState>, input: AccountInput) -> Result<i6
             input.enabled as i64,
             imap_host,
             imap_port,
-            input.check_replies as i64
+            input.check_replies as i64,
+            id
         ],
     )
     .map_err(|e| e.to_string())?;
-    Ok(conn.last_insert_rowid())
+    conn.commit().map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 #[tauri::command]
@@ -46,7 +50,23 @@ pub fn update_account(
 ) -> Result<(), String> {
     validate_account(&input)?;
     let (imap_host, imap_port) = resolve_imap(&input);
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let _scan = state
+        .reply_scan
+        .try_lock()
+        .map_err(|_| "正在检查收件箱，请完成后再修改邮箱")?;
+    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+    crate::state::ensure_no_manual_account(&pending, id)?;
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
+    store::ensure_account_idle(&db, &registry, id)?;
+    let old = store::load_account(&db, id)?.ok_or("邮箱不存在")?;
+    let conn = db.transaction().map_err(|e| e.to_string())?;
+    if !old.email.eq_ignore_ascii_case(input.email.trim())
+        || !old.imap_host.eq_ignore_ascii_case(&imap_host)
+        || old.imap_port != imap_port
+    {
+        store::reset_account_mailbox(&conn, id)?;
+    }
     conn.execute(
         "UPDATE accounts SET email = ?1, password = ?2, smtp_host = ?3, smtp_port = ?4,
                 sender_name = ?5, provider = ?6, enabled = ?7,
@@ -67,12 +87,20 @@ pub fn update_account(
         ],
     )
     .map_err(|e| e.to_string())?;
-    Ok(())
+    conn.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_account(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let _scan = state
+        .reply_scan
+        .try_lock()
+        .map_err(|_| "正在检查收件箱，请完成后再删除邮箱")?;
+    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
+    crate::state::ensure_no_manual_account(&pending, id)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::ensure_account_idle(&conn, &registry, id)?;
     conn.execute("DELETE FROM accounts WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -142,7 +170,7 @@ pub async fn send_test_email(
         Some((att.name, att.data))
     } else if let Some(mid) = manuscript_id {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        store::load_manuscript_attachment(&conn, mid).unwrap_or(None)
+        store::load_manuscript_attachment(&conn, mid)?
     } else {
         None
     };

@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "release:publish": "node scripts/publish-release.mjs"
+    "release:publish": "node scripts/publish-release.mjs",
+    "test": "node scripts/test-plan-helpers.mjs && node scripts/test-group-member-picker.mjs && node scripts/test-runtime-progress.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

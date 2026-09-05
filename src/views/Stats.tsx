@@ -42,19 +42,23 @@ export function StatsView() {
       const next = await api.getStats(s || undefined, e || undefined, g)
       if (seq !== requestSeq.current) return
       setReport(next); setNotice('')
-    } catch (err) { if (seq === requestSeq.current) setNotice(String(err)) }
+    } catch (err) { if (seq === requestSeq.current) { setNotice(String(err)); setReport(null) } }
     finally { if (seq === requestSeq.current) setLoading(false) }
   }, [])
 
-  useEffect(() => { void load(start, end, group) }, [load, start, end, group])
+  useEffect(() => {
+    void load(start, end, group)
+    const sequence = requestSeq
+    return () => { sequence.current++ }
+  }, [load, start, end, group])
 
   const quick = (days: number | null) => {
     const today = new Date()
-    setEnd(fmtDate(today))
     if (days === null) {
-      setStart('')
+      setStart(''); setEnd('')
       return
     }
+    setEnd(fmtDate(today))
     const from = new Date(today)
     from.setDate(from.getDate() - (days - 1))
     setStart(fmtDate(from))
@@ -68,7 +72,7 @@ export function StatsView() {
 
   const maxDeliveries = useMemo(() => {
     if (!report?.groups.length) return 0
-    return Math.max(...report.groups.map((g) => g.deliveries), 1)
+    return report.groups.reduce((max, row) => Math.max(max, row.deliveries), 1)
   }, [report])
 
   const totals = report?.totals
@@ -131,6 +135,8 @@ export function StatsView() {
               <Table
                 rowKey="period"
                 dataSource={report.groups}
+                resetKey={`${start}\0${end}\0${group}`}
+                pagination={{ pageSize: 50 }}
                 columns={[
                   {
                     key: 'period',

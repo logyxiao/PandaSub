@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, AlertCircle, ArrowRight, BookOpenText, CheckCircle2, CirclePause, CirclePlay, Inbox, Mail, RefreshCw, Square, UserRound, Users } from 'lucide-react'
 import { api, onLog, onReply, onTask } from '../api'
 import { formatTime, replyKindLabel, replyKindTone } from '../format'
@@ -6,7 +6,7 @@ import { useNav } from '../nav'
 import { useToast } from '../components/feedback'
 import { Badge, Button, IconButton, RuntimeTrack, Select } from '../components/ui'
 import { Table } from '../components/Table'
-import type { Dashboard, Task, TaskLog } from '../types'
+import type { Dashboard } from '../types'
 
 const empty: Dashboard = {
   account_count: 0, manuscript_count: 0, editor_count: 0, sent_today: 0, failed_today: 0,
@@ -21,68 +21,53 @@ export function DashboardView() {
   const toast = useToast()
   const { go } = useNav()
 
-  const load = async () => {
-    setLoading(true)
-    try { setData(await api.dashboard()); setError('') }
-    catch { setError('请用桌面应用启动（不要只开网页），才能连上本地数据。') }
-    finally { setLoading(false) }
-  }
-
-  useEffect(() => { void load() }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    let un1: (() => void) | undefined
-    let un2: (() => void) | undefined
-    let un3: (() => void) | undefined
-    const seenLogIds = new Set<number>()
-    const seenReplyIds = new Set<number>()
-    onLog((log: TaskLog) => {
-      if (cancelled || seenLogIds.has(log.id)) return
-      seenLogIds.add(log.id)
-      setData((d) => ({
-        ...d,
-        sent_today: d.sent_today + (log.level === 'success' && log.category === 'send' ? 1 : 0),
-        failed_today: d.failed_today + (
-          log.level === 'error'
-            && ['network', 'send', 'limit', 'auth'].includes(log.category)
-            && Boolean(log.recipient?.trim()) ? 1 : 0
-        ),
-      }))
-    }).then((u) => {
-      if (cancelled) u()
-      else un1 = u
-    })
-    onTask((task: Task) => {
-      if (cancelled) return
-      setData((d) => {
-        const tasks = [task, ...d.tasks.filter((t) => t.id !== task.id)]
-        const running = tasks.filter((t) => t.status === 'running').length
-        return { ...d, tasks, running_tasks: running }
-      })
-    }).then((u) => {
-      if (cancelled) u()
-      else un2 = u
-    })
-    onReply((reply) => {
-      if (cancelled || seenReplyIds.has(reply.id)) return
-      seenReplyIds.add(reply.id)
-      setData((d) => ({
-        ...d,
-        human_replies: d.human_replies + (reply.kind === 'human' ? 1 : 0),
-        auto_replies: d.auto_replies + (reply.kind === 'auto' ? 1 : 0),
-        accepted_replies: d.accepted_replies + (reply.accepted ? 1 : 0),
-        recent_replies: [reply, ...d.recent_replies.filter((item) => item.id !== reply.id)].slice(0, 30),
-      }))
-    }).then((u) => {
-      if (cancelled) u()
-      else un3 = u
-    })
-    return () => {
-      cancelled = true
-      un1?.(); un2?.(); un3?.()
+  const requestSeq = useRef(0)
+  const mounted = useRef(false)
+  const inFlight = useRef(false)
+  const pending = useRef(false)
+  const load = useCallback(async function refresh(silent = false) {
+    if (!mounted.current) return
+    if (inFlight.current) { pending.current = true; return }
+    inFlight.current = true
+    const seq = ++requestSeq.current
+    if (!silent) setLoading(true)
+    try {
+      const snapshot = await api.dashboard()
+      if (seq === requestSeq.current) { setData(snapshot); setError('') }
+    } catch (e) { if (seq === requestSeq.current) setError(String(e)) }
+    finally {
+      inFlight.current = false
+      if (seq === requestSeq.current) setLoading(false)
+      if (mounted.current && pending.current) { pending.current = false; void refresh(true) }
     }
   }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    void load()
+    let cancelled = false
+    let timer: number | undefined
+    const sequence = requestSeq
+    const unlisteners: Array<() => void> = []
+    const schedule = () => {
+      if (cancelled) return
+      // Coalesce events into a persisted snapshot, without additive counters or
+      // overlapping queries when a large database takes longer than the throttle.
+      if (timer === undefined) timer = window.setTimeout(() => {
+        timer = undefined
+        if (!cancelled) void load(true)
+      }, 200)
+    }
+    for (const subscribe of [onLog, onTask, onReply]) {
+      void subscribe(schedule).then((un) => { if (cancelled) un(); else unlisteners.push(un) })
+    }
+    const interval = window.setInterval(schedule, 60_000)
+    return () => {
+      cancelled = true; mounted.current = false; pending.current = false; sequence.current++
+      window.clearTimeout(timer); window.clearInterval(interval)
+      unlisteners.forEach((un) => un())
+    }
+  }, [load])
 
   const control = async (id: number, action: 'pause' | 'resume' | 'stop') => {
     try {

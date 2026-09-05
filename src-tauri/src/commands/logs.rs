@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use rust_xlsxwriter::Workbook;
 use tauri::State;
 
-use crate::models::TaskLog;
+use crate::models::{LogPage, TaskLog};
 use crate::state::AppState;
 use crate::store;
 
@@ -21,6 +21,31 @@ pub fn list_logs(
 }
 
 #[tauri::command]
+pub async fn list_logs_page(
+    state: State<'_, AppState>,
+    task_id: Option<i64>,
+    level: Option<String>,
+    query: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<LogPage, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        store::query_logs(
+            &conn,
+            task_id,
+            level.as_deref(),
+            query.as_deref(),
+            limit.unwrap_or(20).clamp(1, 100),
+            offset.unwrap_or(0).max(0),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn clear_logs(state: State<'_, AppState>, task_id: Option<i64>) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     match task_id {
@@ -35,17 +60,57 @@ pub fn clear_logs(state: State<'_, AppState>, task_id: Option<i64>) -> Result<()
 }
 
 #[tauri::command]
-pub fn export_logs(
+pub async fn export_logs(
     state: State<'_, AppState>,
     path: String,
     task_id: Option<i64>,
+    level: Option<String>,
+    query: Option<String>,
 ) -> Result<String, String> {
-    let (logs, accounts) = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let logs = store::load_logs(&conn, task_id, 100000, 0)?;
-        let accounts = store::load_accounts(&conn).unwrap_or_default();
-        (logs, accounts)
-    };
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (logs, accounts) = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            export_rows(&conn, task_id, level.as_deref(), query.as_deref())?
+        };
+        write_log_workbook(path, &logs, &accounts)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// Explicit limit instead of silently discarding records. Query zero rows first
+// so an over-limit export does not allocate an oversized snapshot or touch a file.
+type ExportRows = (Vec<TaskLog>, HashMap<i64, String>);
+pub(crate) fn export_rows(
+    conn: &rusqlite::Connection,
+    task_id: Option<i64>,
+    level: Option<&str>,
+    query: Option<&str>,
+) -> Result<ExportRows, String> {
+    let total = store::query_logs(conn, task_id, level, query, 0, 0)?.total;
+    if total > 100_000 {
+        return Err(format!(
+            "当前筛选共有 {total} 条记录，单次导出上限为 100000 条，请缩小计划、结果或邮箱筛选范围"
+        ));
+    }
+    let logs = store::query_logs(conn, task_id, level, query, total, 0)?.items;
+    let mut stmt = conn
+        .prepare("SELECT id, email FROM accounts")
+        .map_err(|e| e.to_string())?;
+    let accounts = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok((logs, accounts))
+}
+
+fn write_log_workbook(
+    path: String,
+    logs: &[TaskLog],
+    accounts: &HashMap<i64, String>,
+) -> Result<String, String> {
     let path = PathBuf::from(path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -85,12 +150,8 @@ pub fn export_logs(
                 row,
                 2,
                 log.account_id
-                    .and_then(|id| {
-                        accounts
-                            .iter()
-                            .find(|a| a.id == id)
-                            .map(|a| a.email.clone())
-                    })
+                    .and_then(|id| accounts.get(&id))
+                    .map(String::as_str)
                     .unwrap_or_default(),
             )
             .map_err(|e| e.to_string())?;
@@ -112,4 +173,51 @@ pub fn export_logs(
     }
     workbook.save(&path).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calamine::{open_workbook_auto, Data, Reader};
+
+    #[test]
+    fn exported_workbook_preserves_filtered_columns_and_literal_content() {
+        let conn = crate::db::test_database();
+        conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'sender@example.com','fixture','localhost');").unwrap();
+        store::insert_send_log(
+            &conn,
+            None,
+            None,
+            Some(1),
+            "error",
+            "send",
+            "=1+1",
+            "编辑@example.com",
+        )
+        .unwrap();
+        store::insert_log(&conn, None, None, "success", "test", "excluded").unwrap();
+        let (rows, accounts) = export_rows(&conn, None, Some("error"), None).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "novelsub-log-test-{}-{}.xlsx",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        write_log_workbook(path.to_string_lossy().into_owned(), &rows, &accounts).unwrap();
+        let mut workbook = open_workbook_auto(&path).unwrap();
+        let range = workbook.worksheet_range_at(0).unwrap().unwrap();
+        assert_eq!(range.height(), 2);
+        assert_eq!(range.get((0, 2)), Some(&Data::String("账号".into())));
+        assert_eq!(
+            range.get((1, 2)),
+            Some(&Data::String("sender@example.com".into()))
+        );
+        assert_eq!(
+            range.get((1, 3)),
+            Some(&Data::String("编辑@example.com".into()))
+        );
+        assert_eq!(range.get((1, 4)), Some(&Data::String("error".into())));
+        assert_eq!(range.get((1, 6)), Some(&Data::String("=1+1".into())));
+        drop(workbook);
+        std::fs::remove_file(path).unwrap();
+    }
 }
