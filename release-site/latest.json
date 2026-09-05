@@ -1,7 +1,7 @@
 {
   "version": "0.2.2",
-  "notes": "修复重复投递与多开并发\n完善手动发送记录关联和 Excel 导出\n新增回复计划筛选与编辑搜索\n清理标签并更新内置编辑库",
-  "pub_date": "2026-09-02T03:46:12.924Z",
+  "notes": "新增自定义随机发送频率，支持为每个投稿计划设置最短与最长等待秒数，默认 100–240 秒\n多邮箱按顺序轮换发送并共用随机间隔\n在投稿邮箱配置中补充发送规则与频率建议\n兼容并自动迁移旧版发送频率配置",
+  "pub_date": "2026-09-05T14:56:59.229Z",
   "platforms": {
     "windows-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZk9uZWpFa1NIMHgvUThwZUVTeE9xYVdKRkF0cUh1R0NsMnNqcGllNDRReHJWSWsxSDNHWXFXS1lnSGY0T2pKQm1DMTkybXRxaDh5T0N6aElvZ25oUUF3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4MzE5NTI4CWZpbGU654aK54yr5oqV56i/XzAuMi4yX3g2NC1zZXR1cC5leGUKQkR5V1JpanJPQW5lUnp4anBoVTJNYm84YnhqRU5SQnh1dVQ4YjEyck5oeHhGbmUvODYzblhMTGN4U0NuMHJ2L2pLTy91dDNZb0RHMGphTmZCZ2toRFE9PQo=",
