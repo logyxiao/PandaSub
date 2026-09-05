@@ -179,23 +179,11 @@ fn emit_task(app: &AppHandle, db: &Arc<Mutex<Connection>>, task_id: i64) {
     }
 }
 
-/// 3 分钟沿用现在的节奏：2–4 分钟随机，偏向 3 分钟。其余选项按所选分钟数，略加抖动。
-fn send_delay_secs(interval_min: i64) -> u64 {
+/// 在计划配置的闭区间内均匀随机选择下一封邮件的等待秒数。
+fn send_delay_secs(from_sec: i64, to_sec: i64) -> u64 {
+    let (from, to) = crate::models::normalize_send_interval_secs(from_sec, to_sec);
     let mut rng = rand::rng();
-    match crate::models::normalize_send_interval_min(interval_min) {
-        3 => {
-            let a = rng.random_range(0..=120);
-            let b = rng.random_range(0..=120);
-            (120 + (a + b) / 2) as u64
-        }
-        minutes => {
-            let base = (minutes as u64).saturating_mul(60);
-            let jitter = 12u64.min(base / 6).max(4);
-            let lo = base.saturating_sub(jitter).max(30);
-            let hi = base.saturating_add(jitter);
-            rng.random_range(lo..=hi)
-        }
-    }
+    rng.random_range(from..=to) as u64
 }
 
 fn pick_available_account(
@@ -286,10 +274,13 @@ async fn run_task_worker(
     }
     emit_task(&app, &db, task_id);
 
-    let send_interval_min = manuscripts
+    let (send_interval_from_sec, send_interval_to_sec) = manuscripts
         .first()
-        .map(|item| item.send_interval_min)
-        .unwrap_or(3);
+        .map(|item| (item.send_interval_from_sec, item.send_interval_to_sec))
+        .unwrap_or((
+            crate::models::DEFAULT_SEND_INTERVAL_FROM_SEC,
+            crate::models::DEFAULT_SEND_INTERVAL_TO_SEC,
+        ));
 
     if manuscripts.is_empty() {
         let log = store::insert_log(
@@ -470,7 +461,7 @@ async fn run_task_worker(
 
         let target = queue.pop_front().unwrap();
 
-        let delay = send_delay_secs(send_interval_min);
+        let delay = send_delay_secs(send_interval_from_sec, send_interval_to_sec);
         let account = match pick_available_account(&db, &mut cursor, &allowed_accounts) {
             Some(a) => a,
             None => {
@@ -777,5 +768,22 @@ mod tests {
             delivery_target_key(1, "编辑 <Editor@Example.com>"),
             delivery_target_key(1, "editor@example.com"),
         );
+    }
+
+    #[test]
+    fn send_delay_uses_configured_second_range() {
+        assert_eq!(send_delay_secs(17, 17), 17);
+        for _ in 0..100 {
+            let delay = send_delay_secs(12, 24);
+            assert!((12..=24).contains(&delay));
+        }
+    }
+
+    #[test]
+    fn send_delay_normalizes_reversed_and_invalid_bounds() {
+        for _ in 0..20 {
+            assert!((10..=20).contains(&send_delay_secs(20, 10)));
+            assert!((100..=240).contains(&send_delay_secs(0, 0)));
+        }
     }
 }

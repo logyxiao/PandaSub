@@ -405,6 +405,8 @@ mod tests {
             excluded_types: vec![],
             account_ids: vec![],
             send_interval_min: 3,
+            send_interval_from_sec: 100,
+            send_interval_to_sec: 240,
             subject: "旧标题".into(),
             mail_templates: vec![
                 MailTemplate {

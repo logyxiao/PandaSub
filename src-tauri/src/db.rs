@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS manuscripts (
   excluded_types TEXT NOT NULL DEFAULT '[]',
   account_ids TEXT NOT NULL DEFAULT '[]',
   send_interval_min INTEGER NOT NULL DEFAULT 3,
+  send_interval_from_sec INTEGER NOT NULL DEFAULT 100,
+  send_interval_to_sec INTEGER NOT NULL DEFAULT 240,
   subject TEXT NOT NULL DEFAULT '',
   mail_templates TEXT NOT NULL DEFAULT '[]',
   fixed_mail_template_id TEXT NOT NULL DEFAULT '',
@@ -184,6 +186,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_mail_templates_column(&connection)?;
     add_manuscript_fixed_mail_template_column(&connection)?;
     add_manuscript_send_interval_column(&connection)?;
+    add_manuscript_send_interval_seconds_columns(&connection)?;
     add_reply_accepted_column(&connection)?;
     repair_orphan_relations(&connection)?;
     reclassify_autoreply_history(&connection)?;
@@ -1187,6 +1190,49 @@ fn add_manuscript_send_interval_column(conn: &Connection) -> Result<(), String> 
     Ok(())
 }
 
+fn add_manuscript_send_interval_seconds_columns(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'manuscripts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if exists == 0 {
+        return Ok(());
+    }
+
+    let add_from = table_lacks_column(conn, "manuscripts", "send_interval_from_sec");
+    let add_to = table_lacks_column(conn, "manuscripts", "send_interval_to_sec");
+    if add_from {
+        conn.execute(
+            "ALTER TABLE manuscripts ADD COLUMN send_interval_from_sec INTEGER NOT NULL DEFAULT 100",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if add_to {
+        conn.execute(
+            "ALTER TABLE manuscripts ADD COLUMN send_interval_to_sec INTEGER NOT NULL DEFAULT 240",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    if add_from || add_to {
+        conn.execute(
+            "UPDATE manuscripts SET
+                send_interval_from_sec = CASE send_interval_min
+                    WHEN 1 THEN 50 WHEN 2 THEN 108 WHEN 5 THEN 288 WHEN 8 THEN 468 ELSE 100 END,
+                send_interval_to_sec = CASE send_interval_min
+                    WHEN 1 THEN 70 WHEN 2 THEN 132 WHEN 5 THEN 312 WHEN 8 THEN 492 ELSE 240 END",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn add_task_account_columns(conn: &Connection) -> Result<(), String> {
     let exists: i64 = conn
         .query_row(
@@ -1356,5 +1402,38 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fixed_id, "");
+    }
+
+    #[test]
+    fn legacy_send_intervals_are_migrated_to_second_ranges() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE manuscripts (
+                    id INTEGER PRIMARY KEY,
+                    send_interval_min INTEGER NOT NULL DEFAULT 3
+                 );
+                 INSERT INTO manuscripts (id, send_interval_min) VALUES
+                    (1, 1), (2, 2), (3, 3), (4, 5), (5, 8);",
+            )
+            .unwrap();
+
+        add_manuscript_send_interval_seconds_columns(&connection).unwrap();
+
+        let ranges = (1..=5)
+            .map(|id| {
+                connection
+                    .query_row(
+                        "SELECT send_interval_from_sec, send_interval_to_sec FROM manuscripts WHERE id = ?1",
+                        [id],
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ranges,
+            vec![(50, 70), (108, 132), (100, 240), (288, 312), (468, 492)]
+        );
     }
 }

@@ -89,8 +89,10 @@ export function editorMatchesPlan(
   return true
 }
 
-// 发送节奏：默认 3 分钟/次，沿用 2–4 分钟随机、偏向 3 分钟；其余选项按所选分钟数。
-export const DEFAULT_SEND_INTERVAL_MIN = 3
+// 每封邮件发送完成后，在用户设置的秒数区间内随机等待。
+export const DEFAULT_SEND_INTERVAL_FROM_SEC = 100
+export const DEFAULT_SEND_INTERVAL_TO_SEC = 240
+export const MAX_SEND_INTERVAL_SEC = 86_400
 export const ACCOUNT_DAILY_SEND_LIMIT = 80
 
 export function accountTodayQuota(sentToday = 0) {
@@ -103,23 +105,37 @@ export function accountTodayQuota(sentToday = 0) {
   }
 }
 
-export const SEND_INTERVAL_OPTIONS = [
-  { minutes: 1, hint: '需配置3个投稿邮箱，同时投不同作品' },
-  { minutes: 2, hint: '需配置2个投稿邮箱' },
-  { minutes: 3, hint: '新邮箱第2篇作品开始可以3分钟' },
-  { minutes: 5, hint: '新邮箱第1篇作品选5分钟预热邮箱' },
-  { minutes: 8, hint: '邮箱被风控时，换成8分钟' },
-] as const
-
-export function normalizeSendIntervalMin(value: number | undefined | null) {
-  return SEND_INTERVAL_OPTIONS.some((item) => item.minutes === value)
-    ? value as (typeof SEND_INTERVAL_OPTIONS)[number]['minutes']
-    : DEFAULT_SEND_INTERVAL_MIN
+function legacySendIntervalRange(intervalMin: number | undefined | null) {
+  switch (intervalMin) {
+    case 1: return { fromSec: 50, toSec: 70 }
+    case 2: return { fromSec: 108, toSec: 132 }
+    case 5: return { fromSec: 288, toSec: 312 }
+    case 8: return { fromSec: 468, toSec: 492 }
+    default: return { fromSec: DEFAULT_SEND_INTERVAL_FROM_SEC, toSec: DEFAULT_SEND_INTERVAL_TO_SEC }
+  }
 }
 
-export function estimateAutoMinutes(count: number, intervalMin = DEFAULT_SEND_INTERVAL_MIN) {
-  const minutes = normalizeSendIntervalMin(intervalMin)
-  return Math.max(1, Math.round(count * minutes))
+export function normalizeSendIntervalRange(
+  from: number | undefined | null,
+  to: number | undefined | null,
+  legacyIntervalMin?: number | null,
+) {
+  const legacy = legacySendIntervalRange(legacyIntervalMin)
+  const clean = (value: number | undefined | null, fallback: number) => {
+    const number = Math.round(Number(value))
+    return Number.isFinite(number) && number > 0
+      ? Math.min(MAX_SEND_INTERVAL_SEC, number)
+      : fallback
+  }
+  const first = clean(from, legacy.fromSec)
+  const second = clean(to, legacy.toSec)
+  return { fromSec: Math.min(first, second), toSec: Math.max(first, second) }
+}
+
+export function estimateAutoMinutes(count: number, fromSec: number, toSec: number) {
+  const range = normalizeSendIntervalRange(fromSec, toSec)
+  const seconds = Math.max(0, count - 1) * ((range.fromSec + range.toSec) / 2)
+  return Math.max(1, Math.ceil(seconds / 60))
 }
 
 export function recipientEmailsForCopy(recipients: string[]) {
@@ -290,7 +306,8 @@ export function createEmptyManuscript(templates?: MailTemplate[]): ManuscriptInp
   return {
     title: '', body: mail_templates[0].body, content_type: 'text/plain', recipients: [], sender_name: '',
     word_count: 0, category: '', reader_emotion: '', style: '',
-    genres: [], excluded_types: [], account_ids: [], send_interval_min: DEFAULT_SEND_INTERVAL_MIN,
+    genres: [], excluded_types: [], account_ids: [], send_interval_min: 3,
+    send_interval_from_sec: DEFAULT_SEND_INTERVAL_FROM_SEC, send_interval_to_sec: DEFAULT_SEND_INTERVAL_TO_SEC,
     subject: mail_templates[0].subject, mail_templates, fixed_mail_template_id: '', file_name: '',
   }
 }
@@ -358,12 +375,19 @@ export function planSendProgress(manuscript: Pick<Manuscript, 'id' | 'recipients
 }
 
 export function toInput(m: Manuscript): ManuscriptInput {
+  const interval = normalizeSendIntervalRange(
+    m.send_interval_from_sec,
+    m.send_interval_to_sec,
+    m.send_interval_min,
+  )
   return {
     title: m.title, body: m.body, content_type: m.content_type, recipients: m.recipients,
     sender_name: m.sender_name, word_count: m.word_count, category: m.category,
     reader_emotion: m.reader_emotion, style: m.style,
     genres: m.genres ?? [], excluded_types: m.excluded_types ?? [], account_ids: m.account_ids ?? [],
-    send_interval_min: normalizeSendIntervalMin(m.send_interval_min),
+    send_interval_min: m.send_interval_min ?? 3,
+    send_interval_from_sec: interval.fromSec,
+    send_interval_to_sec: interval.toSec,
     subject: m.subject, mail_templates: hydrateMailTemplates(m.mail_templates, m.subject, m.body),
     fixed_mail_template_id: m.fixed_mail_template_id ?? '',
     file_name: m.file_name, has_file: m.has_file,

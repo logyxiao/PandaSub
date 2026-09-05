@@ -64,9 +64,15 @@ pub struct Manuscript {
     /// 计划指定的投稿邮箱（留空表示使用全部启用邮箱）。
     #[serde(default)]
     pub account_ids: Vec<i64>,
-    /// 发送间隔（分钟）。3 表示沿用默认 2–4 分钟随机节奏。
+    /// 旧版分钟档位，仅为旧数据和旧客户端兼容保留。
     #[serde(default = "default_send_interval_min")]
     pub send_interval_min: i64,
+    /// 每封发送后的随机等待下限（秒）。
+    #[serde(default = "default_send_interval_from_sec")]
+    pub send_interval_from_sec: i64,
+    /// 每封发送后的随机等待上限（秒）。
+    #[serde(default = "default_send_interval_to_sec")]
+    pub send_interval_to_sec: i64,
     #[serde(default)]
     pub subject: String,
     /// 多套邮件标题/正文。默认在发送时随机选用一套。
@@ -116,9 +122,15 @@ pub struct ManuscriptInput {
     /// 计划指定的投稿邮箱（留空表示使用全部启用邮箱）。
     #[serde(default)]
     pub account_ids: Vec<i64>,
-    /// 发送间隔（分钟）。3 表示沿用默认 2–4 分钟随机节奏。
+    /// 旧版分钟档位，仅为旧客户端兼容保留。
     #[serde(default = "default_send_interval_min")]
     pub send_interval_min: i64,
+    /// 每封发送后的随机等待下限（秒）。
+    #[serde(default = "default_send_interval_from_sec")]
+    pub send_interval_from_sec: i64,
+    /// 每封发送后的随机等待上限（秒）。
+    #[serde(default = "default_send_interval_to_sec")]
+    pub send_interval_to_sec: i64,
     #[serde(default)]
     pub subject: String,
     /// 多套邮件标题/正文。默认在发送时随机选用一套。
@@ -217,11 +229,40 @@ fn default_send_interval_min() -> i64 {
     3
 }
 
-pub fn normalize_send_interval_min(value: i64) -> i64 {
-    match value {
-        1 | 2 | 3 | 5 | 8 => value,
-        _ => 3,
-    }
+pub const DEFAULT_SEND_INTERVAL_FROM_SEC: i64 = 100;
+pub const DEFAULT_SEND_INTERVAL_TO_SEC: i64 = 240;
+pub const MAX_SEND_INTERVAL_SEC: i64 = 86_400;
+
+fn default_send_interval_from_sec() -> i64 {
+    DEFAULT_SEND_INTERVAL_FROM_SEC
+}
+
+fn default_send_interval_to_sec() -> i64 {
+    DEFAULT_SEND_INTERVAL_TO_SEC
+}
+
+pub fn normalize_send_interval_secs(from_sec: i64, to_sec: i64) -> (i64, i64) {
+    let from = if from_sec > 0 {
+        from_sec.clamp(1, MAX_SEND_INTERVAL_SEC)
+    } else {
+        DEFAULT_SEND_INTERVAL_FROM_SEC
+    };
+    let to = if to_sec > 0 {
+        to_sec.clamp(1, MAX_SEND_INTERVAL_SEC)
+    } else {
+        DEFAULT_SEND_INTERVAL_TO_SEC
+    };
+    (from.min(to), from.max(to))
+}
+
+/// 写回一个最接近的旧版档位，方便旧版本回退读取。
+pub fn legacy_send_interval_min(from_sec: i64, to_sec: i64) -> i64 {
+    let (from, to) = normalize_send_interval_secs(from_sec, to_sec);
+    let average = (from + to) / 2;
+    [1_i64, 2, 3, 5, 8]
+        .into_iter()
+        .min_by_key(|minutes| (minutes * 60 - average).abs())
+        .unwrap_or(3)
 }
 
 impl Default for Settings {

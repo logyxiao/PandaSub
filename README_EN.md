@@ -19,7 +19,7 @@ Panda Submission (NovelSub) is a local desktop submission tool for fiction write
 - **Editor library**: Ships with built-in short-story contacts. Filter by work type; import or export Excel/CSV.
 - **Submission plans**: Edit manuscript metadata, message subject, body, recipients, and schedule in one workflow.
 - **Per-plan account selection**: Choose exactly which enabled sender accounts participate in each submission plan.
-- **Automatic pacing**: After each message, wait a random 2–4 minutes (peaking around 3 minutes) before sending the next one—no manual frequency setting.
+- **Custom random pacing**: Set a minimum and maximum delay in seconds for each submission plan; every interval is randomized within that range.
 - **Scheduling modes**: Send immediately, at a specified time, or repeatedly.
 - **Delivery safeguards**: Hourly and daily account limits, rate-limit cooldowns, retries, pause, resume, and stop controls.
 - **Delivery logs**: Track each message, filter by plan or result, and export to Excel.
@@ -28,7 +28,7 @@ Panda Submission (NovelSub) is a local desktop submission tool for fiction write
 
 ## Automatic Submission Pace
 
-After each message is sent, the app waits a random **2–4 minutes** before the next one. Delays follow a triangular distribution that peaks around **3 minutes**, so the cadence feels closer to manual sending than a fixed timer.
+After each message is sent, the app waits for a random duration within the plan's configured range. New plans default to **100–240 seconds**, and both bounds can be customized.
 
 Messages are sent sequentially. Account-level hourly and daily limits and cooldown rules still apply.
 

@@ -276,11 +276,13 @@ pub fn create_waste_draft_task(
             .execute(
                 "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
                 word_count, category, reader_category, reader_emotion, style, genres,
-                excluded_types, account_ids, send_interval_min, subject, mail_templates,
+                excluded_types, account_ids, send_interval_min, subject, mail_templates, fixed_mail_template_id,
+                send_interval_from_sec, send_interval_to_sec,
                 file_name, file_data)
              SELECT ?1, body, content_type, ?2, sender_name,
                 word_count, category, reader_category, reader_emotion, style, genres,
-                excluded_types, ?3, send_interval_min, subject, mail_templates,
+                excluded_types, ?3, send_interval_min, subject, mail_templates, fixed_mail_template_id,
+                send_interval_from_sec, send_interval_to_sec,
                 file_name, file_data
              FROM manuscripts WHERE id = ?4",
                 rusqlite::params![

@@ -37,7 +37,8 @@ fn parse_list<T: serde::de::DeserializeOwned>(raw: &str) -> Vec<T> {
 const MANUSCRIPT_COLS: &str = "id, title, body, content_type, recipients, sender_name,
     word_count, category, reader_category, reader_emotion, style, genres, subject, file_name,
     created_at, updated_at, (file_data IS NOT NULL AND length(file_data) > 0), excluded_types, account_ids,
-    mail_templates, send_interval_min, fixed_mail_template_id";
+    mail_templates, send_interval_min, fixed_mail_template_id,
+    send_interval_from_sec, send_interval_to_sec";
 
 fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
     let raw_recipients: String = r.get(4)?;
@@ -61,6 +62,8 @@ fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
         excluded_types: parse_list(&raw_excluded),
         account_ids: parse_list::<i64>(&raw_accounts),
         send_interval_min: r.get(20)?,
+        send_interval_from_sec: r.get(22)?,
+        send_interval_to_sec: r.get(23)?,
         subject: r.get(12)?,
         mail_templates: parse_list(&raw_templates),
         fixed_mail_template_id: r.get(21)?,

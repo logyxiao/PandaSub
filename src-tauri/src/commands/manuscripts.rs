@@ -1,7 +1,7 @@
 use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::models::{normalize_send_interval_min, Manuscript};
+use crate::models::{legacy_send_interval_min, normalize_send_interval_secs, Manuscript};
 use crate::smtp;
 use crate::state::AppState;
 use crate::store;
@@ -307,6 +307,8 @@ pub fn add_manuscript(
     let excluded_types = json!(input.excluded_types).to_string();
     let mail_templates = json!(input.mail_templates).to_string();
     let fixed_mail_template_id = input.fixed_mail_template_id.trim();
+    let (send_interval_from_sec, send_interval_to_sec) =
+        normalize_send_interval_secs(input.send_interval_from_sec, input.send_interval_to_sec);
     if !fixed_mail_template_id.is_empty()
         && !input
             .mail_templates
@@ -327,8 +329,8 @@ pub fn add_manuscript(
     };
     conn.execute(
         "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
-            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, send_interval_min, subject, file_name, file_data, mail_templates, fixed_mail_template_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, send_interval_min, subject, file_name, file_data, mail_templates, fixed_mail_template_id, send_interval_from_sec, send_interval_to_sec)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         rusqlite::params![
             input.title.trim(),
             body,
@@ -343,12 +345,14 @@ pub fn add_manuscript(
             genres,
             excluded_types,
             json!(input.account_ids).to_string(),
-            normalize_send_interval_min(input.send_interval_min),
+            legacy_send_interval_min(send_interval_from_sec, send_interval_to_sec),
             input.subject.trim(),
             input.file_name.trim(),
             input.file_data,
             mail_templates,
             fixed_mail_template_id,
+            send_interval_from_sec,
+            send_interval_to_sec,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -367,6 +371,8 @@ pub fn update_manuscript(
     let excluded_types = json!(input.excluded_types).to_string();
     let mail_templates = json!(input.mail_templates).to_string();
     let fixed_mail_template_id = input.fixed_mail_template_id.trim();
+    let (send_interval_from_sec, send_interval_to_sec) =
+        normalize_send_interval_secs(input.send_interval_from_sec, input.send_interval_to_sec);
     if !fixed_mail_template_id.is_empty()
         && !input
             .mail_templates
@@ -384,6 +390,8 @@ pub fn update_manuscript(
                 file_data = COALESCE(?15, file_data),
                 mail_templates = ?18,
                 fixed_mail_template_id = ?20,
+                send_interval_from_sec = ?21,
+                send_interval_to_sec = ?22,
                 updated_at = datetime('now','localtime')
          WHERE id = ?14",
         rusqlite::params![
@@ -405,8 +413,10 @@ pub fn update_manuscript(
             excluded_types,
             json!(input.account_ids).to_string(),
             mail_templates,
-            normalize_send_interval_min(input.send_interval_min),
+            legacy_send_interval_min(send_interval_from_sec, send_interval_to_sec),
             fixed_mail_template_id,
+            send_interval_from_sec,
+            send_interval_to_sec,
         ],
     )
     .map_err(|e| e.to_string())?;

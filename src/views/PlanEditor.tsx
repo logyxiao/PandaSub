@@ -10,8 +10,8 @@ import {
   GENRES, LENGTH_TAGS, editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
   fillPlaceholders, isLengthTag, lengthTagsFromWords, normalizeEditorTags, splitPlanTags,
   defaultMailTemplates, editorPlatformKey, groupMatchingByPlatform, isDroppedMailTemplate,
-  isEditorFavorited, mergeEditorSelectionByPlatform, normalizeSendIntervalMin,
-  recipientEmailsForCopy, SEND_INTERVAL_OPTIONS, accountTodayQuota,
+  isEditorFavorited, mergeEditorSelectionByPlatform, normalizeSendIntervalRange,
+  recipientEmailsForCopy, accountTodayQuota, MAX_SEND_INTERVAL_SEC,
 } from './planShared'
 import { EditorsList, emptyEditorListFilters, type EditorListFilters } from './Editors'
 
@@ -159,8 +159,34 @@ export function PlanEditor({
     if (!taskForm.account_ids.length) return enabledAccounts
     return enabledAccounts.filter((account) => taskForm.account_ids.includes(account.id))
   }, [enabledAccounts, taskForm.account_ids])
-  const sendIntervalMin = normalizeSendIntervalMin(form.send_interval_min)
-  const minutes = estimateAutoMinutes(sendCount, sendIntervalMin)
+  const sendInterval = normalizeSendIntervalRange(
+    form.send_interval_from_sec,
+    form.send_interval_to_sec,
+    form.send_interval_min,
+  )
+  const minutes = estimateAutoMinutes(sendCount, sendInterval.fromSec, sendInterval.toSec)
+  const updateSendInterval = (side: 'from' | 'to', raw: string) => {
+    const value = Math.min(MAX_SEND_INTERVAL_SEC, Math.max(1, Math.round(Number(raw)) || 1))
+    setForm((current) => {
+      const interval = normalizeSendIntervalRange(
+        current.send_interval_from_sec,
+        current.send_interval_to_sec,
+        current.send_interval_min,
+      )
+      if (side === 'from') {
+        return {
+          ...current,
+          send_interval_from_sec: value,
+          send_interval_to_sec: Math.max(value, interval.toSec),
+        }
+      }
+      return {
+        ...current,
+        send_interval_from_sec: Math.min(interval.fromSec, value),
+        send_interval_to_sec: value,
+      }
+    })
+  }
   const mailTemplates = (form.mail_templates?.length ? form.mail_templates : defaultMailTemplates())
     .filter((item) => !isDroppedMailTemplate(item))
   const activeTpl = mailTemplates.find((item) => item.id === activeTplId) ?? mailTemplates[0]
@@ -978,29 +1004,32 @@ export function PlanEditor({
             <div className="plan-work-card plan-step-3-right">
               <div>
                 <h3 className="plan-send-title">发送频率</h3>
-                <p className="plan-send-desc">默认 3 分钟/次，仍按现在的 2–4 分钟随机节奏。其他档位按所选分钟数发送。</p>
+                <p className="plan-send-desc">设置每封邮件发送完成后的等待区间，每次会在区间内随机取一个秒数。</p>
               </div>
-              <div className="send-interval-list" role="radiogroup" aria-label="发送频率">
-                {SEND_INTERVAL_OPTIONS.map((item) => {
-                  const on = sendIntervalMin === item.minutes
-                  return (
-                    <button key={item.minutes} type="button" role="radio" aria-checked={on}
-                      className={`send-interval-row ${on ? 'on' : ''}`}
-                      onClick={() => setForm((f) => ({ ...f, send_interval_min: item.minutes }))}>
-                      <span className="send-interval-main">
-                        <b>{item.minutes} 分钟/次</b>
-                        <small>({item.hint})</small>
-                      </span>
-                      {on && <Check size={16} />}
-                    </button>
-                  )
-                })}
+              <div className="send-interval-range" aria-label="随机发送间隔">
+                <label className="send-interval-field">
+                  <span>最短</span>
+                  <span className="send-interval-input-wrap">
+                    <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
+                      value={sendInterval.fromSec}
+                      onChange={(event) => updateSendInterval('from', event.target.value)} />
+                    <em>秒</em>
+                  </span>
+                </label>
+                <span className="send-interval-separator">至</span>
+                <label className="send-interval-field">
+                  <span>最长</span>
+                  <span className="send-interval-input-wrap">
+                    <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
+                      value={sendInterval.toSec}
+                      onChange={(event) => updateSendInterval('to', event.target.value)} />
+                    <em>秒</em>
+                  </span>
+                </label>
               </div>
-              {sendIntervalMin === 1 && selectedAccounts.length < 3 && (
-                <p className="warn-text">1 分钟/次建议至少 3 个投稿邮箱，并同时投不同作品。</p>
-              )}
-              {sendIntervalMin === 2 && selectedAccounts.length < 2 && (
-                <p className="warn-text">2 分钟/次建议至少配置 2 个投稿邮箱。</p>
+              <p className="plan-send-desc">当前每封间隔 {sendInterval.fromSec}–{sendInterval.toSec} 秒，默认 100–240 秒。</p>
+              {sendInterval.fromSec < 30 && (
+                <p className="warn-text">最短间隔低于 30 秒，可能更容易触发邮箱发送频率限制。</p>
               )}
               <div className="plan-send-summary">
                 <div className="plan-estimate">

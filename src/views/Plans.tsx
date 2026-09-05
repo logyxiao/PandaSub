@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Copy, FileX2, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, FileX2, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api, onTask } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
@@ -11,9 +11,10 @@ import type { Account, Delivery, Editor, EditorGroup, MailTemplate, Manuscript, 
 import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
 import {
-  categoryFromWords, countChars, createEmptyManuscript, DEFAULT_SEND_INTERVAL_MIN,
-  latestTask, normalizeSendIntervalMin, planSendProgress, SEND_INTERVAL_OPTIONS,
+  categoryFromWords, countChars, createEmptyManuscript, DEFAULT_SEND_INTERVAL_FROM_SEC,
+  DEFAULT_SEND_INTERVAL_TO_SEC, latestTask, normalizeSendIntervalRange, planSendProgress,
   syncMailFromTemplates, toInput, accountTodayQuota, defaultMailTemplates, normalizeDefaultMailTemplates,
+  MAX_SEND_INTERVAL_SEC,
 } from './planShared'
 
 const emptyTask: TaskInput = {
@@ -36,7 +37,10 @@ export function PlansView() {
   const [showEditor, setShowEditor] = useState(false)
   const [accountFor, setAccountFor] = useState<Manuscript | null>(null)
   const [draftIds, setDraftIds] = useState<number[]>([])
-  const [draftSendIntervalMin, setDraftSendIntervalMin] = useState(DEFAULT_SEND_INTERVAL_MIN)
+  const [draftSendInterval, setDraftSendInterval] = useState({
+    fromSec: DEFAULT_SEND_INTERVAL_FROM_SEC,
+    toSec: DEFAULT_SEND_INTERVAL_TO_SEC,
+  })
   const [creatingWasteFor, setCreatingWasteFor] = useState<number | null>(null)
   const [detail, setDetail] = useState<Manuscript | null>(null)
   const [form, setForm] = useState<ManuscriptInput>(() => createEmptyManuscript())
@@ -321,7 +325,11 @@ export function PlansView() {
   const openAccountFor = (m: Manuscript) => {
     setAccountFor(m)
     setDraftIds(planAccounts(m))
-    setDraftSendIntervalMin(normalizeSendIntervalMin(m.send_interval_min))
+    setDraftSendInterval(normalizeSendIntervalRange(
+      m.send_interval_from_sec,
+      m.send_interval_to_sec,
+      m.send_interval_min,
+    ))
   }
 
   const toggleDraftAccount = (accountId: number) => {
@@ -337,7 +345,8 @@ export function PlansView() {
       await api.updateManuscript(accountFor.id, {
         ...toInput(accountFor),
         account_ids: ids,
-        send_interval_min: draftSendIntervalMin,
+        send_interval_from_sec: draftSendInterval.fromSec,
+        send_interval_to_sec: draftSendInterval.toSec,
       })
       const task = latestTask(accountFor.id, tasks)
       if (task && (cur.length !== ids.length || cur.some((x, i) => x !== ids[i]))) {
@@ -588,28 +597,46 @@ export function PlansView() {
             </div>
             <div className="plan-acct-row">
               <div className="plan-acct-title"><b>发送频率</b><small>每封邮件之间的间隔</small></div>
-              <div className="plan-acct-frequency" role="radiogroup" aria-label="发送频率">
-                {SEND_INTERVAL_OPTIONS.map((item) => {
-                  const on = draftSendIntervalMin === item.minutes
-                  return (
-                    <button key={item.minutes} type="button" role="radio" aria-checked={on}
-                      className={`send-interval-row ${on ? 'on' : ''}`}
-                      onClick={() => setDraftSendIntervalMin(item.minutes)}>
-                      <span className="send-interval-main">
-                        <b>{item.minutes} 分钟/次</b>
-                        <small>{item.hint}</small>
-                      </span>
-                      {on && <Check size={16} />}
-                    </button>
-                  )
-                })}
+              <div className="send-interval-range" aria-label="随机发送间隔">
+                <label className="send-interval-field">
+                  <span>最短</span>
+                  <span className="send-interval-input-wrap">
+                    <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
+                      value={draftSendInterval.fromSec}
+                      onChange={(event) => {
+                        const value = Math.min(MAX_SEND_INTERVAL_SEC, Math.max(1, Math.round(Number(event.target.value)) || 1))
+                        setDraftSendInterval((current) => ({ fromSec: value, toSec: Math.max(value, current.toSec) }))
+                      }} />
+                    <em>秒</em>
+                  </span>
+                </label>
+                <span className="send-interval-separator">至</span>
+                <label className="send-interval-field">
+                  <span>最长</span>
+                  <span className="send-interval-input-wrap">
+                    <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
+                      value={draftSendInterval.toSec}
+                      onChange={(event) => {
+                        const value = Math.min(MAX_SEND_INTERVAL_SEC, Math.max(1, Math.round(Number(event.target.value)) || 1))
+                        setDraftSendInterval((current) => ({ fromSec: Math.min(current.fromSec, value), toSec: value }))
+                      }} />
+                    <em>秒</em>
+                  </span>
+                </label>
               </div>
-              {draftSendIntervalMin === 1 && (draftIds.length || enabledAccounts.length) < 3 && (
-                <p className="warn-text">1 分钟/次建议至少配置 3 个投稿邮箱。</p>
+              <p className="hint">每封发送后随机等待 {draftSendInterval.fromSec}–{draftSendInterval.toSec} 秒。</p>
+              {draftSendInterval.fromSec < 30 && (
+                <p className="warn-text">最短间隔低于 30 秒，可能更容易触发邮箱发送频率限制。</p>
               )}
-              {draftSendIntervalMin === 2 && (draftIds.length || enabledAccounts.length) < 2 && (
-                <p className="warn-text">2 分钟/次建议至少配置 2 个投稿邮箱。</p>
-              )}
+              <div className="plan-send-rules">
+                <b>发送规则与建议</b>
+                <ol>
+                  <li>只选一个邮箱时，全部邮件都由该邮箱发送；多选时，按列表顺序在可用邮箱之间轮换。</li>
+                  <li>整个计划串行发送。每发完一封，再按上方区间随机等待，然后切换邮箱发送下一封；各邮箱不会并发或各自单独计时。</li>
+                  <li>未勾选邮箱表示使用全部启用邮箱；已禁用邮箱会跳过，认证失败的邮箱会自动停用并切换下一个。</li>
+                  <li>“今日 80 封”是发送建议和提醒，不会自动停止该邮箱。</li>
+                </ol>
+              </div>
             </div>
           </div>
         </Modal>

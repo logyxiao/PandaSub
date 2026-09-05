@@ -100,6 +100,8 @@ export interface Manuscript {
   excluded_types?: string[]
   account_ids: number[]
   send_interval_min?: number
+  send_interval_from_sec?: number
+  send_interval_to_sec?: number
   subject: string
   mail_templates?: MailTemplate[]
   fixed_mail_template_id?: string
@@ -123,6 +125,8 @@ export interface ManuscriptInput {
   excluded_types?: string[]
   account_ids: number[]
   send_interval_min?: number
+  send_interval_from_sec: number
+  send_interval_to_sec: number
   subject: string
   mail_templates: MailTemplate[]
   fixed_mail_template_id: string
