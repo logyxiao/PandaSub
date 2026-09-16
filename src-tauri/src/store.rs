@@ -806,8 +806,8 @@ pub fn insert_delivery(
     Ok(conn.last_insert_rowid())
 }
 
-/// Persisted before any network work. A pending attempt always requires
-/// explicit reconciliation; restarting/resetting tasks never clears it.
+/// Pending attempts protect history from destructive changes. Automatic sends
+/// may continue to other recipients while these attempts await reconciliation.
 pub fn ensure_manuscript_resolved(conn: &Connection, id: i64) -> Result<(), String> {
     let pending: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM outgoing_attempts WHERE manuscript_id=?1 AND status='pending')",
@@ -841,13 +841,22 @@ pub fn begin_send_attempt(
     conn: &Connection,
     delivery: &SuccessfulDelivery<'_>,
 ) -> Result<(), String> {
-    ensure_manuscript_resolved(conn, delivery.manuscript_id)?;
+    let recipient = crate::smtp::parse_recipient(delivery.recipient)
+        .1
+        .trim()
+        .to_lowercase();
+    let pending: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM outgoing_attempts WHERE manuscript_id=?1 AND recipient=?2 COLLATE NOCASE AND status='pending')",
+        params![delivery.manuscript_id, recipient], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if pending {
+        return Err("该收件人的发送结果待确认，请先核对计划记录".into());
+    }
     conn.execute("INSERT INTO outgoing_attempts(task_id,run_id,account_id,manuscript_id,recipient,subject,message_id,increment_task_progress)
         VALUES(?1, COALESCE((SELECT run_id FROM tasks WHERE id=?1),
         (SELECT run_id FROM tasks WHERE ?1 IS NULL AND EXISTS
         (SELECT 1 FROM json_each(tasks.manuscript_ids) WHERE value=?3) ORDER BY id DESC LIMIT 1),0), ?2,?3,?4,?5,?6,?7)",
         params![delivery.task_id, delivery.account_id, delivery.manuscript_id,
-            delivery.recipient.trim().to_lowercase(), delivery.subject, delivery.message_id, delivery.increment_task_progress])
+            recipient, delivery.subject, delivery.message_id, delivery.increment_task_progress])
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1867,7 +1876,7 @@ mod outbox_tests {
         }
     }
     #[test]
-    fn pending_blocks_restarts_resets_deletion_and_new_attempts() {
+    fn pending_blocks_resets_deletion_and_duplicate_recipient_attempts() {
         let mut conn = fixture();
         begin_send_attempt(&conn, &attempt("m1")).unwrap();
         assert!(ensure_task_resolved(&conn, 1).is_err());
@@ -1881,6 +1890,53 @@ mod outbox_tests {
         assert!(pending_sends(&conn, 10).unwrap().is_empty());
         assert_eq!(load_manuscript_deliveries(&conn, 10).unwrap().len(), 0);
         begin_send_attempt(&conn, &attempt("m2")).unwrap();
+    }
+    #[test]
+    fn pending_only_blocks_same_manuscript_and_recipient() {
+        let mut conn = fixture();
+        begin_send_attempt(&conn, &attempt("m1")).unwrap();
+        let duplicate = SuccessfulDelivery {
+            recipient: "编辑 <A@EXAMPLE.COM>",
+            ..attempt("duplicate")
+        };
+        assert!(begin_send_attempt(&conn, &duplicate).is_err());
+        let other = SuccessfulDelivery {
+            recipient: "b@example.com",
+            ..attempt("m2")
+        };
+        begin_send_attempt(&conn, &other).unwrap();
+        assert_eq!(pending_sends(&conn, 10).unwrap().len(), 2);
+        record_successful_delivery(&mut conn, other).unwrap();
+        assert_eq!(pending_sends(&conn, 10).unwrap().len(), 1);
+        assert_eq!(load_task(&conn, 1).unwrap().unwrap().sent, 1);
+        let another_task = SuccessfulDelivery {
+            task_id: None,
+            ..attempt("same-recipient-other-task")
+        };
+        assert!(begin_send_attempt(&conn, &another_task).is_err());
+        let another_manuscript = SuccessfulDelivery {
+            manuscript_id: 11,
+            ..attempt("other-manuscript")
+        };
+        begin_send_attempt(&conn, &another_manuscript).unwrap();
+    }
+
+    #[test]
+    fn bookkeeping_failure_keeps_pending_but_allows_next_recipient() {
+        let mut conn = fixture();
+        begin_send_attempt(&conn, &attempt("m1")).unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_one_delivery BEFORE INSERT ON deliveries WHEN NEW.message_id='m1' BEGIN SELECT RAISE(FAIL,'fixture storage failure'); END;").unwrap();
+        assert!(record_successful_delivery(&mut conn, attempt("m1")).is_err());
+        let other = SuccessfulDelivery {
+            recipient: "b@example.com",
+            ..attempt("m2")
+        };
+        begin_send_attempt(&conn, &other).unwrap();
+        record_successful_delivery(&mut conn, other).unwrap();
+        let pending = pending_sends(&conn, 10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message_id, "m1");
+        assert_eq!(load_task(&conn, 1).unwrap().unwrap().sent, 1);
     }
     #[test]
     fn successful_bookkeeping_and_outbox_settlement_are_atomic_and_idempotent() {
@@ -2003,7 +2059,6 @@ mod outbox_tests {
 
 /// Begin an intentional loop cycle without erasing cumulative progress.
 pub fn advance_loop_cycle(conn: &Connection, task_id: i64) -> Result<(), String> {
-    ensure_task_resolved(conn, task_id)?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     tx.execute("INSERT INTO task_runs DEFAULT VALUES", [])
         .map_err(|e| e.to_string())?;

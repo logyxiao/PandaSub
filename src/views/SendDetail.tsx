@@ -234,7 +234,8 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
           <strong>发送结果待确认</strong>
           <p>{attempt.recipient} · {attempt.subject} · {formatTime(attempt.created_at)}</p>
           <p>发件邮箱：{attempt.account_email || `账号 #${attempt.account_id}`}</p>
-          <p>Message-ID：{attempt.message_id}。请先核对邮箱服务端或收件人反馈，暂缓重发。</p>
+          <p>仅跳过该收件人，任务可继续发送其他邮件。核对邮箱服务端或收件人反馈后，再处理这封邮件。</p>
+          <p>Message-ID：{attempt.message_id}</p>
           <div className="send-detail-pending-actions">
           <Button size="sm" disabled={locked || resolving || resending !== null || loading} onClick={() => void resolvePending(attempt, true)}>已发出，补记成功</Button>
           <Button size="sm" disabled={locked || resolving || resending !== null || loading} onClick={() => void resolvePending(attempt, false)}>未发出，解除待确认</Button>

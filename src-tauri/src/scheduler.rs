@@ -29,6 +29,7 @@ enum SendOutcome {
     Failed,
     RetryLater,
     NeedsReview(String),
+    DataError(String),
 }
 
 fn delivery_target_key(manuscript_id: i64, recipient: &str) -> (i64, String) {
@@ -63,6 +64,28 @@ fn build_queue(
     let offset = rand::rng().random_range(0..items.len().max(1));
     items.rotate_left(offset);
     items.into_iter().collect()
+}
+
+/// Pending attempts remain excluded across restarts, tasks and loop rounds.
+/// They must never be counted as successful deliveries.
+fn skip_pending_recipients(
+    conn: &Connection,
+    manuscripts: &[Manuscript],
+    queue: &mut VecDeque<SendTarget>,
+) -> Result<bool, String> {
+    let mut pending = std::collections::HashSet::new();
+    for manuscript in manuscripts {
+        for attempt in store::pending_sends(conn, manuscript.id)? {
+            pending.insert(delivery_target_key(manuscript.id, &attempt.recipient));
+        }
+    }
+    queue.retain(|target| {
+        !pending.contains(&delivery_target_key(
+            target.manuscript.id,
+            &target.recipient,
+        ))
+    });
+    Ok(!pending.is_empty())
 }
 
 pub fn try_reserve_task_handle(
@@ -156,7 +179,6 @@ pub fn start_scheduler_watcher(
                     let conn = db.lock().unwrap();
                     let result = (|| -> Result<bool, String> {
                         let task = store::load_task(&conn, id)?.ok_or("任务不存在")?;
-                        store::ensure_task_resolved(&conn, id)?;
                         claim_manuscripts(&tasks, id, &task.manuscript_ids)?;
                         claim_scheduled_task(&conn, &pending, id)
                     })();
@@ -309,6 +331,7 @@ struct PreparedTask {
     manuscripts: Vec<Manuscript>,
     attachments: AttachmentMap,
     queue: VecDeque<SendTarget>,
+    has_pending: bool,
 }
 
 /// No network operation is allowed before every required read succeeds. In
@@ -316,7 +339,6 @@ struct PreparedTask {
 fn prepare_task(conn: &Connection, task_id: i64) -> Result<PreparedTask, String> {
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let task = store::load_task(&tx, task_id)?.ok_or("任务不存在")?;
-    store::ensure_task_resolved(&tx, task_id)?;
     let settings = store::load_settings(&tx)?;
     let mut seen = std::collections::HashSet::new();
     let mut manuscripts = Vec::new();
@@ -359,6 +381,7 @@ fn prepare_task(conn: &Connection, task_id: i64) -> Result<PreparedTask, String>
             .map_err(|e| e.to_string())?;
         }
     }
+    let has_pending = skip_pending_recipients(&tx, &manuscripts, &mut queue)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(PreparedTask {
         task,
@@ -366,6 +389,7 @@ fn prepare_task(conn: &Connection, task_id: i64) -> Result<PreparedTask, String>
         manuscripts,
         attachments,
         queue,
+        has_pending,
     })
 }
 
@@ -411,6 +435,7 @@ async fn run_task_worker(
         manuscripts,
         attachments,
         mut queue,
+        has_pending,
     } = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -445,12 +470,15 @@ async fn run_task_worker(
 
     let mut cursor: usize = 0;
     let mut had_failure = false;
+    let mut had_pending = has_pending;
     let allowed_accounts: std::collections::HashSet<i64> =
         task.account_ids.iter().copied().collect();
 
     loop {
         if !is_loop && queue.is_empty() {
-            let completion_message = if had_failure {
+            let completion_message = if had_pending {
+                "其余邮件已处理完毕，待确认邮件已跳过，请在计划记录中核对"
+            } else if had_failure {
                 "任务投递结束，但有邮件发送失败"
             } else {
                 "任务全部投递完成"
@@ -459,7 +487,11 @@ async fn run_task_worker(
                 &db.lock().unwrap(),
                 Some(task_id),
                 None,
-                if had_failure { "warning" } else { "success" },
+                if had_failure || had_pending {
+                    "warning"
+                } else {
+                    "success"
+                },
                 "task",
                 completion_message,
             );
@@ -471,7 +503,11 @@ async fn run_task_worker(
                 let _ = store::mark_task_finished(
                     &conn,
                     task_id,
-                    if had_failure { "stopped" } else { "completed" },
+                    if had_failure || had_pending {
+                        "stopped"
+                    } else {
+                        "completed"
+                    },
                 );
             }
             emit_task(&app, &db, task_id);
@@ -489,27 +525,26 @@ async fn run_task_worker(
         }
 
         if queue.is_empty() {
+            queue = build_queue(&task, &manuscripts, &attachments);
+            let filtered = skip_pending_recipients(&db.lock().unwrap(), &manuscripts, &mut queue);
+            match filtered {
+                Ok(pending) => had_pending = pending,
+                Err(error) => {
+                    stop_for_data_error(&app, &db, task_id, &error);
+                    registry.lock().unwrap().remove(&task_id);
+                    return;
+                }
+            }
+            if queue.is_empty() {
+                // Do not create empty rounds or spin when all recipients are pending.
+                interruptible_sleep(60, &handle).await;
+                continue;
+            }
             let advanced = store::advance_loop_cycle(&db.lock().unwrap(), task_id);
             if let Err(error) = advanced {
                 stop_for_data_error(&app, &db, task_id, &error);
                 registry.lock().unwrap().remove(&task_id);
                 return;
-            }
-            queue = build_queue(&task, &manuscripts, &attachments);
-            if queue.is_empty() {
-                let log = store::insert_log(
-                    &db.lock().unwrap(),
-                    Some(task_id),
-                    None,
-                    "warning",
-                    "task",
-                    "稿件未设置收件人，60 秒后重试",
-                );
-                if let Ok(log) = log {
-                    emit_log(&app, &log);
-                }
-                interruptible_sleep(60, &handle).await;
-                continue;
             }
         }
 
@@ -578,7 +613,6 @@ async fn run_task_worker(
                         },
                     )
                 };
-                let storage_error = recorded.as_ref().err().cloned();
                 let log = match recorded {
                     Ok(()) => store::insert_send_log(
                         &db.lock().unwrap(),
@@ -591,7 +625,7 @@ async fn run_task_worker(
                         &target.recipient,
                     ),
                     Err(error) => {
-                        had_failure = true;
+                        had_pending = true;
                         store::insert_send_log(
                             &db.lock().unwrap(),
                             Some(task_id),
@@ -599,7 +633,7 @@ async fn run_task_worker(
                             Some(account_id),
                             "error",
                             "storage",
-                            &format!("邮件已发出，但保存投递记录失败：{error}"),
+                            &format!("邮件已发出，但保存投递记录失败：{error}。已保留待确认记录，继续发送其他邮件"),
                             &target.recipient,
                         )
                     }
@@ -608,18 +642,25 @@ async fn run_task_worker(
                     emit_log(&app, &log);
                 }
                 emit_task(&app, &db, task_id);
-                if let Some(error) = storage_error {
-                    stop_for_data_error(
-                        &app,
-                        &db,
-                        task_id,
-                        &format!("邮件已发出但记账失败，请先核对发件记录再继续：{error}"),
-                    );
-                    registry.lock().unwrap().remove(&task_id);
-                    return;
-                }
             }
             SendOutcome::NeedsReview(error) => {
+                had_pending = true;
+                let log = store::insert_send_log(
+                    &db.lock().unwrap(),
+                    Some(task_id),
+                    Some(target.manuscript.id),
+                    None,
+                    "warning",
+                    "send",
+                    &error,
+                    &target.recipient,
+                );
+                if let Ok(log) = log {
+                    emit_log(&app, &log);
+                }
+                emit_task(&app, &db, task_id);
+            }
+            SendOutcome::DataError(error) => {
                 stop_for_data_error(&app, &db, task_id, &error);
                 registry.lock().unwrap().remove(&task_id);
                 return;
@@ -723,7 +764,7 @@ async fn send_with_retry(
             },
         );
         if let Err(error) = prepared {
-            return SendOutcome::NeedsReview(error);
+            return SendOutcome::DataError(error);
         }
         match smtp::send_email_with_id(
             &account,
@@ -750,11 +791,11 @@ async fn send_with_retry(
                 let (category, message) = classify_error(&err);
                 if !smtp::definitely_not_sent(&err) {
                     return SendOutcome::NeedsReview(format!(
-                        "发送结果待确认：{message}。请在计划记录中核对，自动重试已暂停"
+                        "发送结果待确认：{message}。已跳过该收件人，继续发送其他邮件；请在计划记录中核对"
                     ));
                 }
                 if let Err(error) = store::mark_attempt_not_sent(&db.lock().unwrap(), &message_id) {
-                    return SendOutcome::NeedsReview(error);
+                    return SendOutcome::DataError(error);
                 }
                 match category.as_str() {
                     "auth" => {
@@ -863,6 +904,7 @@ mod tests {
             "UPDATE manuscripts SET file_name='missing.docx'",
             "UPDATE manuscripts SET file_name='wrong.docx',file_data='not a blob'",
             "DROP TABLE deliveries",
+            "DROP TABLE outgoing_attempts",
             "CREATE TRIGGER deny_progress BEFORE UPDATE ON tasks BEGIN SELECT RAISE(ABORT,'fixture write failure'); END",
         ] {
             let conn = prepared_fixture();
@@ -893,6 +935,124 @@ mod tests {
         store::advance_loop_cycle(&conn, 1).unwrap();
         assert_eq!(prepare_task(&conn, 1).unwrap().queue.len(), 2);
         assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, sent);
+    }
+
+    #[test]
+    fn pending_recipient_does_not_block_remaining_sends_or_restart() {
+        let mut conn = prepared_fixture();
+        let attempt = |recipient, message_id| store::SuccessfulDelivery {
+            task_id: Some(1),
+            account_id: 20,
+            manuscript_id: 1,
+            recipient,
+            subject: "fixture",
+            message_id,
+            increment_task_progress: true,
+        };
+        store::begin_send_attempt(&conn, &attempt("编辑 <ONE@EXAMPLE.COM>", "pending")).unwrap();
+        let prepared = prepare_task(&conn, 1).unwrap();
+        assert!(prepared.has_pending);
+        assert_eq!(prepared.queue.len(), 1);
+        assert_eq!(prepared.queue[0].recipient, "two@example.com");
+        let task = store::load_task(&conn, 1).unwrap().unwrap();
+        assert_eq!((task.sent, task.total), (0, 2));
+
+        store::begin_send_attempt(&conn, &attempt("two@example.com", "next")).unwrap();
+        store::record_successful_delivery(&mut conn, attempt("two@example.com", "next")).unwrap();
+        let restarted = prepare_task(&conn, 1).unwrap();
+        assert!(restarted.has_pending);
+        assert!(restarted.queue.is_empty());
+        assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 1);
+
+        let pending = store::pending_sends(&conn, 1).unwrap();
+        assert_eq!(pending.len(), 1);
+        store::resolve_send_attempt(&mut conn, pending[0].id, false).unwrap();
+        let resolved = prepare_task(&conn, 1).unwrap();
+        assert!(!resolved.has_pending);
+        assert_eq!(resolved.queue.len(), 1);
+        assert_eq!(resolved.queue[0].recipient, "one@example.com");
+    }
+
+    #[test]
+    fn scheduled_and_loop_tasks_skip_pending_recipients_across_rounds() {
+        let mut conn = prepared_fixture();
+        store::begin_send_attempt(
+            &conn,
+            &store::SuccessfulDelivery {
+                task_id: Some(1),
+                account_id: 20,
+                manuscript_id: 1,
+                recipient: "one@example.com",
+                subject: "fixture",
+                message_id: "pending",
+                increment_task_progress: true,
+            },
+        )
+        .unwrap();
+        let original_run: i64 = conn
+            .query_row("SELECT run_id FROM tasks WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "UPDATE tasks SET schedule_type='scheduled',status='scheduled'",
+            [],
+        )
+        .unwrap();
+        assert!(claim_scheduled_task(&conn, &HashMap::new(), 1).unwrap());
+        assert_eq!(prepare_task(&conn, 1).unwrap().queue.len(), 1);
+        conn.execute("UPDATE tasks SET schedule_type='loop'", [])
+            .unwrap();
+        for _ in 0..2 {
+            store::advance_loop_cycle(&conn, 1).unwrap();
+            let prepared = prepare_task(&conn, 1).unwrap();
+            assert_eq!(prepared.queue.len(), 1);
+            assert_eq!(prepared.queue[0].recipient, "two@example.com");
+            let mut next_round =
+                build_queue(&prepared.task, &prepared.manuscripts, &prepared.attachments);
+            assert!(
+                skip_pending_recipients(&conn, &prepared.manuscripts, &mut next_round).unwrap()
+            );
+            assert_eq!(next_round.len(), 1);
+            assert_eq!(next_round[0].recipient, "two@example.com");
+        }
+        let pending = store::pending_sends(&conn, 1).unwrap();
+        store::resolve_send_attempt(&mut conn, pending[0].id, true).unwrap();
+        let recorded_run: i64 = conn
+            .query_row(
+                "SELECT run_id FROM deliveries WHERE message_id='pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(recorded_run, original_run);
+        assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 1);
+    }
+
+    #[test]
+    fn all_pending_recipients_leave_no_sendable_queue() {
+        let conn = prepared_fixture();
+        for recipient in ["one@example.com", "two@example.com"] {
+            store::begin_send_attempt(
+                &conn,
+                &store::SuccessfulDelivery {
+                    task_id: Some(1),
+                    account_id: 20,
+                    manuscript_id: 1,
+                    recipient,
+                    subject: "fixture",
+                    message_id: recipient,
+                    increment_task_progress: true,
+                },
+            )
+            .unwrap();
+        }
+        let prepared = prepare_task(&conn, 1).unwrap();
+        assert!(prepared.has_pending);
+        assert!(prepared.queue.is_empty());
+        assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 0);
+        let mut next_round =
+            build_queue(&prepared.task, &prepared.manuscripts, &prepared.attachments);
+        skip_pending_recipients(&conn, &prepared.manuscripts, &mut next_round).unwrap();
+        assert!(next_round.is_empty());
     }
 
     #[test]

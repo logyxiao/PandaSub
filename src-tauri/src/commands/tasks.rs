@@ -408,7 +408,6 @@ fn start_reserved_task(
         }) {
             return Err("任务没有可用的发件邮箱，请重新配置邮箱".into());
         }
-        store::ensure_task_resolved(&conn, id)?;
         scheduler::claim_manuscripts(&registry, id, &task.manuscript_ids)?;
         // 已完成的重新发送要清零进度从头投递；已停止且发过部分的任务保留进度，继续投递剩余收件人（跳过已投递的）。
         if task.status == "completed" {

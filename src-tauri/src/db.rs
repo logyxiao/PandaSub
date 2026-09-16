@@ -103,8 +103,8 @@ CREATE TABLE IF NOT EXISTS outgoing_attempts (
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','not_sent')),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS outgoing_pending_manuscript
-  ON outgoing_attempts(manuscript_id) WHERE status = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS outgoing_pending_recipient
+  ON outgoing_attempts(manuscript_id, recipient COLLATE NOCASE) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS outgoing_task_status ON outgoing_attempts(task_id, status);
 
 CREATE TABLE IF NOT EXISTS replies (
@@ -208,6 +208,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_send_interval_seconds_columns(&connection)?;
     add_reply_accepted_column(&connection)?;
     migrate_delivery_reliability(&connection)?;
+    migrate_pending_recipient_scope(&connection)?;
     add_runtime_query_indexes(&connection)?;
     repair_orphan_relations(&connection)?;
     reclassify_autoreply_history(&connection)?;
@@ -215,6 +216,17 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
     Ok(connection)
+}
+
+fn migrate_pending_recipient_scope(conn: &Connection) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS outgoing_pending_recipient
+         ON outgoing_attempts(manuscript_id, recipient COLLATE NOCASE) WHERE status='pending';
+         DROP INDEX IF EXISTS outgoing_pending_manuscript;",
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 fn add_runtime_query_indexes(conn: &Connection) -> Result<(), String> {
@@ -1575,6 +1587,25 @@ mod reliability_tests {
     use super::*;
     use crate::{state::TaskHandle, store};
     use std::{collections::HashMap, sync::Arc};
+
+    #[test]
+    fn legacy_pending_index_migrates_without_losing_unconfirmed_mail() {
+        let conn = test_database();
+        conn.execute_batch("DROP INDEX outgoing_pending_recipient;
+            CREATE UNIQUE INDEX outgoing_pending_manuscript ON outgoing_attempts(manuscript_id) WHERE status='pending';
+            INSERT INTO outgoing_attempts(task_id,run_id,account_id,manuscript_id,recipient,subject,message_id)
+            VALUES(1,0,1,10,'a@example.com','fixture','old-pending');").unwrap();
+        // Startup runs the schema before migrations, including on subsequent launches.
+        for _ in 0..2 {
+            conn.execute_batch(SCHEMA).unwrap();
+            migrate_pending_recipient_scope(&conn).unwrap();
+        }
+        conn.execute("INSERT INTO outgoing_attempts(task_id,run_id,account_id,manuscript_id,recipient,subject,message_id) VALUES(1,0,1,10,'b@example.com','fixture','new-pending')", []).unwrap();
+        assert!(conn.execute("INSERT INTO outgoing_attempts(task_id,run_id,account_id,manuscript_id,recipient,subject,message_id) VALUES(1,0,1,10,'A@EXAMPLE.COM','fixture','duplicate')", []).is_err());
+        let pending = store::pending_sends(&conn, 10).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].message_id, "old-pending");
+    }
 
     fn connection() -> Connection {
         test_database()
