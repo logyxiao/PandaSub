@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Database, Download, FolderOpen, Heart, Pencil, Plus, RotateCcw, Search, Trash2, Upload, Users, X } from 'lucide-react'
+import { ChevronDown, Download, FolderOpen, Heart, Pencil, Plus, RotateCcw, Search, Trash2, Upload, Users, X } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
+import { EditorTagField } from '../components/EditorTags'
+import { EditorLibrary } from './EditorLibrary'
 import { Modal } from '../components/Modal'
 import { GroupMemberPicker } from '../components/GroupMemberPicker'
 import { useConfirm, useToast } from '../components/feedback'
@@ -579,7 +581,7 @@ function PlatformPeersPop({ top, left, width, current, peers, onPick, onClose }:
   )
 }
 
-function EditorGroupsLibrary() {
+export function EditorGroupsLibrary() {
   const [groups, setGroups] = useState<EditorGroup[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
   const [activeGroupId, setActiveGroupId] = useState<number | null>(null)
@@ -958,90 +960,67 @@ function EditorGroupsLibrary() {
 }
 
 export function EditorsView() {
-  const [view, setView] = useState<'editors' | 'groups'>('editors')
+  const [updatedEditorId, setUpdatedEditorId] = useState<number | null>(null)
   const [reloadSignal, setReloadSignal] = useState(0)
-  const [total, setTotal] = useState(0)
   const [platformOptions, setPlatformOptions] = useState<string[]>([])
   const [editing, setEditing] = useState<Editor | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [showData, setShowData] = useState(false)
   const [form, setForm] = useState<EditorInput>(emptyForm)
-  const [customWorkType, setCustomWorkType] = useState('')
-  const [customRejectedType, setCustomRejectedType] = useState('')
+  const [tagOptions, setTagOptions] = useState<string[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
   const toast = useToast()
   const confirm = useConfirm()
-  const { go } = useNav()
+  const { setLeaveGuard } = useNav()
+  const [rowDirty, setRowDirty] = useState(false)
+  const [rowBusy, setRowBusy] = useState(false)
+  const [formSaving, setFormSaving] = useState(false)
+  const savingRef = useRef(false)
+  const baseline = useRef('')
+  const formDirty = showForm && JSON.stringify(form) !== baseline.current
+  const allowLeave = useCallback(async () => {
+    if (rowBusy || savingRef.current) { toast('正在保存，请稍候', 'info'); return false }
+    if (!(rowDirty || formDirty)) return true
+    return confirm({ title: '放弃未保存的修改？', message: '当前编辑资料尚未保存。继续会丢弃这次修改。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' })
+  }, [rowBusy, rowDirty, formDirty, confirm, toast])
+  useEffect(() => { setLeaveGuard(allowLeave); return () => setLeaveGuard(null) }, [allowLeave, setLeaveGuard])
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => { if (rowDirty || formDirty || rowBusy || formSaving) { event.preventDefault(); event.returnValue = '' } }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [rowDirty, formDirty, rowBusy, formSaving])
+  const closeForm = async () => { if (await allowLeave()) setShowForm(false) }
 
   const refresh = () => setReloadSignal((n) => n + 1)
 
-  const openAdd = () => { setEditing(null); setForm(emptyForm); setCustomWorkType(''); setCustomRejectedType(''); setShowForm(true) }
+  const openAdd = () => { setEditing(null); baseline.current = JSON.stringify(emptyForm); setForm(emptyForm); setShowForm(true) }
   const openEdit = (e: Editor) => {
     const next = normalizeEditorTags(e)
     setEditing(next)
-    setForm({
+    const input: EditorInput = {
       platform: next.platform, name: next.name, email: next.email,
       work_type: next.work_type,
       rejected_types: next.rejected_types ?? [],
       notes: next.notes ?? '',
-    })
-    setCustomWorkType('')
-    setCustomRejectedType('')
+    }
+    baseline.current = JSON.stringify(input)
+    setForm(input)
     setShowForm(true)
   }
 
-  const toggleTag = (tag: string) => {
-    setForm((f) => {
-      const work_type = f.work_type.includes(tag) ? f.work_type.filter((x) => x !== tag) : [...f.work_type, tag]
-      const rejected_types = work_type.includes(tag)
-        ? (f.rejected_types ?? []).filter((x) => x !== tag)
-        : (f.rejected_types ?? [])
-      return { ...f, work_type, rejected_types }
-    })
-  }
-
-  const toggleRejectedTag = (tag: string) => {
-    setForm((f) => {
-      const current = f.rejected_types ?? []
-      const rejected_types = current.includes(tag) ? current.filter((x) => x !== tag) : [...current, tag]
-      const work_type = rejected_types.includes(tag) ? f.work_type.filter((x) => x !== tag) : f.work_type
-      return { ...f, work_type, rejected_types }
-    })
-  }
-
-  const addCustomWorkType = () => {
-    const tag = customWorkType.trim()
-    if (!tag) return
-    setForm((f) => {
-      const work_type = f.work_type.includes(tag) ? f.work_type : [...f.work_type, tag]
-      const rejected_types = (f.rejected_types ?? []).filter((x) => x !== tag)
-      return { ...f, work_type, rejected_types }
-    })
-    setCustomWorkType('')
-  }
-
-  const addCustomRejectedType = () => {
-    const tag = customRejectedType.trim()
-    if (!tag) return
-    setForm((f) => {
-      const current = f.rejected_types ?? []
-      const rejected_types = current.includes(tag) ? current : [...current, tag]
-      const work_type = f.work_type.filter((x) => x !== tag)
-      return { ...f, work_type, rejected_types }
-    })
-    setCustomRejectedType('')
-  }
-
   const save = async () => {
-    if (!isValidEmail(form.email)) { toast('请填写有效的收稿邮箱', 'warning'); return }
-    const payload = normalizeEditorTags(form)
+    if (savingRef.current) return
+    if (!isValidEmail(form.email.trim())) { toast('请填写有效的收稿邮箱', 'warning'); return }
+    const payload = normalizeEditorTags({ ...form, email: form.email.trim() })
+    savingRef.current = true; setFormSaving(true)
     try {
-      if (editing) await api.updateEditor(editing.id, payload)
-      else await api.addEditor(payload)
+      if (editing) { await api.updateEditor(editing.id, payload); setUpdatedEditorId(editing.id) }
+      else setUpdatedEditorId(await api.addEditor(payload))
       setShowForm(false)
       refresh()
       toast(editing ? '编辑已保存' : '编辑已加入', 'success')
     } catch (e) { toast(String(e), 'error') }
+    finally { savingRef.current = false; setFormSaving(false) }
   }
 
   const exportList = async () => {
@@ -1121,39 +1100,9 @@ export function EditorsView() {
     <>
       <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.txt" hidden
         onChange={(e) => { void importList(e.target.files?.[0] ?? null); e.target.value = '' }} />
-      <div className="editor-view-switch" role="tablist" aria-label="编辑库视图">
-        <button type="button" role="tab" aria-selected={view === 'editors'} className={view === 'editors' ? 'on' : ''} onClick={() => setView('editors')}>
-          <Users size={14} />全部编辑
-        </button>
-        <button type="button" role="tab" aria-selected={view === 'groups'} className={view === 'groups' ? 'on' : ''} onClick={() => setView('groups')}>
-          <FolderOpen size={14} />编辑组
-        </button>
-      </div>
-      {view === 'editors' ? <><EditorsList
-        reloadSignal={reloadSignal}
-        onEdit={openEdit}
-        onDelete={(e) => void remove(e.id)}
-        onTotalChange={setTotal}
-        onPlatformsChange={setPlatformOptions}
-        actions={
-          <>
-            <Button size="sm" variant="ghost" onClick={() => setShowData(true)}><Database size={13} />数据管理</Button>
-            <Button size="sm" variant="primary" onClick={openAdd}><Plus size={13} />添加</Button>
-          </>
-        }
-        emptyAction={
-          <div className="toolbar-actions">
-            <Button size="sm" onClick={() => setShowData(true)}><Database size={13} />数据管理</Button>
-            <Button size="sm" variant="primary" onClick={openAdd}><Plus size={13} />添加</Button>
-          </div>
-        }
-      />
-
-      {total > 0 && (
-        <p className="after-table-hint">
-          导入同邮箱会更新资料。准备好后去 <button type="button" className="text-link" onClick={() => go('plans')}>投稿计划</button> 按作品类型筛编辑。
-        </p>
-      )}</> : <EditorGroupsLibrary />}
+      <EditorLibrary reloadSignal={reloadSignal} updatedEditorId={updatedEditorId} onEdit={openEdit} onDelete={e => void remove(e.id)}
+        onAdd={openAdd} onData={() => setShowData(true)} onPlatformsChange={setPlatformOptions} onTagsChange={setTagOptions}
+        onDirtyChange={setRowDirty} onBusyChange={setRowBusy} />
 
       {showData && (
         <Modal title="数据管理" width={440} onClose={() => setShowData(false)}>
@@ -1191,10 +1140,10 @@ export function EditorsView() {
       )}
 
       {showForm && (
-        <Modal title={editing ? '编辑资料' : '添加编辑'} width={560}
-          onClose={() => setShowForm(false)}
-          footer={<><Button variant="ghost" onClick={() => setShowForm(false)}>取消</Button><Button variant="primary" onClick={() => void save()}>保存</Button></>}>
-          <div className="form-grid">
+        <Modal title={editing ? '编辑资料' : '添加编辑'} width={560} className="editor-drawer"
+          onClose={() => void closeForm()}
+          footer={<><Button variant="ghost" disabled={formSaving} onClick={() => void closeForm()}>取消</Button><Button variant="primary" disabled={formSaving} onClick={() => void save()}>{formSaving ? '保存中…' : '保存'}</Button></>}>
+          <fieldset className="form-grid editor-form-fields" disabled={formSaving}>
             <label className="field">平台
               <input value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })} placeholder="选填，例如：起点、晋江" list="editor-platforms" />
             </label>
@@ -1202,35 +1151,15 @@ export function EditorsView() {
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="选填，编辑或栏目名" /></label>
             <label className="field span2">收稿邮箱（必填）
               <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="editor@example.com" /></label>
-            <div className="field span2">作品类型
-              <div className="chip-picks">
-                {[...new Set([...GENRES, ...form.work_type])].map((g) => (
-                  <button type="button" key={g} className={`chip ${form.work_type.includes(g) ? 'on' : ''}`}
-                    onClick={() => toggleTag(g)}>{g}</button>
-                ))}
-              </div>
-              <div className="editor-custom-tag">
-                <input value={customWorkType} onChange={(e) => setCustomWorkType(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomWorkType() } }}
-                  placeholder="自定义作品类型，回车添加" />
-                <Button size="sm" onClick={addCustomWorkType}>添加</Button>
-              </div>
-              <span className="field-hint">作品类型用于筛选收件人，可不填。</span>
+            <div className="field span2">收稿类型
+              <EditorTagField label="收稿类型" values={form.work_type} options={[...new Set([...tagOptions, ...GENRES, ...form.work_type, ...(form.rejected_types ?? [])])]} disabled={formSaving}
+                onChange={work_type => setForm(value => ({...value, work_type, rejected_types: (value.rejected_types ?? []).filter(tag => !work_type.includes(tag))}))}/>
+              <span className="field-hint">支持多选，选择标签后再保存编辑资料。</span>
             </div>
             <div className="field span2">拒收类型
-              <div className="chip-picks">
-                {[...new Set([...GENRES, ...(form.rejected_types ?? [])])].map((g) => (
-                  <button type="button" key={g} className={`chip ${(form.rejected_types ?? []).includes(g) ? 'is-rejected' : ''}`}
-                    onClick={() => toggleRejectedTag(g)}>{g}</button>
-                ))}
-              </div>
-              <div className="editor-custom-tag">
-                <input value={customRejectedType} onChange={(e) => setCustomRejectedType(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomRejectedType() } }}
-                  placeholder="自定义拒收类型，回车添加" />
-                <Button size="sm" onClick={addCustomRejectedType}>添加</Button>
-              </div>
-              <span className="field-hint">选中计划标签时，会自动排除拒收对应类型的编辑。</span>
+              <EditorTagField label="拒收类型" values={form.rejected_types ?? []} options={[...new Set([...tagOptions, ...GENRES, ...form.work_type, ...(form.rejected_types ?? [])])]} disabled={formSaving} excluded
+                onChange={rejected_types => setForm(value => ({...value, rejected_types, work_type: value.work_type.filter(tag => !rejected_types.includes(tag))}))}/>
+              <span className="field-hint">同一类型不会同时收稿和拒收；修改一侧会从另一侧移除。</span>
             </div>
             <label className="field span2">收稿说明
               <textarea className="editor-notes" rows={4} value={form.notes}
@@ -1242,7 +1171,7 @@ export function EditorsView() {
                 当前来源：{editing.source || '手动数据'}。在这里保存后会记为手动数据。
               </p>
             )}
-          </div>
+          </fieldset>
           <datalist id="editor-platforms">
             {platformOptions.map((p) => <option key={p} value={p} />)}
           </datalist>

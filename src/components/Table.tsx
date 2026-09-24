@@ -31,6 +31,7 @@ export function Table<T>({
   onRow,
   resetKey,
   className = '',
+  minWidth,
 }: {
   columns: TableColumn<T>[]
   dataSource: T[]
@@ -41,6 +42,7 @@ export function Table<T>({
   onRow?: (record: T, index: number) => { onClick?: () => void }
   resetKey?: string | number
   className?: string
+  minWidth?: number
 }) {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(pagination ? pagination.pageSize ?? 10 : 10)
@@ -57,6 +59,11 @@ export function Table<T>({
   }, [dataSource, pagination, page, pageCount, pageSize])
 
   const fixed = columns.some((col) => col.width != null || col.ellipsis)
+  // Fixed columns must retain enough room for the flexible text columns too.
+  // Scroll the table viewport on smaller windows instead of overlapping cells.
+  const tableMinWidth = minWidth ?? (fixed
+    ? columns.reduce((total, col) => total + (typeof col.width === 'number' ? col.width : 160), 0)
+    : undefined)
   const showPager = Boolean(pagination) && dataSource.length > 0
     && !(pagination && pagination.hideOnSinglePage && pageCount <= 1)
   const safePage = Math.min(page, pageCount)
@@ -68,7 +75,7 @@ export function Table<T>({
   return (
     <div className={`ui-table-shell ${className}`.trim()}>
       <div className="ui-table-wrap">
-        <table className={`ui-table${fixed ? ' is-fixed' : ''}`}>
+        <table className={`ui-table${fixed ? ' is-fixed' : ''}`} style={{ minWidth: tableMinWidth }}>
           <colgroup>
             {columns.map((col) => (
               <col key={col.key} style={colWidth(col.width)} />

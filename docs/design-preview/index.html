@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>熊猫投稿 · 布局设计预览</title><link rel="stylesheet" href="./style.css"><link rel="stylesheet" href="./design-v2.css"><link rel="stylesheet" href="./editors-v3.css"><link rel="stylesheet" href="./panda.css"></head>
+<body data-theme="panda" data-density="comfortable">
+<div class="app">
+<aside class="sidebar">
+  <a class="brand" href="#dashboard" aria-label="熊猫投稿工作台"><span class="brand-mark"><img src="../../src/assets/logo.png" alt=""></span><span>熊猫投稿<small>PANDA POST</small></span></a>
+  <div class="panda-workspace"><span class="panda-workspace-avatar">作</span><div><strong>我的写作空间</strong><small>个人工作空间</small></div></div>
+  <nav aria-label="主导航">
+    <div class="nav-label">概览</div>
+    <button data-page="dashboard"><span data-icon="grid"></span><span>工作台</span></button>
+    <div class="nav-label second">投稿准备</div>
+    <button data-page="accounts"><span data-icon="mail"></span><span>邮箱管理</span></button>
+    <button data-page="editors"><span data-icon="users"></span><span>编辑库</span></button>
+    <button data-page="groups"><span data-icon="folder"></span><span>编辑组</span></button>
+    <div class="nav-label second">投递与跟进</div>
+    <button data-page="plans"><span data-icon="book"></span><span>投稿计划</span><small>4</small></button>
+    <button data-page="logs"><span data-icon="list"></span><span>发送记录</span></button>
+    <button data-page="replies"><span data-icon="inbox"></span><span>编辑回复</span><small class="nav-count">3</small></button>
+    <button data-page="stats"><span data-icon="chart"></span><span>投稿统计</span></button>
+  </nav>
+  <div class="sidebar-bottom"><div class="engine"><i class="dot"></i><span>投稿服务运行中<small>1 个计划正在发送</small></span><span class="pulse-lines">▂▅▃</span></div><button data-page="settings"><span data-icon="settings"></span>设置</button><button data-page="about"><span data-icon="info"></span>关于熊猫投稿<span class="version">v0.2.5</span></button><div class="local-note"><span data-icon="shield"></span>数据保存在这台电脑</div></div>
+</aside>
+<div class="workspace"><header class="topbar"><div class="crumb">工作空间<span>/</span><b id="crumb-name">工作台</b></div><div class="top-right"><div class="appearance-controls" aria-label="设计预览选项"><span class="panda-theme-label"><i></i>熊猫黑白</span><button class="density-toggle" id="density-toggle" aria-label="切换为紧凑行距" title="切换列表显示密度"><span data-icon="list"></span><span id="density-label">舒适</span></button></div><span class="preview-pill">设计预览 · 示例数据</span><span class="avatar mini">林</span></div></header><main id="main" tabindex="-1"></main><footer class="statusbar"><span><i class="dot"></i>本地工作室</span><span>设计方案 01 <i>·</i> 所有操作仅用于预览</span></footer></div>
+</div>
+<dialog id="wizard" aria-labelledby="wizard-title"></dialog><dialog id="detail" aria-labelledby="detail-title"></dialog><div id="toast" role="status"></div>
+<script src="./local-data.js"></script><script src="./app.js"></script><script src="./local.js"></script><script src="./design-v2.js"></script><script src="./editors-v3.js"></script></body></html>

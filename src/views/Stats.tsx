@@ -85,7 +85,7 @@ export function StatsView() {
 
   return (
     <>
-      <div className="toolbar">
+      <div className="toolbar stats-toolbar">
         <div className="filters">
           <Select value={group} onChange={setGroup} ariaLabel="统计粒度" className="filter-select"
             options={[
@@ -94,12 +94,12 @@ export function StatsView() {
               { value: 'month', label: '按月统计' },
             ]} />
           <label className="stats-date">
-            <span>从</span>
-            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+            <span>开始</span>
+            <input type="date" aria-label="统计开始日期" value={start} onChange={(e) => setStart(e.target.value)} />
           </label>
           <label className="stats-date">
-            <span>到</span>
-            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+            <span>结束</span>
+            <input type="date" aria-label="统计结束日期" value={end} onChange={(e) => setEnd(e.target.value)} />
           </label>
           <div className="stats-quick">
             <button type="button" onClick={() => quick(7)}>近 7 天</button>
@@ -122,7 +122,7 @@ export function StatsView() {
             {cards.map((c) => (
               <div key={c.key} className={`stats-card ${c.cls}`}>
                 <div className="stats-card-label">{c.label}</div>
-                <div className="stats-card-value">{c.value}</div>
+                <div className="stats-card-value">{c.value.toLocaleString('zh-CN')}</div>
               </div>
             ))}
           </div>
@@ -133,29 +133,32 @@ export function StatsView() {
                 desc="换个日期范围或统计粒度试试。" />
             ) : (
               <Table
+                className="stats-table"
+                minWidth={720}
                 rowKey="period"
                 dataSource={report.groups}
                 resetKey={`${start}\0${end}\0${group}`}
-                pagination={{ pageSize: 50 }}
+                pagination={{ pageSize: 10, pageSizeOptions: [10, 20, 50] }}
                 columns={[
                   {
                     key: 'period',
                     title: '期间',
+                    width: '20%',
                     className: 'mono',
                     render: (_value, g) => periodLabel(g.period, group),
                   },
                   {
                     key: 'deliveries',
                     title: '投递次数',
-                    width: 100,
+                    width: '14%',
                     align: 'right',
                     className: 'num',
-                    dataIndex: 'deliveries',
+                    render: (_value, g) => g.deliveries.toLocaleString('zh-CN'),
                   },
                   {
                     key: 'share',
-                    title: '占比',
-                    width: 140,
+                    title: '投递量对比',
+                    width: '22%',
                     className: 'stats-bar-cell',
                     render: (_value, g) => (
                       <div className="stats-bar">
@@ -166,26 +169,26 @@ export function StatsView() {
                   {
                     key: 'human',
                     title: '人工回复',
-                    width: 88,
+                    width: '16%',
                     align: 'right',
                     className: 'num',
-                    render: (_value, g) => g.human_replies || '—',
+                    render: (_value, g) => g.human_replies.toLocaleString('zh-CN'),
                   },
                   {
                     key: 'fail',
                     title: '失败',
-                    width: 72,
+                    width: '14%',
                     align: 'right',
                     className: 'num',
-                    render: (_value, g) => g.failures || '—',
+                    render: (_value, g) => g.failures.toLocaleString('zh-CN'),
                   },
                   {
                     key: 'accepted',
                     title: '过稿',
-                    width: 72,
+                    width: '14%',
                     align: 'right',
                     className: 'num',
-                    render: (_value, g) => g.accepted || '—',
+                    render: (_value, g) => g.accepted.toLocaleString('zh-CN'),
                   },
                 ]}
               />

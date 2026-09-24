@@ -17,7 +17,18 @@ export function Modal({ title, onClose, children, footer, width, className = '' 
   onCloseRef.current = onClose
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current() }
+    const onKey = (e: KeyboardEvent) => {
+      const dialogs = document.querySelectorAll('[aria-modal="true"]')
+      if (dialogs[dialogs.length - 1] !== ref.current) return
+      if (e.key === 'Escape') { e.preventDefault(); onCloseRef.current() }
+      if (e.key === 'Tab') {
+        const nodes = Array.from(ref.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]') ?? []).filter(node => node.getClientRects().length)
+        const first = nodes[0], last = nodes[nodes.length - 1]
+        if (!first) { e.preventDefault(); return }
+        if (e.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) { e.preventDefault(); last.focus() }
+        else if (!e.shiftKey && (document.activeElement === last || document.activeElement === ref.current)) { e.preventDefault(); first.focus() }
+      }
+    }
     window.addEventListener('keydown', onKey)
     const prev = document.activeElement as HTMLElement | null
     ref.current?.focus()

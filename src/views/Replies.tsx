@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Heart, Inbox, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { api, onReply } from '../api'
-import { Table } from '../components/Table'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
 import { Modal } from '../components/Modal'
@@ -57,7 +56,7 @@ function ReplyFavStar({ editor, onToggle }: {
   )
 }
 
-export function RepliesView({ initialKind }: { initialKind?: string }) {
+export function RepliesView({ initialKind, initialReply }: { initialKind?: string; initialReply?: Reply }) {
   const [items, setItems] = useState<Reply[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
@@ -75,7 +74,9 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
   const [scanning, setScanning] = useState(false)
+  const [selectedId, setSelectedId] = useState<number | null>(initialReply?.id ?? null)
   const [preview, setPreview] = useState<Reply | null>(null)
+  useEffect(() => { setSelectedId(initialReply?.id ?? null) }, [initialReply])
   const [reclassifying, setReclassifying] = useState(false)
   const requestSeq = useRef(0)
   const toast = useToast()
@@ -168,6 +169,8 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
     } catch (e) { toast(String(e), 'error') }
   }
 
+  const selectedReply = items.find(reply => reply.id === selectedId) ?? (initialReply?.id === selectedId ? initialReply : undefined) ?? items[0]
+  const selectedEditor = selectedReply ? editorForReply(selectedReply, editorsByEmail) : undefined
   const previewEditor = preview ? editorForReply(preview, editorsByEmail) : undefined
 
   return (
@@ -176,12 +179,12 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
         <div className="filters">
           <label className="plan-search editor-search">
             <Search size={14} />
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索回复、编辑或邮箱" />
+            <input value={query} onChange={(e) => { setQuery(e.target.value); setSelectedId(null) }} placeholder="搜索回复、编辑或邮箱" />
           </label>
-          <Select value={taskFilter} onChange={(value) => { setTaskFilter(value); setPage(1) }} ariaLabel="按计划筛选" className="filter-select"
+          <Select value={taskFilter} onChange={(value) => { setTaskFilter(value); setPage(1); setSelectedId(null) }} ariaLabel="按计划筛选" className="filter-select"
             searchable searchPlaceholder="搜索计划"
             options={[{ value: '' as const, label: '全部计划' }, ...tasks.map((task) => ({ value: task.id, label: task.name }))]} />
-          <Select value={kind} onChange={(value) => { setKind(value); setPage(1) }} ariaLabel="按类型筛选" className="filter-select"
+          <Select value={kind} onChange={(value) => { setKind(value); setPage(1); setSelectedId(null) }} ariaLabel="按类型筛选" className="filter-select"
             options={[
               { value: '', label: '全部回复' },
               { value: 'human', label: '人工回复' },
@@ -212,77 +215,27 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
             action={<Button variant="ghost" onClick={() => go('accounts')}>去检查邮箱 IMAP 设置</Button>} />
         </div>
       ) : (
-        <div className="panel">
-          <Table
-            rowKey="id"
-            dataSource={items}
-            resetKey={`${kind}\0${taskFilter}\0${query}`}
-            pagination={false}
-            empty={loading ? '正在加载回复…' : '没有匹配的回复，换个内容或邮箱关键词试试。'}
-            columns={[
-              {
-                key: 'kind',
-                title: '类型',
-                width: 92,
-                render: (_value, r) => (
-                  <Badge tone={r.accepted ? 'success' : (replyKindTone[r.kind] ?? 'neutral')} dot>
-                    {r.accepted ? '过稿回复' : (replyKindLabel[r.kind] ?? r.kind)}
-                  </Badge>
-                ),
-              },
-              {
-                key: 'body',
-                title: '回复内容',
-                ellipsis: { rows: 4 },
-                render: (_value, r) => replyBodyPreview(r),
-              },
-              {
-                key: 'delivery',
-                title: '对应投递',
-                width: 220,
-                render: (_value, r) => {
-                  const { email, plan } = replyDelivery(r)
-                  const editor = editorForReply(r, editorsByEmail)
-                  return (
-                    <div className="reply-delivery">
-                      <b title={editorLabel(editor)}>{editorLabel(editor)}</b>
-                      <small title={email}>{email}</small>
-                      <small title={plan}>{plan}</small>
-                    </div>
-                  )
-                },
-              },
-              {
-                key: 'time',
-                title: '时间',
-                width: 120,
-                className: 'mono',
-                render: (_value, r) => formatTime(r.received_at),
-              },
-              {
-                key: 'actions',
-                title: '',
-                width: 148,
-                render: (_value, r) => {
-                  const editor = editorForReply(r, editorsByEmail)
-                  return (
-                    <div className="row-actions">
-                      <ReplyFavStar editor={editor} onToggle={(item) => void toggleFavorite(item)} />
-                      {editor && (
-                        <IconButton className="danger" title="删除这位编辑"
-                          onClick={() => void removeEditor(editor)}>
-                          <Trash2 size={15} />
-                        </IconButton>
-                      )}
-                      <Button size="sm" onClick={() => setPreview(r)}>查看</Button>
-                    </div>
-                  )
-                },
-              },
-            ]}
-          />
+        <div className="panel reply-inbox">
+          <div className="reply-split">
+            <div className="reply-list" aria-label="回复列表" aria-busy={loading}>
+              <div className="reply-list-caption">共 {total} 封回复{loading && <span>正在更新…</span>}</div>
+              {items.map(reply => <button type="button" key={reply.id} aria-pressed={reply.id === selectedReply?.id} className={`reply-list-item ${reply.id === selectedReply?.id ? 'on' : ''}`} onClick={() => setSelectedId(reply.id)}>
+                <span className="reply-list-meta"><Badge tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}>{reply.accepted ? '过稿回复' : (replyKindLabel[reply.kind] ?? reply.kind)}</Badge><time>{formatTime(reply.received_at)}</time></span>
+                <b>{editorLabel(editorForReply(reply, editorsByEmail)) === '未匹配编辑' ? reply.from_email : editorLabel(editorForReply(reply, editorsByEmail))}</b>
+                <span className="reply-list-subject">{reply.subject || '无主题'}</span><p>{replyBodyPreview(reply)}</p><small>{reply.task_name || '未关联计划'}</small>
+              </button>)}
+              {!items.length && <p className="dashboard-empty">{loading ? '正在加载回复…' : '没有匹配的回复，请调整筛选。'}</p>}
+            </div>
+            <article className="reply-reader" aria-label="回复阅读区">
+              {selectedReply ? <>
+                <header><div><Badge tone={selectedReply.accepted ? 'success' : (replyKindTone[selectedReply.kind] ?? 'neutral')}>{selectedReply.accepted ? '过稿回复' : (replyKindLabel[selectedReply.kind] ?? selectedReply.kind)}</Badge><h2>{selectedReply.subject || '无主题'}</h2></div><Button size="sm" onClick={() => setPreview(selectedReply)}>展开阅读</Button></header>
+                <div className="reply-reader-meta"><div><b>{editorLabel(selectedEditor)}</b><span>{selectedReply.from_email}</span><span>{formatTime(selectedReply.received_at)} · {replyDelivery(selectedReply).plan}</span><small>对应收稿邮箱：{replyDelivery(selectedReply).email}</small></div><div className="row-actions"><ReplyFavStar editor={selectedEditor} onToggle={editor => void toggleFavorite(editor)}/>{selectedEditor && <IconButton className="danger" title="删除这位编辑" onClick={() => void removeEditor(selectedEditor)}><Trash2 size={15}/></IconButton>}</div></div>
+                <ReplyText key={selectedReply.id} body={selectedReply.body || selectedReply.snippet || '（无正文）'}/>
+              </> : <div className="reply-reader-empty"><Inbox size={30}/><p>选择一封回复，在这里阅读</p></div>}
+            </article>
+          </div>
           <Pager page={page} pageCount={Math.max(1, Math.ceil(total / pageSize))} pageSize={pageSize}
-            total={total} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1) }} />
+            total={total} onPage={value => { setPage(value); setSelectedId(null) }} onPageSize={(size) => { setPageSize(size); setPage(1); setSelectedId(null) }} />
         </div>
       )}
 
@@ -314,4 +267,11 @@ export function RepliesView({ initialKind }: { initialKind?: string }) {
       )}
     </>
   )
+}
+
+function ReplyText({ body }: { body: string }) {
+  const lines = body.split('\n')
+  const quoteStart = lines.findIndex((line, index) => index > 0 && (/^\s*>/.test(line) || /^\s*[-—]{2,}.*(原始邮件|Original Message|转发邮件)/i.test(line) || /^On .+wrote:\s*$/i.test(line)))
+  if (quoteStart < 0) return <pre className="reply-body-text">{body}</pre>
+  return <><pre className="reply-body-text">{lines.slice(0,quoteStart).join('\n')}</pre><details className="reply-quoted"><summary>展开引用的原邮件</summary><pre className="reply-body-text">{lines.slice(quoteStart).join('\n')}</pre></details></>
 }

@@ -153,10 +153,10 @@ export function AccountsView() {
   return (
     <>
       <div className="toolbar">
-        <p className="hint">管理投稿邮箱、授权码与笔名。</p>
+        <p className="hint">支持 QQ、163 邮箱，填写完整邮箱地址后自动识别。</p>
         <div className="toolbar-actions">
           <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
-          <Button variant="primary" onClick={openAdd}><Plus size={16} />添加邮箱</Button>
+          <Button variant="primary" onClick={() => openAdd()}><Plus size={16} />添加邮箱</Button>
         </div>
       </div>
       {notice && <div className="notice notice-error">{notice}</div>}
@@ -165,7 +165,7 @@ export function AccountsView() {
         <div className="panel">
           <EmptyState icon={Mail} title="还没有发件邮箱"
             desc="添加 QQ 或 163 邮箱及授权码，系统会自动完成服务参数配置。"
-            action={<Button variant="primary" onClick={openAdd}><Plus size={16} />添加邮箱</Button>} />
+            action={<Button variant="primary" onClick={() => openAdd()}><Plus size={16} />添加邮箱</Button>} />
         </div>
       ) : (
         <>
@@ -263,7 +263,7 @@ export function AccountsView() {
           footer={<><Button variant="ghost" onClick={() => setShowForm(false)}>取消</Button><Button variant="primary" onClick={() => void save()}>保存配置</Button></>}>
           <div className="mail-config">
             <div className="mail-config-intro">
-              <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">授权码用于 SMTP / IMAP。</p></div>
+              <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">支持 QQ、163 邮箱；输入完整地址和授权码即可添加。</p></div>
               {!editing && <Button variant="ghost" onClick={addForm}><Plus size={16} />添加邮箱</Button>}
             </div>
 
@@ -271,12 +271,12 @@ export function AccountsView() {
               {forms.map((form, index) => (
                 <section className="mail-card" key={`${editing?.id ?? 'new'}-${index}`}>
                   <div className="mail-card-head">
-                    <div className="mail-card-name"><span className="mail-card-index">{index + 1}</span><h3>邮箱 {index + 1}</h3></div>
+                    <div className="mail-card-name"><span className="mail-card-index">{index + 1}</span><h3>邮箱 {index + 1}</h3><Badge>{isValidEmail(form.email.trim()) ? (providerName[detectProvider(form.email)] ?? '其他邮箱') : '自动识别'}</Badge></div>
                     {!editing && forms.length > 1 && <IconButton title={`删除邮箱 ${index + 1}`} className="danger" onClick={() => removeForm(index)}><X size={16} /></IconButton>}
                   </div>
                   <div className="mail-card-fields">
                     <label className="field">邮箱地址
-                      <input type="email" value={form.email} onChange={(e) => updateForm(index, { email: e.target.value })} placeholder="例如：author@qq.com" autoFocus={index === 0} /></label>
+                      <input type="email" value={form.email} onChange={(e) => updateForm(index, { email: e.target.value })} placeholder="例如：author@qq.com 或 author@163.com" autoFocus={index === 0} /></label>
                     <label className="field">授权码
                       <div className="input-with-action">
                         <input type={showPasswords[index] ? 'text' : 'password'} value={form.password} onChange={(e) => updateForm(index, { password: e.target.value })} placeholder="请输入邮箱授权码" />
@@ -285,7 +285,7 @@ export function AccountsView() {
                     <label className="field">笔名（可选）
                       <input value={form.sender_name} onChange={(e) => updateForm(index, { sender_name: e.target.value })} placeholder="留空则使用邮箱名称" /></label>
                   </div>
-                  <p className="mail-auto-note">{form.email && isValidEmail(form.email) ? `已识别为 ${providerName[detectProvider(form.email)] ?? '其他邮箱'}，服务参数将自动配置` : '填写邮箱地址后将自动识别邮箱服务商'}</p>
+                  <p className="mail-auto-note">{form.email && isValidEmail(form.email.trim()) ? `已识别为 ${providerName[detectProvider(form.email)] ?? '其他邮箱'}，服务参数将自动配置` : '输入 @qq.com 或 @163.com 地址，将自动识别并配置对应邮箱服务。'}</p>
                 </section>
               ))}
             </div>

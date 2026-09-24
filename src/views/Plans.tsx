@@ -22,7 +22,8 @@ const emptyTask: TaskInput = {
   retry_max: 3,
 }
 
-export function PlansView() {
+export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
+  const consumedPlanRequest = useRef(0)
   const [manuscripts, setManuscripts] = useState<Manuscript[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
@@ -164,6 +165,13 @@ export function PlansView() {
     setScheduledInput('')
     setShowEditor(true)
   }
+
+  useEffect(() => {
+    if (!loading && newPlanRequest > 0 && consumedPlanRequest.current !== newPlanRequest) {
+      consumedPlanRequest.current = newPlanRequest
+      openAdd()
+    }
+  }, [loading, newPlanRequest]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const openEdit = (m: Manuscript) => {
     const task = latestTask(m.id, tasks)
@@ -463,7 +471,7 @@ export function PlansView() {
           <Table
             rowKey="id"
             dataSource={manuscripts}
-            pagination={{ pageSize: 10, hideOnSinglePage: true }}
+            pagination={{ pageSize: 6, pageSizeOptions: [6, 10, 20, 50], hideOnSinglePage: true }}
             empty="还没有投稿计划"
             columns={[
               {

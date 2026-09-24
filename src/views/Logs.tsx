@@ -35,7 +35,7 @@ export function LogsView() {
   const [emailQuery, setEmailQuery] = useState('')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const [pageSize, setPageSize] = useState(8)
   const [total, setTotal] = useState(0)
   const [exporting, setExporting] = useState(false)
   useEffect(() => {
@@ -250,7 +250,7 @@ export function LogsView() {
             ]}
           />
           <Pager page={page} pageCount={Math.max(1, Math.ceil(total / pageSize))} pageSize={pageSize}
-            total={total} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1) }} />
+            pageSizes={[8, 20, 50]} total={total} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1) }} />
         </div>
       )}
     </>

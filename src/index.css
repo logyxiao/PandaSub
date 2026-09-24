@@ -1,55 +1,62 @@
 :root {
-  /* 参考 DeepSeek Harness：浅灰侧栏、纯白主区、柔和蓝点缀 */
-  --canvas: #F7F8FB;
+  /* 熊猫黑白：白色侧栏、浅灰画布、深灰强调色 */
+  --canvas: #F5F6F5;
   --surface: #FFFFFF;
-  --surface-2: #F4F6FA;
-  --surface-3: #EBEEF4;
+  --surface-2: #FAFBF9;
+  --surface-3: #EDF1EE;
 
-  --ink: #1A1C21;
-  --ink-2: #3A3E47;
-  --muted: #8A8F99;
-  --faint: #A8ADB6;
+  --ink: #29312D;
+  --ink-2: #59655E;
+  --muted: #829087;
+  --faint: #909B94;
 
-  --border: #E4E7EE;
-  --border-2: #EEF0F5;
+  --border: #E3E8E3;
+  --border-2: #EDF0EC;
 
-  --brand: #7B93D6;
-  --brand-strong: #5E74B8;
-  --brand-soft: #E8EEF9;
-  --brand-faint: #F3F6FC;
+  --accent-mid: #718B7A;
+  --accent-line: #CFD9D2;
+  --side-ink: #3E4B43;
+  --side-soft: #F3F5F2;
+  --side-border: #E5EAE4;
+  --side-hover: #F0F4EF;
+  --side-avatar: #E5ECE5;
+  --brand: #303936;
+  --brand-strong: #151D19;
+  --brand-soft: #EDF1EE;
+  --brand-faint: #FAFBF9;
   --on-brand: #FFFFFF;
 
-  --info: #5B7FBE;
-  --info-soft: #EEF3FB;
-  --info-border: #D4DFF0;
+  --info: #617B6A;
+  --info-soft: #F0F5F0;
+  --info-border: #D4DFD5;
 
-  --success: #3D9A6A;
-  --success-soft: #E8F6EE;
+  --success: #399A7D;
+  --success-soft: #EAF6F0;
   --success-border: #C5E4D2;
 
-  --warning: #C4922A;
+  --warning: #C99549;
   --warning-soft: #FBF3E2;
   --warning-border: #EBD7A8;
 
-  --danger: #D15A5A;
+  --danger: #D96E73;
   --danger-soft: #FBECEC;
   --danger-border: #EFC8C8;
 
-  --neutral: #8A8F99;
-  --neutral-soft: #F3F4F7;
-  --neutral-border: #E4E7EE;
+  --neutral: #78877E;
+  --neutral-soft: #FAFBF9;
+  --neutral-border: #E3E8E3;
 
   --r-sm: 8px;
-  --r-md: 10px;
-  --r-lg: 14px;
-  --r-xl: 18px;
+  --r-md: 7px;
+  --r-lg: 12px;
+  --r-xl: 14px;
 
   --shadow-xs: 0 1px 2px rgba(20, 28, 45, 0.04);
   --shadow-sm: 0 2px 10px rgba(20, 28, 45, 0.05);
   --shadow-md: 0 8px 28px rgba(20, 28, 45, 0.08);
   --shadow-lg: 0 20px 50px rgba(20, 28, 45, 0.12);
 
-  --ring: 0 0 0 3px rgba(123, 147, 214, 0.28);
+  --ring: 0 0 0 3px rgba(113, 139, 122, 0.24);
 
   --fs-xxs: 11px;
   --fs-xs: 12px;
