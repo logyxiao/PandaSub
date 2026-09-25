@@ -81,10 +81,11 @@ with sync_playwright() as p:
     page.screenshot(path=str(artifacts/'dashboard.png'))
     nav=page.get_by_role('navigation',name='主导航')
     page.locator('.dashboard-reply-list > button').nth(1).click()
-    expect(page.locator('.reply-reader h2')).to_have_text('回复304')
+    expect(page.get_by_role('dialog',name='邮件阅读',exact=True)).to_be_visible()
+    page.keyboard.press('Escape')
     nav.get_by_role('button',name='编辑库',exact=True).click()
     rows=page.locator('.library-table tbody tr')
-    expect(rows).to_have_count(6)
+    expect(rows).to_have_count(10)
     expect(page.locator('.pager-meta')).to_contain_text('共 19 条')
     page.screenshot(path=str(artifacts/'editors.png'))
     tags=page.locator('.library-tag-filter')
@@ -96,7 +97,7 @@ with sync_playwright() as p:
     expect(rows).to_have_count(1)
     expect(rows).to_contain_text('青竹')
     page.get_by_role('button',name='清空标签').click()
-    expect(rows).to_have_count(6)
+    expect(rows).to_have_count(10)
     # Filter editing is staged; inclusion and exclusion are explicit and removable.
     page.get_by_role('button',name='选择筛选标签',exact=True).click()
     picker=page.get_by_role('dialog',name='筛选收稿标签',exact=True)
@@ -104,7 +105,7 @@ with sync_playwright() as p:
     picker.get_by_role('checkbox',name='选择标签短篇',exact=True).check()
     picker.get_by_role('button',name='排除标签古言',exact=True).click()
     expect(picker.locator('.tag-dialog-result')).to_have_text('匹配 1 位编辑')
-    expect(rows).to_have_count(6)
+    expect(rows).to_have_count(10)
     picker.get_by_role('button',name='取消',exact=True).click()
     expect(page.locator('.library-active-tags')).to_have_count(0)
     page.get_by_role('button',name='选择筛选标签',exact=True).click()
@@ -117,7 +118,7 @@ with sync_playwright() as p:
     page.get_by_role('button',name='取消排除古言',exact=True).click()
     expect(rows).to_have_count(2)
     page.get_by_role('button',name='移除标签短篇',exact=True).click()
-    expect(rows).to_have_count(6)
+    expect(rows).to_have_count(10)
     page.get_by_role('textbox',name='搜索编辑库',exact=True).fill('南山')
     page.get_by_role('button',name='选择筛选标签',exact=True).click()
     expect(picker.locator('.tag-dialog-option').filter(has=page.get_by_role('checkbox',name='选择标签短篇',exact=True)).locator('small')).to_have_text('1')
@@ -244,7 +245,7 @@ with sync_playwright() as p:
     # Selection persists across pages and additions preserve existing members.
     page.get_by_role('checkbox',name='选择编辑青竹',exact=True).check()
     page.get_by_role('button',name='下一页',exact=True).click()
-    expect(rows).to_have_count(6)
+    expect(rows).to_have_count(9)
     rows.first.get_by_role('checkbox').check()
     selected_id=page.evaluate("Number(document.querySelector('.library-table tbody tr input').getAttribute('aria-label').match(/\\d+/)[0])")
     page.get_by_role('button',name='加入编辑组',exact=True).click()
@@ -263,17 +264,76 @@ with sync_playwright() as p:
     expect(page.locator('.page-heading h1')).to_have_text('编辑组')
     expect(page.locator('.editor-group-roster')).to_contain_text('青竹')
     page.screenshot(path=str(artifacts/'groups.png'))
+    # Member management reuses library tag filtering without losing hidden selections.
+    original_members=page.evaluate('window.__groups[0].editor_ids.slice()')
+    page.get_by_role('button',name='管理成员',exact=True).click()
+    members=page.get_by_role('dialog',name='管理成员',exact=True)
+    available=members.get_by_role('region',name='待选编辑',exact=True)
+    chosen=members.get_by_role('region',name='已选成员',exact=True)
+    chosen_count=chosen.locator('h3 small').inner_text()
+    members.get_by_role('button',name='选择筛选标签',exact=True).click()
+    picker=page.get_by_role('dialog',name='筛选收稿标签',exact=True)
+    picker.get_by_role('checkbox',name='选择标签短篇',exact=True).check()
+    picker.get_by_role('button',name='排除标签古言',exact=True).click()
+    expect(picker.locator('.tag-dialog-result')).to_have_text('匹配 1 位编辑')
+    picker.get_by_role('button',name='取消',exact=True).click()
+    expect(members.locator('.library-active-tags')).to_have_count(0)
+    expect(chosen.locator('h3 small')).to_have_text(chosen_count)
+    members.get_by_role('button',name='选择筛选标签',exact=True).click()
+    picker.get_by_role('checkbox',name='选择标签短篇',exact=True).check()
+    picker.get_by_role('button',name='排除标签古言',exact=True).click()
+    picker.get_by_role('button',name='应用筛选',exact=True).click()
+    expect(chosen.locator('.group-member-row')).to_have_count(1)
+    expect(chosen.locator('.group-member-row')).to_contain_text('南山')
+    expect(available.locator('.group-member-row')).to_have_count(0)
+    expect(chosen.locator('h3 small')).to_have_text(chosen_count)
+    members.get_by_role('button',name='取消排除古言',exact=True).click()
+    members.get_by_role('button',name='筛选标签古言',exact=True).click()
+    expect(members.locator('.library-active-tags-head')).to_contain_text('3 位编辑')
+    members.get_by_role('group',name='标签匹配方式').get_by_role('button',name='全部标签',exact=True).click()
+    expect(members.get_by_role('group',name='标签匹配方式').get_by_role('button',name='全部标签',exact=True)).to_have_attribute('aria-pressed','true')
+    expect(members.locator('.library-active-tags-head')).to_contain_text('1 位编辑')
+    expect(chosen.locator('.group-member-row')).to_have_count(1)
+    expect(chosen.locator('.group-member-row')).to_contain_text('青竹')
+    page.screenshot(path=str(artifacts/'group-tag-filter.png'))
+    members.get_by_role('button',name='清空标签',exact=True).click()
+    members.get_by_role('textbox',name='搜索两边名单').fill('南山')
+    members.get_by_role('button',name='选择筛选标签',exact=True).click()
+    expect(picker.locator('.tag-dialog-option').filter(has=page.get_by_role('checkbox',name='选择标签短篇',exact=True)).locator('small')).to_have_text('1')
+    page.keyboard.press('Escape')
+    expect(picker).to_have_count(0)
+    expect(members).to_be_visible()
+    members.get_by_role('textbox',name='搜索两边名单').fill('')
+    expect(chosen.locator('.group-member-row')).to_have_count(len(original_members))
+    for width,height in [(1280,900),(720,560)]:
+        page.set_viewport_size({'width':width,'height':height})
+        box=members.bounding_box()
+        assert box['x']>=0 and box['x']+box['width']<=width+1
+        assert box['y']>=0 and box['y']+box['height']<=height+1
+        assert available.locator('.group-member-scroll').bounding_box()['height']>100
+    page.set_viewport_size({'width':1280,'height':900})
+    members.get_by_role('button',name='取消',exact=True).click()
+    assert page.evaluate('window.__groups[0].editor_ids')==original_members
     # Existing inbox supports selection, quote folding, full reading and pagination.
-    nav.get_by_role('button',name='编辑回复',exact=True).click()
+    nav.get_by_role('button',name='收件箱',exact=True).click()
     expect(page.locator('.reply-list-item')).to_have_count(20)
-    expect(page.locator('.reply-reader')).to_contain_text('请补充人物小传')
-    expect(page.locator('.reply-quoted')).not_to_have_attribute('open','')
-    page.get_by_text('展开引用的原邮件',exact=True).click()
-    expect(page.locator('.reply-quoted')).to_have_attribute('open','')
+    expect(page.get_by_role('group',name='收件箱账号').get_by_role('button',name='全部账号',exact=True)).to_have_attribute('aria-pressed','true')
+    expect(page.get_by_role('dialog')).to_have_count(0)
+    expect(page.locator('.reply-list-item').first).to_have_class('reply-list-item is-unread')
+    page.locator('.reply-list-item').first.click()
+    preview=page.get_by_role('dialog',name='邮件阅读',exact=True)
+    expect(preview).to_contain_text('回复305')
+    expect(preview).to_contain_text('请补充人物小传')
+    expect(preview.locator('.reply-quoted')).not_to_have_attribute('open','')
+    preview.get_by_text('展开引用的原邮件',exact=True).click()
+    expect(preview.locator('.reply-quoted')).to_have_attribute('open','')
+    expect(page.locator('.reply-list-item').first).to_have_class('reply-list-item is-read')
+    preview.get_by_role('button',name='标为未读',exact=True).click()
+    expect(preview).to_have_count(0)
+    expect(page.locator('.reply-list-item').first).to_have_class('reply-list-item is-unread')
     page.locator('.reply-list-item').nth(1).click()
-    expect(page.locator('.reply-reader h2')).to_have_text('回复304')
-    page.get_by_role('button',name='展开阅读',exact=True).click()
-    expect(dialog).to_contain_text('回复内容304')
+    preview=page.get_by_role('dialog',name='邮件阅读',exact=True)
+    expect(preview).to_contain_text('回复内容304')
     page.keyboard.press('Escape')
     page.screenshot(path=str(artifacts/'replies.png'))
     # Fresh plan shortcut enters the established wizard only on request.
@@ -317,7 +377,7 @@ with sync_playwright() as p:
     page.reload();page.wait_for_load_state('networkidle')
     for width,height in [(1280,900),(1280,872),(1180,760),(1180,732),(720,560)]:
         page.set_viewport_size({'width':width,'height':height})
-        for label in ['工作台','编辑库','编辑组','编辑回复','邮箱管理','投稿计划','发送记录','投稿统计','设置','关于']:
+        for label in ['工作台','编辑库','编辑组','收件箱','邮箱管理','投稿计划','发送记录','投稿统计','设置','关于']:
             nav.get_by_role('button',name=label,exact=True).click()
             expect(page.locator('.page-heading h1')).to_have_text(label)
             expect(page.locator('.app-topbar')).to_have_count(0)
@@ -328,7 +388,10 @@ with sync_playwright() as p:
                 assert page.locator('.nav').evaluate('e=>e.scrollHeight<=e.clientHeight'),label
                 if label in ['编辑库','发送记录','投稿统计','邮箱管理','投稿计划']:
                     for viewport in page.locator('.library-table-scroll,.ui-table-wrap').all():
-                        assert viewport.evaluate('e=>e.scrollHeight<=e.clientHeight && e.scrollWidth<=e.clientWidth'),label
+                        assert viewport.evaluate('e=>e.scrollWidth<=e.clientWidth'),label
+                        # Ten library rows fit the default window; shorter windows scroll inside the table.
+                        if label!='编辑库' or height>=900:
+                            assert viewport.evaluate('e=>e.scrollHeight<=e.clientHeight'),label
                 if width==1280 and label=='工作台':
                     for viewport in page.locator('.dashboard-reply-list,.dashboard-recent-table-wrap,.dashboard-live,.stat').all():
                         assert viewport.evaluate('e=>e.scrollHeight<=e.clientHeight+1 && e.scrollWidth<=e.clientWidth+1'),viewport.get_attribute('class')

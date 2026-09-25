@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
-  Account, AccountInput, Dashboard, Delivery, DeliverySummaryPage, PendingSend, Editor, EditorGroup, EditorGroupImportResult, EditorGroupInput, EditorImportResult, EditorInput, MailTemplate, Manuscript, ManuscriptInput,
+  AcceptedCandidate, AcceptedWork, AcceptedWorkDocument, AcceptedWorkInput, Account, AccountInput, Dashboard, Delivery, DeliverySummaryPage, PendingSend, Editor, EditorGroup, EditorGroupImportResult, EditorGroupInput, EditorImportResult, EditorInput, MailTemplate, Manuscript, ManuscriptInput,
   Reply, Settings, StatsReport, Task, TaskInput, TaskLog,
 } from './types'
 
@@ -24,6 +24,17 @@ export const api = {
   addManuscript: (input: ManuscriptInput) => invoke<number>('add_manuscript', { input }),
   updateManuscript: (id: number, input: ManuscriptInput) => invoke('update_manuscript', { id, input }),
   deleteManuscript: (id: number) => invoke('delete_manuscript', { id }),
+
+  listAcceptedWorks: () => invoke<AcceptedWork[]>('list_accepted_works'),
+  listAcceptedCandidates: () => invoke<AcceptedCandidate[]>('list_accepted_candidates'),
+  addAcceptedWork: (input: AcceptedWorkInput) => invoke<number>('add_accepted_work', { input }),
+  updateAcceptedWork: (id: number, input: AcceptedWorkInput) => invoke<void>('update_accepted_work', { id, input }),
+  deleteAcceptedWork: (id: number) => invoke<void>('delete_accepted_work', { id }),
+  getAcceptedWorkDocument: (id: number) => invoke<AcceptedWorkDocument>('get_accepted_work_document', { id }),
+  exportAcceptedWorkDocument: (id: number, path: string) => invoke<string>('export_accepted_work_document', { id, path }),
+  openSavedDocument: (id: number, source: 'accepted' | 'manuscript', reveal: boolean) =>
+    invoke<string>('open_saved_document', { id, source, reveal }),
+  saveAcceptedShareImage: (path: string, data: number[]) => invoke<string>('save_accepted_share_image', { path, data }),
 
   listTasks: () => invoke<Task[]>('list_tasks'),
   createTask: (input: TaskInput) => invoke<number>('create_task', { input }),
@@ -51,8 +62,10 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke('set_autostart', { enabled }),
   backup: () => invoke<string>('backup_data'),
   listReplies: (kind?: string, taskId?: number) => invoke<Reply[]>('list_replies', { kind: kind || null, taskId: taskId || null }),
-  listRepliesPage: (kind: string, taskId: number | '', query: string, limit: number, offset: number) =>
-    invoke<{ items: Reply[]; total: number }>('list_replies_page', { kind: kind || null, taskId: taskId || null, query, limit, offset }),
+  listRepliesPage: (kind: string, taskId: number | '', query: string, limit: number, offset: number, accountId: number | '' = '') =>
+    invoke<{ items: Reply[]; total: number }>('list_replies_page', { kind: kind || null, taskId: taskId || null, query, limit, offset, accountId: accountId || null }),
+  setReplyRead: (id: number, isRead: boolean) => invoke<void>('set_reply_read', { id, isRead }),
+  syncReplyReadFlags: (ids: number[]) => invoke<Array<{ id: number; is_read: boolean; read_synced: boolean }>>('sync_reply_read_flags', { ids }),
   scanReplies: () => invoke<number>('scan_replies'),
   reclassifyReplies: () => invoke<number>('reclassify_replies'),
   extractDocx: (data: number[]) => invoke<string>('extract_docx_text', { data }),

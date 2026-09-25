@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Heart, Inbox, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { Heart, Inbox, Mail, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { api, onReply } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
 import { Modal } from '../components/Modal'
 import { formatTime, parseRecipient, replyKindLabel, replyKindTone } from '../format'
 import { useNav } from '../nav'
-import type { Editor, Reply, Task } from '../types'
+import type { Account, Editor, Reply, Task, Settings } from '../types'
 import { isEditorFavorited } from './planShared'
 
 function replyBodyPreview(reply: Reply) {
@@ -56,10 +56,20 @@ function ReplyFavStar({ editor, onToggle }: {
   )
 }
 
-export function RepliesView({ initialKind, initialReply }: { initialKind?: string; initialReply?: Reply }) {
+export function RepliesView({ initialKind, initialReply, accountFilter, onAccountChange }: {
+  initialKind?: string
+  initialReply?: Reply
+  accountFilter: number | ''
+  onAccountChange: (accountId: number | '') => void
+}) {
   const [items, setItems] = useState<Reply[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [ruleOpen, setRuleOpen] = useState(false)
+  const [ruleDraft, setRuleDraft] = useState('')
+  const [ruleSaving, setRuleSaving] = useState(false)
   const [kind, setKind] = useState(initialKind ?? '')
   const [taskFilter, setTaskFilter] = useState<number | ''>('')
   const [query, setQuery] = useState('')
@@ -73,35 +83,65 @@ export function RepliesView({ initialKind, initialReply }: { initialKind?: strin
   }, [query])
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
+  const [readNotice, setReadNotice] = useState('')
   const [scanning, setScanning] = useState(false)
-  const [selectedId, setSelectedId] = useState<number | null>(initialReply?.id ?? null)
   const [preview, setPreview] = useState<Reply | null>(null)
-  useEffect(() => { setSelectedId(initialReply?.id ?? null) }, [initialReply])
+  const [pendingReads, setPendingReads] = useState<Set<number>>(new Set())
+  const readOverrides = useRef(new Map<number, boolean>())
+  const readWrites = useRef(new Map<number, Promise<void>>())
+  const [loadedAccount, setLoadedAccount] = useState(accountFilter)
   const [reclassifying, setReclassifying] = useState(false)
   const requestSeq = useRef(0)
   const toast = useToast()
   const confirm = useConfirm()
   const { go } = useNav()
 
+  useEffect(() => {
+    if (loadedAccount === accountFilter) return
+    requestSeq.current++
+    setLoadedAccount(accountFilter)
+    setPage(1)
+    setItems([])
+    setTotal(0)
+    setPreview(null)
+    setLoading(true)
+  }, [accountFilter, loadedAccount])
+
   const load = useCallback(async () => {
+    if (loadedAccount !== accountFilter) return
     const seq = ++requestSeq.current
     setLoading(true)
     try {
-      const next = await api.listRepliesPage(kind, taskFilter, search, pageSize, (page - 1) * pageSize)
+      const next = await api.listRepliesPage(kind, taskFilter, search, pageSize, (page - 1) * pageSize, accountFilter)
       if (seq !== requestSeq.current) return
       const lastPage = Math.max(1, Math.ceil(next.total / pageSize))
       if (page > lastPage) { setPage(lastPage); return }
-      setItems(next.items); setTotal(next.total); setNotice('')
+      setItems(next.items.map((reply) => readOverrides.current.has(reply.id)
+        ? { ...reply, is_read: readOverrides.current.get(reply.id)!, read_synced: true } : reply)); setTotal(next.total); setNotice('')
+      setReadNotice('')
+      if (next.items.length) {
+        void api.syncReplyReadFlags(next.items.map((reply) => reply.id)).then((states) => {
+          if (seq !== requestSeq.current) return
+          const byId = new Map(states.map((state) => [state.id, state]))
+          setItems((current) => current.map((reply) => {
+            const state = byId.get(reply.id)
+            return state && !readOverrides.current.has(reply.id) ? { ...reply, ...state } : reply
+          }))
+        }).catch((error) => {
+          if (seq === requestSeq.current) setReadNotice(`已读状态暂未同步：${String(error)}`)
+        })
+      }
     } catch (e) { if (seq === requestSeq.current) setNotice(String(e)) }
     finally { if (seq === requestSeq.current) setLoading(false) }
-  }, [kind, taskFilter, search, page, pageSize])
-  useEffect(() => { void load() }, [load])
+  }, [kind, taskFilter, search, page, pageSize, accountFilter, loadedAccount])
+  const latestLoad = useRef(load)
+  useEffect(() => { latestLoad.current = load; void load() }, [load])
   useEffect(() => {
     setKind(initialKind ?? ''); setPage(1)
   }, [initialKind])
   useEffect(() => {
-    void Promise.all([api.listEditors(), api.listTasks()])
-      .then(([nextEditors, nextTasks]) => { setEditors(nextEditors); setTasks(nextTasks) })
+    void Promise.all([api.listEditors(), api.listTasks(), api.listAccounts(), api.getSettings()])
+      .then(([nextEditors, nextTasks, nextAccounts, nextSettings]) => { setEditors(nextEditors); setTasks(nextTasks); setAccounts(nextAccounts); setSettings(nextSettings) })
       .catch((e) => setNotice(String(e)))
   }, [])
 
@@ -121,7 +161,7 @@ export function RepliesView({ initialKind, initialReply }: { initialKind?: strin
     setScanning(true)
     try {
       const n = await api.scanReplies()
-      await load()
+      await latestLoad.current()
       toast(n ? `新发现 ${n} 封回复` : '没有新的相关回复', n ? 'success' : 'info')
     } catch (e) { toast(String(e), 'error') }
     finally { setScanning(false) }
@@ -131,10 +171,39 @@ export function RepliesView({ initialKind, initialReply }: { initialKind?: strin
     setReclassifying(true)
     try {
       const n = await api.reclassifyReplies()
-      await load()
+      await latestLoad.current()
       toast(n ? `已按当前规则重新判定 ${n} 封回复` : '所有回复都符合当前规则', n ? 'success' : 'info')
     } catch (e) { toast(String(e), 'error') }
     finally { setReclassifying(false) }
+  }
+
+  const openRules = () => {
+    if (!settings) return
+    setRuleDraft(settings.auto_reply_subject_keywords.join('\n'))
+    setRuleOpen(true)
+  }
+  const saveRules = async () => {
+    if (!settings || ruleSaving) return
+    const seen = new Set<string>()
+    const keywords = ruleDraft.split(/\r?\n/).map((value) => value.trim()).filter((value) => {
+      const key = value.toLowerCase()
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    if (keywords.length > 30 || keywords.some((value) => Array.from(value).length > 80)) {
+      toast('最多 30 个关键词，每个最多 80 字', 'error')
+      return
+    }
+    setRuleSaving(true)
+    try {
+      const next = { ...settings, auto_reply_subject_keywords: keywords }
+      await api.updateSettings(next)
+      setSettings(next)
+      setRuleOpen(false)
+      toast('自动回复识别关键词已保存', 'success')
+    } catch (e) { toast(String(e), 'error') }
+    finally { setRuleSaving(false) }
   }
 
   const editorsByEmail = useMemo(() => {
@@ -169,24 +238,69 @@ export function RepliesView({ initialKind, initialReply }: { initialKind?: strin
     } catch (e) { toast(String(e), 'error') }
   }
 
-  const selectedReply = items.find(reply => reply.id === selectedId) ?? (initialReply?.id === selectedId ? initialReply : undefined) ?? items[0]
-  const selectedEditor = selectedReply ? editorForReply(selectedReply, editorsByEmail) : undefined
+  const setReadState = useCallback(async (reply: Reply, isRead: boolean) => {
+    setPendingReads((current) => new Set(current).add(reply.id))
+    readOverrides.current.set(reply.id, isRead)
+    setItems((current) => current.map((item) => item.id === reply.id ? { ...item, is_read: isRead, read_synced: true } : item))
+    setPreview((current) => current?.id === reply.id ? { ...current, is_read: isRead, read_synced: true } : current)
+    const previous = readWrites.current.get(reply.id) ?? Promise.resolve()
+    const write = previous.catch(() => {}).then(() => api.setReplyRead(reply.id, isRead))
+    readWrites.current.set(reply.id, write)
+    try {
+      await write
+      if (readWrites.current.get(reply.id) === write && readOverrides.current.get(reply.id) === isRead) {
+        readOverrides.current.delete(reply.id)
+      }
+    } catch (e) {
+      if (readOverrides.current.get(reply.id) !== isRead) return
+      readOverrides.current.delete(reply.id)
+      setItems((current) => current.map((item) => item.id === reply.id ? { ...item, is_read: reply.is_read, read_synced: reply.read_synced } : item))
+      setPreview((current) => current?.id === reply.id ? { ...current, is_read: reply.is_read, read_synced: reply.read_synced } : current)
+      toast(String(e), 'error')
+    } finally {
+      if (readWrites.current.get(reply.id) === write) {
+        readWrites.current.delete(reply.id)
+        setPendingReads((current) => {
+          const next = new Set(current)
+          next.delete(reply.id)
+          return next
+        })
+      }
+    }
+  }, [toast])
+  const openPreview = (reply: Reply) => {
+    setPreview(reply)
+    void setReadState(reply, true)
+  }
+  useEffect(() => {
+    if (!initialReply) return
+    setPreview(initialReply)
+    void setReadState(initialReply, true)
+  }, [initialReply, setReadState]) // dashboard deep link opens the same preview
+
+  const accountsById = useMemo(() => new Map(accounts.map(account => [account.id, account.email])), [accounts])
+  const receivingAccount = (reply: Reply) => reply.account_id === null
+    ? '未关联账号'
+    : accountsById.get(reply.account_id) ?? '已删除账号'
   const previewEditor = preview ? editorForReply(preview, editorsByEmail) : undefined
 
   return (
     <>
-      <div className="toolbar">
+      <div className="toolbar inbox-toolbar">
         <div className="filters">
+          <Select value={accountFilter} onChange={onAccountChange} ariaLabel="按账号筛选" className="filter-select inbox-account-select"
+            searchable searchPlaceholder="搜索邮箱账号"
+            options={[{ value: '' as const, label: '全部账号' }, ...accounts.map(account => ({ value: account.id, label: account.email }))]} />
           <label className="plan-search editor-search">
             <Search size={14} />
-            <input value={query} onChange={(e) => { setQuery(e.target.value); setSelectedId(null) }} placeholder="搜索回复、编辑或邮箱" />
+            <input value={query} onChange={(e) => { setQuery(e.target.value) }} placeholder="搜索邮件、编辑或邮箱" />
           </label>
-          <Select value={taskFilter} onChange={(value) => { setTaskFilter(value); setPage(1); setSelectedId(null) }} ariaLabel="按计划筛选" className="filter-select"
+          <Select value={taskFilter} onChange={(value) => { setTaskFilter(value); setPage(1) }} ariaLabel="按计划筛选" className="filter-select"
             searchable searchPlaceholder="搜索计划"
             options={[{ value: '' as const, label: '全部计划' }, ...tasks.map((task) => ({ value: task.id, label: task.name }))]} />
-          <Select value={kind} onChange={(value) => { setKind(value); setPage(1); setSelectedId(null) }} ariaLabel="按类型筛选" className="filter-select"
+          <Select value={kind} onChange={(value) => { setKind(value); setPage(1) }} ariaLabel="按类型筛选" className="filter-select"
             options={[
-              { value: '', label: '全部回复' },
+              { value: '', label: '全部类型' },
               { value: 'human', label: '人工回复' },
               { value: 'auto', label: '自动回复' },
               { value: 'accepted', label: '过稿回复' },
@@ -204,64 +318,101 @@ export function RepliesView({ initialKind, initialReply }: { initialKind?: strin
         </div>
       </div>
       {notice && <div className="notice notice-error">{notice}</div>}
-      <p className="hint" style={{ marginBottom: 14 }}>
-        主题包含「自动回复 / 自動回覆 / AutoReply」判为自动回复，其余按人工回复；退信按投递失败标记识别。
-      </p>
+      <div className="inbox-rule-bar">
+        <strong>自动回复识别</strong>
+        <span>主题包含</span>
+        {settings?.auto_reply_subject_keywords.length
+          ? <span className="inbox-rule-keywords">{settings.auto_reply_subject_keywords.map((keyword) => <span key={keyword}>{keyword}</span>)}</span>
+          : <span className="inbox-rule-empty">{settings ? '未设置关键词' : '正在读取规则…'}</span>}
+        <Button size="sm" onClick={openRules} disabled={!settings}>编辑关键词</Button>
+        <span className="inbox-rule-explain">退信单独识别</span>
+      </div>
 
-      {!loading && !total && !search && !kind && !taskFilter ? (
+      {!loading && !total && !search && !kind && !taskFilter && !accountFilter ? (
         <div className="panel">
-          <EmptyState icon={Inbox} title="还没有识别到回复"
+          <EmptyState icon={Inbox} title="收件箱暂无邮件"
             desc="发出投稿后，后台会定期检查收件箱，并把回复分成人工、自动或退信。"
             action={<Button variant="ghost" onClick={() => go('accounts')}>去检查邮箱 IMAP 设置</Button>} />
         </div>
       ) : (
         <div className="panel reply-inbox">
-          <div className="reply-split">
-            <div className="reply-list" aria-label="回复列表" aria-busy={loading}>
-              <div className="reply-list-caption">共 {total} 封回复{loading && <span>正在更新…</span>}</div>
-              {items.map(reply => <button type="button" key={reply.id} aria-pressed={reply.id === selectedReply?.id} className={`reply-list-item ${reply.id === selectedReply?.id ? 'on' : ''}`} onClick={() => setSelectedId(reply.id)}>
-                <span className="reply-list-meta"><Badge tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}>{reply.accepted ? '过稿回复' : (replyKindLabel[reply.kind] ?? reply.kind)}</Badge><time>{formatTime(reply.received_at)}</time></span>
-                <b>{editorLabel(editorForReply(reply, editorsByEmail)) === '未匹配编辑' ? reply.from_email : editorLabel(editorForReply(reply, editorsByEmail))}</b>
-                <span className="reply-list-subject">{reply.subject || '无主题'}</span><p>{replyBodyPreview(reply)}</p><small>{reply.task_name || '未关联计划'}</small>
-              </button>)}
-              {!items.length && <p className="dashboard-empty">{loading ? '正在加载回复…' : '没有匹配的回复，请调整筛选。'}</p>}
-            </div>
-            <article className="reply-reader" aria-label="回复阅读区">
-              {selectedReply ? <>
-                <header><div><Badge tone={selectedReply.accepted ? 'success' : (replyKindTone[selectedReply.kind] ?? 'neutral')}>{selectedReply.accepted ? '过稿回复' : (replyKindLabel[selectedReply.kind] ?? selectedReply.kind)}</Badge><h2>{selectedReply.subject || '无主题'}</h2></div><Button size="sm" onClick={() => setPreview(selectedReply)}>展开阅读</Button></header>
-                <div className="reply-reader-meta"><div><b>{editorLabel(selectedEditor)}</b><span>{selectedReply.from_email}</span><span>{formatTime(selectedReply.received_at)} · {replyDelivery(selectedReply).plan}</span><small>对应收稿邮箱：{replyDelivery(selectedReply).email}</small></div><div className="row-actions"><ReplyFavStar editor={selectedEditor} onToggle={editor => void toggleFavorite(editor)}/>{selectedEditor && <IconButton className="danger" title="删除这位编辑" onClick={() => void removeEditor(selectedEditor)}><Trash2 size={15}/></IconButton>}</div></div>
-                <ReplyText key={selectedReply.id} body={selectedReply.body || selectedReply.snippet || '（无正文）'}/>
-              </> : <div className="reply-reader-empty"><Inbox size={30}/><p>选择一封回复，在这里阅读</p></div>}
-            </article>
+          <div className="reply-list" aria-label="邮件列表" aria-busy={loading}>
+            <div className="reply-list-caption"><span>共 {total} 封邮件</span>{loading && <span>正在更新…</span>}{!loading && items.some((reply) => !reply.read_synced) && <span>{items.filter((reply) => !reply.read_synced).length} 封状态待同步</span>}{readNotice && <span title={readNotice}>邮箱连接异常</span>}</div>
+            {items.map((reply) => {
+              const editor = editorForReply(reply, editorsByEmail)
+              const sender = editor ? editorLabel(editor) : reply.from_email
+              const pending = pendingReads.has(reply.id)
+              return <button type="button" key={reply.id} className={`reply-list-item ${pending || !reply.read_synced ? 'is-unverified' : reply.is_read ? 'is-read' : 'is-unread'}`}
+                aria-label={`${pending ? '正在同步已读状态' : !reply.read_synced ? '已读状态未同步' : reply.is_read ? '已读' : '未读'}邮件 ${sender} ${reply.subject || '无主题'}`}
+                onClick={() => openPreview(reply)}>
+                <span className="reply-unread-dot" aria-hidden="true" />
+                <span className="reply-list-main">
+                  <span className="reply-list-top"><b>{sender}</b><span className="reply-list-subject">{reply.subject || '无主题'}</span></span>
+                  <span className="reply-list-excerpt">{replyBodyPreview(reply)}</span>
+                </span>
+                <span className="reply-list-side">
+                  <time>{formatTime(reply.received_at)}</time>
+                  <span className="reply-list-account" title={`接收账号：${receivingAccount(reply)}`}>{receivingAccount(reply)}</span>
+                  <Badge tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}>
+                    {reply.accepted ? '过稿回复' : (replyKindLabel[reply.kind] ?? reply.kind)}
+                  </Badge>
+                </span>
+              </button>
+            })}
+            {!items.length && <p className="dashboard-empty">{loading ? '正在加载邮件…' : '没有匹配的邮件，请调整账号或筛选条件。'}</p>}
           </div>
           <Pager page={page} pageCount={Math.max(1, Math.ceil(total / pageSize))} pageSize={pageSize}
-            total={total} onPage={value => { setPage(value); setSelectedId(null) }} onPageSize={(size) => { setPageSize(size); setPage(1); setSelectedId(null) }} />
+            total={total} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1) }} />
         </div>
       )}
 
+      {ruleOpen && (
+        <Modal title="自动回复识别关键词" onClose={() => { if (!ruleSaving) setRuleOpen(false) }} width={540}
+          footer={<><Button variant="ghost" disabled={ruleSaving} onClick={() => setRuleOpen(false)}>取消</Button>
+            <Button variant="primary" disabled={ruleSaving} onClick={() => void saveRules()}>{ruleSaving ? '保存中…' : '保存规则'}</Button></>}>
+          <div className="inbox-rule-editor">
+            <label className="field">主题包含以下任意关键词时，判为自动回复
+              <textarea aria-label="自动回复主题关键词" rows={6} value={ruleDraft}
+                placeholder="每行一个关键词" onChange={(event) => setRuleDraft(event.target.value)} />
+            </label>
+            <p className="hint">每行一个关键词，不区分英文大小写。清空后不再按关键词识别自动回复；退信仍单独识别。保存后点击“按当前规则重新判定”可更新已有邮件。</p>
+          </div>
+        </Modal>
+      )}
+
       {preview && (
-        <Modal title={preview.subject || '回复正文'} onClose={() => setPreview(null)} width={680}
-          footer={
-            <>
-              {previewEditor && (
-                <div className="reply-preview-editor-actions">
-                  <ReplyFavStar editor={previewEditor} onToggle={(item) => void toggleFavorite(item)} />
-                  <IconButton className="danger" title="删除这位编辑"
-                    onClick={() => void removeEditor(previewEditor)}>
-                    <Trash2 size={15} />
-                  </IconButton>
-                </div>
-              )}
-              <Button variant="ghost" onClick={() => setPreview(null)}>关闭</Button>
-            </>
-          }>
-          <div className="preview-body">
-            <p className="hint">
-              {replyKindLabel[preview.kind]} · {preview.from_email}
-              {preview.accepted ? ' · 过稿' : ''}
-              {preview.recipient ? ` → 原收件人 ${preview.recipient}` : ''}
-            </p>
-            <pre>{preview.body || preview.snippet || '（无正文）'}</pre>
+        <Modal title="邮件阅读" onClose={() => setPreview(null)} width={780} className="inbox-preview-modal"
+          footer={<>
+            <span className="inbox-preview-footer-hint">{pendingReads.has(preview.id) ? '正在同步邮箱状态…' : preview.read_synced ? '已与邮箱同步' : '已读状态等待邮箱同步'}</span>
+            <Button variant="ghost" disabled={pendingReads.has(preview.id)} onClick={() => { void setReadState(preview, !preview.is_read); if (preview.is_read) setPreview(null) }}>
+              {pendingReads.has(preview.id) ? '同步中…' : preview.is_read ? '标为未读' : '标为已读'}
+            </Button>
+            <Button variant="primary" onClick={() => setPreview(null)}>完成</Button>
+          </>}>
+          <div className="inbox-mail">
+            <div className="inbox-mail-heading">
+              <div className="inbox-mail-heading-meta">
+                <Badge tone={preview.accepted ? 'success' : (replyKindTone[preview.kind] ?? 'neutral')}>
+                  {preview.accepted ? '过稿回复' : (replyKindLabel[preview.kind] ?? preview.kind)}
+                </Badge>
+                <time>{preview.received_at}</time>
+              </div>
+              <h2>{preview.subject || '无主题'}</h2>
+            </div>
+            <div className="inbox-mail-sender">
+              <div className="inbox-mail-avatar"><Mail size={19} /></div>
+              <div className="inbox-mail-sender-copy">
+                <strong>{previewEditor ? editorLabel(previewEditor) : preview.from_email}</strong>
+                {previewEditor && <span>{preview.from_email}</span>}
+                <small>发送至 {receivingAccount(preview)}</small>
+              </div>
+              {previewEditor && <div className="inbox-mail-editor-actions">
+                <ReplyFavStar editor={previewEditor} onToggle={(item) => void toggleFavorite(item)} />
+                <IconButton className="danger" title="删除这位编辑" onClick={() => void removeEditor(previewEditor)}><Trash2 size={15} /></IconButton>
+              </div>}
+            </div>
+            <div className="inbox-mail-body"><ReplyText key={preview.id} body={preview.body || preview.snippet || '（无正文）'} /></div>
+            <div className="inbox-mail-context"><span>关联计划：{replyDelivery(preview).plan}</span><span>对应收稿邮箱：{replyDelivery(preview).email}</span></div>
           </div>
         </Modal>
       )}

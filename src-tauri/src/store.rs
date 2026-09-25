@@ -1298,10 +1298,11 @@ pub fn insert_reply(
     imap_uid_validity: i64,
     imap_generation: i64,
     received_at: &str,
+    is_read: bool,
 ) -> Result<Reply, String> {
     conn.execute(
-        "INSERT INTO replies (delivery_id, account_id, task_id, from_email, subject, snippet, body, kind, reason, accepted, message_id, in_reply_to, imap_uid, imap_uid_validity, imap_generation, received_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, COALESCE(NULLIF(?16, ''), datetime('now','localtime')))",
+        "INSERT INTO replies (delivery_id, account_id, task_id, from_email, subject, snippet, body, kind, reason, accepted, message_id, in_reply_to, imap_uid, imap_uid_validity, imap_generation, received_at, is_read, read_synced)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, COALESCE(NULLIF(?16, ''), datetime('now','localtime')), ?17, 1)",
         params![
             delivery_id,
             account_id,
@@ -1318,7 +1319,8 @@ pub fn insert_reply(
             imap_uid,
             imap_uid_validity,
             imap_generation,
-            received_at
+            received_at,
+            is_read,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -1358,6 +1360,8 @@ pub fn insert_reply(
         kind: kind.into(),
         reason: reason.into(),
         accepted,
+        is_read,
+        read_synced: true,
         message_id: message_id.into(),
         in_reply_to: in_reply_to.into(),
         imap_uid,
@@ -1387,6 +1391,8 @@ fn map_reply(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reply> {
         kind: r.get(8)?,
         reason: r.get(9)?,
         accepted: r.get::<_, i64>(10)? != 0,
+        is_read: r.get::<_, i64>(20)? != 0,
+        read_synced: r.get::<_, i64>(21)? != 0,
         message_id: r.get(11)?,
         in_reply_to: r.get(12)?,
         imap_uid: r.get(13)?,
@@ -1406,6 +1412,7 @@ const REPLY_FROM: &str = "FROM replies r
 const REPLY_FILTER: &str = "WHERE
     (?1 IS NULL OR (?1 = 'accepted' AND r.accepted = 1) OR (?1 <> 'accepted' AND r.kind = ?1))
     AND (?2 IS NULL OR r.task_id = ?2)
+    AND (?4 IS NULL OR r.account_id = ?4)
     AND (?3 = '' OR instr(lower(r.body || ' ' || r.snippet || ' ' || r.subject || ' ' || r.from_email
         || ' ' || COALESCE(d.recipient, '') || ' ' || COALESCE(t.name, m.title, '')), ?3) > 0
         OR EXISTS (SELECT 1 FROM editors e
@@ -1419,23 +1426,31 @@ pub fn query_replies(
     query: &str,
     limit: i64,
     offset: i64,
+    account_id: Option<i64>,
 ) -> Result<crate::models::ReplyPage, String> {
     let query = query.trim().to_lowercase();
     let total = conn
         .query_row(
             &format!("SELECT COUNT(*) {REPLY_FROM} {REPLY_FILTER}"),
-            params![kind, task_id, query],
+            params![kind, task_id, query, account_id],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
     let sql = format!("SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject,
         r.snippet, r.body, r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid,
-        r.received_at, r.created_at, d.recipient, COALESCE(t.name, m.title, ''), r.imap_uid_validity, r.imap_generation
-        {REPLY_FROM} {REPLY_FILTER} ORDER BY r.id DESC LIMIT ?4 OFFSET ?5");
+        r.received_at, r.created_at, d.recipient, COALESCE(t.name, m.title, ''), r.imap_uid_validity, r.imap_generation, r.is_read, r.read_synced
+        {REPLY_FROM} {REPLY_FILTER} ORDER BY r.id DESC LIMIT ?5 OFFSET ?6");
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let items = stmt
         .query_map(
-            params![kind, task_id, query, limit.max(1), offset.max(0)],
+            params![
+                kind,
+                task_id,
+                query,
+                account_id,
+                limit.max(1),
+                offset.max(0)
+            ],
             map_reply,
         )
         .map_err(|e| e.to_string())?
@@ -1450,7 +1465,119 @@ pub fn load_replies(
     task_id: Option<i64>,
     limit: i64,
 ) -> Result<Vec<Reply>, String> {
-    Ok(query_replies(conn, kind, task_id, "", limit, 0)?.items)
+    Ok(query_replies(conn, kind, task_id, "", limit, 0, None)?.items)
+}
+
+pub fn set_reply_read(conn: &Connection, id: i64, is_read: bool) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE replies SET is_read = ?2, read_synced = 1 WHERE id = ?1",
+            params![id, is_read],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("邮件不存在或已删除".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+pub struct ReplyFlagTarget {
+    pub id: i64,
+    pub account_id: i64,
+    pub uid: u32,
+    pub uid_validity: i64,
+    pub generation: i64,
+    pub local_is_read: bool,
+    pub local_read_synced: bool,
+}
+
+pub fn reply_flag_target(conn: &Connection, id: i64) -> Result<Option<ReplyFlagTarget>, String> {
+    let row = conn.query_row(
+        "SELECT id, account_id, imap_uid, imap_uid_validity, imap_generation, is_read, read_synced FROM replies WHERE id = ?1",
+        [id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)? != 0, r.get::<_, i64>(6)? != 0)),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some((
+        id,
+        Some(account_id),
+        uid,
+        uid_validity,
+        generation,
+        local_is_read,
+        local_read_synced,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    let Ok(uid) = u32::try_from(uid) else {
+        return Ok(None);
+    };
+    if uid == 0 {
+        return Ok(None);
+    }
+    Ok(Some(ReplyFlagTarget {
+        id,
+        account_id,
+        uid,
+        uid_validity,
+        generation,
+        local_is_read,
+        local_read_synced,
+    }))
+}
+
+pub fn update_reply_server_read(
+    conn: &Connection,
+    target: &ReplyFlagTarget,
+    is_read: bool,
+) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE replies SET is_read = ?2, read_synced = 1
+         WHERE id = ?1 AND account_id = ?3 AND imap_uid = ?4
+           AND imap_uid_validity = ?5 AND imap_generation = ?6",
+            params![
+                target.id,
+                is_read,
+                target.account_id,
+                target.uid,
+                target.uid_validity,
+                target.generation
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("邮件记录已变化，请刷新收件箱".into());
+    }
+    Ok(())
+}
+
+/// Do not let an older FLAGS response overwrite a user's newer read/unread action.
+pub fn update_reply_read_from_sync(
+    conn: &Connection,
+    target: &ReplyFlagTarget,
+    is_read: bool,
+) -> Result<bool, String> {
+    let changed = conn
+        .execute(
+            "UPDATE replies SET is_read = ?2, read_synced = 1
+         WHERE id = ?1 AND account_id = ?3 AND imap_uid = ?4
+           AND imap_uid_validity = ?5 AND imap_generation = ?6
+           AND is_read = ?7 AND read_synced = ?8",
+            params![
+                target.id,
+                is_read,
+                target.account_id,
+                target.uid,
+                target.uid_validity,
+                target.generation,
+                target.local_is_read,
+                target.local_read_synced
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(changed > 0)
 }
 
 pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
@@ -1525,7 +1652,8 @@ mod tests {
                     from_email TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '',
                     snippet TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '',
                     kind TEXT NOT NULL DEFAULT 'human', reason TEXT NOT NULL DEFAULT '',
-                    accepted INTEGER NOT NULL DEFAULT 0, message_id TEXT NOT NULL DEFAULT '',
+                    accepted INTEGER NOT NULL DEFAULT 0, is_read INTEGER NOT NULL DEFAULT 0, read_synced INTEGER NOT NULL DEFAULT 0,
+                    message_id TEXT NOT NULL DEFAULT '',
                     in_reply_to TEXT NOT NULL DEFAULT '', imap_uid INTEGER NOT NULL DEFAULT 0,
                     received_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '', imap_uid_validity INTEGER NOT NULL DEFAULT 0, imap_generation INTEGER NOT NULL DEFAULT 0
                  );",

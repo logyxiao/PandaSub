@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
@@ -13,6 +14,7 @@ use crate::store;
 #[derive(Debug, Clone)]
 pub struct FetchedMail {
     pub uid: u32,
+    pub is_read: bool,
     pub from: String,
     pub subject: String,
     pub body: String,
@@ -59,9 +61,12 @@ pub fn scan_all_accounts(
     scan_lock: &Arc<Mutex<()>>,
 ) -> Result<usize, String> {
     let _guard = acquire_scan(scan_lock)?;
-    let mut accounts = {
+    let (mut accounts, auto_keywords) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        store::load_accounts(&conn)?
+        (
+            store::load_accounts(&conn)?,
+            store::load_settings(&conn)?.auto_reply_subject_keywords,
+        )
     };
     static NEXT_ACCOUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     accounts.retain(|account| {
@@ -83,7 +88,7 @@ pub fn scan_all_accounts(
             failures.push("本轮收件扫描已达 120 秒，将在后续扫描继续".into());
             break;
         }
-        match scan_one_account(app, db, &account, round_deadline) {
+        match scan_one_account(app, db, &account, round_deadline, &auto_keywords) {
             Ok(n) => total += n,
             Err(e) => {
                 failures.push(format!("{}：{e}", account.email));
@@ -118,6 +123,7 @@ fn scan_one_account(
     db: &Arc<Mutex<Connection>>,
     account: &Account,
     round_deadline: Instant,
+    auto_keywords: &[String],
 ) -> Result<usize, String> {
     let backfill_key = format!(
         "replies.autoreply_match_backfill.{AUTO_REPLY_BACKFILL_VERSION}.{}",
@@ -166,13 +172,16 @@ fn scan_one_account(
         let Some(delivery) = delivery_index.find(&mail) else {
             continue;
         };
-        let classification = classify::classify(&IncomingMail {
-            from: mail.from.clone(),
-            subject: mail.subject.clone(),
-            body: mail.body.clone(),
-            content_type: mail.content_type.clone(),
-            extra_headers: mail.extra_headers.clone(),
-        });
+        let classification = classify::classify_with_keywords(
+            &IncomingMail {
+                from: mail.from.clone(),
+                subject: mail.subject.clone(),
+                body: mail.body.clone(),
+                content_type: mail.content_type.clone(),
+                extra_headers: mail.extra_headers.clone(),
+            },
+            auto_keywords,
+        );
         let snippet: String = mail.body.chars().take(180).collect();
         let accepted = classification.kind == classify::ReplyKind::Human
             && classify::body_suggests_accepted(&mail.body);
@@ -196,6 +205,7 @@ fn scan_one_account(
                 validity,
                 account.imap_generation,
                 &mail.received_at,
+                mail.is_read,
             )?
         };
         saved += 1;
@@ -388,6 +398,116 @@ fn fetch_mail(
     fetch_mail_session(session, account, include_recent_backfill, deadline)
 }
 
+fn open_read_state_session(
+    account: &Account,
+    expected_validity: i64,
+) -> Result<imap::Session<native_tls::TlsStream<BudgetStream>>, String> {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let client = connect_imap_bounded(
+        &account.imap_host,
+        account.imap_port,
+        CONNECT_TIMEOUT,
+        IO_TIMEOUT,
+        deadline,
+    )?;
+    let mut session = client
+        .login(&account.email, &account.password)
+        .map_err(|e| e.0.to_string())?;
+    let mailbox = session.select("INBOX").map_err(|e| e.to_string())?;
+    if mailbox.uid_validity.map(i64::from) != Some(expected_validity) {
+        let _ = session.logout();
+        return Err("邮箱邮件编号已变化，请先检查收件箱以重新同步".into());
+    }
+    Ok(session)
+}
+
+/// Query only IMAP FLAGS; reading metadata must not set the server's Seen flag.
+pub fn fetch_seen_flags(
+    account: &Account,
+    expected_validity: i64,
+    uids: &[u32],
+) -> Result<HashMap<u32, bool>, String> {
+    if uids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut session = open_read_state_session(account, expected_validity)?;
+    let states = fetch_seen_flags_session(&mut session, uids)?;
+    let _ = session.logout();
+    Ok(states)
+}
+
+fn fetch_seen_flags_session<S: Read + Write>(
+    session: &mut imap::Session<S>,
+    uids: &[u32],
+) -> Result<HashMap<u32, bool>, String> {
+    let uid_set = uids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let fetches = session
+        .uid_fetch(uid_set, "(UID FLAGS)")
+        .map_err(|e| e.to_string())?;
+    Ok(fetches
+        .iter()
+        .filter_map(|fetch| {
+            fetch.uid.map(|uid| {
+                (
+                    uid,
+                    fetch
+                        .flags()
+                        .iter()
+                        .any(|flag| matches!(flag, imap::types::Flag::Seen)),
+                )
+            })
+        })
+        .collect())
+}
+
+pub fn store_seen_flag(
+    account: &Account,
+    expected_validity: i64,
+    uid: u32,
+    is_read: bool,
+) -> Result<bool, String> {
+    let mut session = open_read_state_session(account, expected_validity)?;
+    let seen = store_seen_flag_session(&mut session, uid, is_read)?;
+    let _ = session.logout();
+    Ok(seen)
+}
+
+fn store_seen_flag_session<S: Read + Write>(
+    session: &mut imap::Session<S>,
+    uid: u32,
+    is_read: bool,
+) -> Result<bool, String> {
+    let command = if is_read {
+        "+FLAGS (\\Seen)"
+    } else {
+        "-FLAGS (\\Seen)"
+    };
+    session
+        .uid_store(uid.to_string(), command)
+        .map_err(|e| e.to_string())?;
+    let fetches = session
+        .uid_fetch(uid.to_string(), "(UID FLAGS)")
+        .map_err(|e| e.to_string())?;
+    let seen = fetches
+        .iter()
+        .find(|fetch| fetch.uid == Some(uid))
+        .map(|fetch| {
+            fetch
+                .flags()
+                .iter()
+                .any(|flag| matches!(flag, imap::types::Flag::Seen))
+        })
+        .ok_or("服务器中找不到这封邮件")?;
+    if seen != is_read {
+        return Err("邮箱服务器未保存已读状态".into());
+    }
+    Ok(seen)
+}
+
 fn fetch_mail_session<S: Read + Write>(
     mut session: imap::Session<S>,
     account: &Account,
@@ -496,7 +616,7 @@ fn fetch_one_mail<S: Read + Write>(
         return Ok(MailStep::Deferred);
     }
     let fetches = session
-        .uid_fetch(uid.to_string(), "(INTERNALDATE BODY.PEEK[])")
+        .uid_fetch(uid.to_string(), "(INTERNALDATE FLAGS BODY.PEEK[])")
         .map_err(|e| e.to_string())?;
     let Some(fetch) = fetches.iter().find(|f| f.uid == Some(uid)) else {
         return if fetches.is_empty() {
@@ -520,10 +640,12 @@ fn fetch_one_mail<S: Read + Write>(
                 .to_string()
         })
         .unwrap_or_default();
-    Ok(MailStep::Mail(
-        Box::new(parse_message(uid, bytes, received_at)),
-        bytes.len(),
-    ))
+    let mut mail = parse_message(uid, bytes, received_at);
+    mail.is_read = fetch
+        .flags()
+        .iter()
+        .any(|flag| matches!(flag, imap::types::Flag::Seen));
+    Ok(MailStep::Mail(Box::new(mail), bytes.len()))
 }
 
 fn chrono_since_days(days: i64) -> String {
@@ -582,6 +704,7 @@ fn parse_message(uid: u32, raw: &[u8], received_at: String) -> FetchedMail {
         let extra = collect_auto_headers(&parsed);
         return FetchedMail {
             uid,
+            is_read: false,
             from: first_address(parsed.from()),
             subject: parsed.subject().unwrap_or("").to_string(),
             body: parsed
@@ -603,6 +726,7 @@ fn parse_message(uid: u32, raw: &[u8], received_at: String) -> FetchedMail {
     }
     FetchedMail {
         uid,
+        is_read: false,
         from: String::new(),
         subject: String::new(),
         body: String::new(),
@@ -838,6 +962,7 @@ mod tests {
     fn reply(from: &str, subject: &str) -> FetchedMail {
         FetchedMail {
             uid: 1,
+            is_read: false,
             from: from.into(),
             subject: subject.into(),
             body: String::new(),
@@ -1102,13 +1227,53 @@ mod budget_tests {
     }
 
     #[test]
+    fn imap_seen_flags_are_read_without_marking_mail_as_read() {
+        let response = b"* OK fixture\r\na1 OK login\r\n* 1 FETCH (UID 7 FLAGS (\\Seen))\r\n* 2 FETCH (UID 8 FLAGS ())\r\na2 OK fetch\r\n";
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let mut client = imap::Client::new(Transcript {
+            input: std::io::Cursor::new(response.to_vec()),
+            commands: commands.clone(),
+        });
+        client.read_greeting().unwrap();
+        let mut session = client
+            .login("fixture", "")
+            .map_err(|e| e.0.to_string())
+            .unwrap();
+        let states = fetch_seen_flags_session(&mut session, &[7, 8]).unwrap();
+        assert_eq!(states.get(&7), Some(&true));
+        assert_eq!(states.get(&8), Some(&false));
+        let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+        assert!(sent.contains("UID FETCH 7,8 (UID FLAGS)"));
+        assert!(!sent.contains("STORE"));
+    }
+
+    #[test]
+    fn imap_read_action_uses_uid_store_and_verifies_seen_flag() {
+        let response = b"* OK fixture\r\na1 OK login\r\n* 1 FETCH (UID 7 FLAGS (\\Seen))\r\na2 OK store\r\n* 1 FETCH (UID 7 FLAGS (\\Seen))\r\na3 OK fetch\r\n";
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let mut client = imap::Client::new(Transcript {
+            input: std::io::Cursor::new(response.to_vec()),
+            commands: commands.clone(),
+        });
+        client.read_greeting().unwrap();
+        let mut session = client
+            .login("fixture", "")
+            .map_err(|e| e.0.to_string())
+            .unwrap();
+        assert!(store_seen_flag_session(&mut session, 7, true).unwrap());
+        let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+        assert!(sent.contains("UID STORE 7 +FLAGS (\\Seen)"));
+        assert!(sent.contains("UID FETCH 7 (UID FLAGS)"));
+    }
+
+    #[test]
     fn oversized_mail_is_skipped_before_body_fetch_without_blocking_following_mail() {
         let conn = crate::db::test_database();
         conn.execute("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'fixture@example.com','','localhost')",[]).unwrap();
         let account = store::load_account(&conn, 1).unwrap().unwrap();
         let mail =
             "From: editor@example.com\r\nSubject: reply\r\nMessage-ID: <fixture>\r\n\r\nhello";
-        let responses = format!("* OK fixture\r\na1 OK login\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 1 2\r\na3 OK search\r\n* 1 FETCH (UID 1 RFC822.SIZE {})\r\na4 OK size\r\n* 2 FETCH (UID 2 RFC822.SIZE {})\r\na5 OK size\r\n* 2 FETCH (UID 2 INTERNALDATE \"01-Jan-2026 12:00:00 +0000\" BODY[] {{{}}}\r\n{})\r\na6 OK body\r\n* BYE fixture\r\na7 OK logout\r\n",
+        let responses = format!("* OK fixture\r\na1 OK login\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 1 2\r\na3 OK search\r\n* 1 FETCH (UID 1 RFC822.SIZE {})\r\na4 OK size\r\n* 2 FETCH (UID 2 RFC822.SIZE {})\r\na5 OK size\r\n* 2 FETCH (UID 2 INTERNALDATE \"01-Jan-2026 12:00:00 +0000\" FLAGS (\\Seen) BODY[] {{{}}}\r\n{})\r\na6 OK body\r\n* BYE fixture\r\na7 OK logout\r\n",
             MAX_MAIL_BYTES+1,mail.len(),mail.len(),mail);
         let commands = Arc::new(Mutex::new(Vec::new()));
         let mut client = imap::Client::new(Transcript {
@@ -1131,9 +1296,10 @@ mod budget_tests {
         assert_eq!(batch.scanned_through, 2);
         assert_eq!(batch.mails.len(), 1);
         assert_eq!(batch.mails[0].uid, 2);
+        assert!(batch.mails[0].is_read);
         let commands = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
-        assert!(!commands.contains("UID FETCH 1 (INTERNALDATE BODY.PEEK[])"));
-        assert!(commands.contains("UID FETCH 2 (INTERNALDATE BODY.PEEK[])"));
+        assert!(!commands.contains("UID FETCH 1 (INTERNALDATE FLAGS BODY.PEEK[])"));
+        assert!(commands.contains("UID FETCH 2 (INTERNALDATE FLAGS BODY.PEEK[])"));
     }
     #[test]
     fn body_budget_defers_next_mail_before_fetching_or_advancing_its_uid() {

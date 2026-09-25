@@ -135,6 +135,74 @@ export interface ManuscriptInput {
   has_file?: boolean
 }
 
+export type AcceptedDealMode = 'undecided' | 'buyout' | 'guarantee_share'
+export type AcceptedReviewStatus = 'accepted' | 'preliminary' | 'final_rejected' | 'not_accepted'
+
+export interface AcceptedWork {
+  id: number
+  manuscript_id: number | null
+  source: 'plan' | 'external'
+  review_status: AcceptedReviewStatus
+  title: string
+  body: string
+  file_name: string
+  has_file: boolean
+  accepted_at: string
+  sold_at: string
+  deal_mode: AcceptedDealMode
+  price_cents: number
+  guarantee_cents: number
+  per_thousand_cents: number
+  realized_share_cents: number
+  share_percent: number
+  sale_platform: string
+  buyer_editor: string
+  listing_platform: string
+  article_url: string
+  notes: string
+  record_origin: 'manual' | 'historical_import'
+  created_at: string
+  updated_at: string
+}
+
+export interface AcceptedWorkInput {
+  manuscript_id: number | null
+  source: 'plan' | 'external'
+  review_status: AcceptedReviewStatus
+  title: string
+  body: string
+  file_name: string
+  file_data?: number[] | null
+  remove_file: boolean
+  accepted_at: string
+  deal_mode: AcceptedDealMode
+  price_cents: number
+  guarantee_cents: number
+  per_thousand_cents: number
+  realized_share_cents: number
+  share_percent: number
+  sale_platform: string
+  buyer_editor: string
+  listing_platform: string
+  article_url: string
+  notes: string
+}
+
+export interface AcceptedCandidate {
+  manuscript_id: number
+  title: string
+  received_at: string
+  sale_platform: string
+  buyer_editor: string
+}
+
+export interface AcceptedWorkDocument {
+  title: string
+  body: string
+  file_name: string
+  file_data: number[] | null
+}
+
 export type TaskStatus = 'stopped' | 'scheduled' | 'running' | 'paused' | 'completed'
 export type ScheduleType = 'immediate' | 'scheduled' | 'loop'
 
@@ -185,6 +253,7 @@ export interface Settings {
   auto_backup: boolean
   update_feed_url: string
   reply_poll_minutes: number
+  auto_reply_subject_keywords: string[]
 }
 
 export interface Dashboard {
@@ -226,6 +295,8 @@ export interface Reply {
   kind: ReplyKind
   reason: string
   accepted: boolean
+  is_read: boolean
+  read_synced: boolean
   message_id: string
   in_reply_to: string
   imap_uid: number

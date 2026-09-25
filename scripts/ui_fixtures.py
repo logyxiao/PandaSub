@@ -3,7 +3,8 @@ MOCK = r'''
 const task = { id: 1, name: '回归测试计划', manuscript_ids: [1], account_ids: [1], status: 'running', schedule_type: 'immediate', scheduled_at: null, retry_max: 3, sent: 1, total: 3, created_at: '2026-09-06 10:00:00', started_at: '2026-09-06 10:00:00', finished_at: null };
 const m = {id:1,title:'回归测试计划',body:'正文',content_type:'text/plain',recipients:['a@example.com','b@example.com','c@example.com'],sender_name:'作者',word_count:1000,category:'短篇',reader_emotion:'',style:'',genres:['短篇'],account_ids:[1],subject:'主题',file_name:'',created_at:'2026-09-06 10:00:00',updated_at:'2026-09-06 10:00:00'};
 const accounts = [{id:1,email:'fixture@example.com',enabled:true,sender_name:'作者',provider:'qq',sent_today:1}];
-const replies = Array.from({length:305},(_,i)=>({id:305-i,delivery_id:1,account_id:1,task_id:1,from_email:'a@example.com',subject:'回复'+(305-i),snippet:'摘录',body:i===304?'最早的历史回复':'回复内容'+(305-i),kind:'human',reason:'人工',accepted:false,message_id:'r'+i,in_reply_to:'d1',imap_uid:i,received_at:'2026-01-02 03:04:05',created_at:'2026-09-06 12:00:00',recipient:'a@example.com',task_name:'回归测试计划'}));
+const replies = Array.from({length:305},(_,i)=>({id:305-i,delivery_id:1,account_id:1,task_id:1,from_email:'a@example.com',subject:'回复'+(305-i),snippet:'摘录',body:i===304?'最早的历史回复':'回复内容'+(305-i),kind:'human',reason:'人工',accepted:false,is_read:false,read_synced:false,message_id:'r'+i,in_reply_to:'d1',imap_uid:i,received_at:'2026-01-02 03:04:05',created_at:'2026-09-06 12:00:00',recipient:'a@example.com',task_name:'回归测试计划'}));
+const serverSeen=new Map(replies.map((reply,i)=>[reply.id,i%3===2]));
 const deliveries = [{id:1,task_id:1,account_id:1,manuscript_id:1,recipient:'a@example.com',subject:'主题',message_id:'m1',sent_at:'2026-09-06 10:00:00'}];
 const logs=Array.from({length:305},(_,i)=>({id:305-i,task_id:1,manuscript_id:1,account_id:1,level:i===304?'error':'success',category:'send',message:i===304?'最早的失败记录':'发送成功',recipient:i===304?'old_100%@example.com':'other@example.com',created_at:'2026-09-06 10:00:00'}));
 window.__manuscript=m; window.__calls=[]; const events={task: new Set(), log:new Set(), reply:new Set()};
@@ -28,7 +29,8 @@ const functions={
  listManuscripts:()=>[m],listTasks:()=>[task],listAccounts:()=>accounts,
  listEditors:()=>[{id:1,email:'a@example.com',name:'编辑甲',platform:'平台',work_type:['短篇'],rejected_types:[],notes:'',enabled:true,favorited:false}],
  listEditorGroups:()=>[],getDefaultMailTemplates:()=>[{id:'t1',name:'模板',subject:'投稿+{{字数}}+{{类型}}',body:'编辑您好'}],saveDefaultMailTemplates:()=>null,
- getSettings:()=>({default_retry_max:3,anti_spam_mutation:false,reply_poll_minutes:2}),
+ updateSettings:(settings)=>{window.__settings=settings},
+ getSettings:()=>window.__settings??({default_retry_max:3,anti_spam_mutation:false,auto_start:false,close_to_tray:true,auto_backup:false,update_feed_url:'',reply_poll_minutes:2,auto_reply_subject_keywords:['自动回复','自動回覆','AutoReply','Auto-Reply']}),
  listDeliveries:()=>{throw new Error('Full delivery history must not be fetched')},
  deliverySummaryPage:(id,emails,matching,filter,limit,offset)=>{
    if(id!==1)throw new Error('Unscoped detail');
@@ -43,7 +45,9 @@ const functions={
  resolvePendingSend:(id,sent)=>{if(sent)deliveries.push({id:2,task_id:1,account_id:1,manuscript_id:1,recipient:'b@example.com',subject:'主题',message_id:'pending',sent_at:'2026-09-06 10:00:00'});window.__pending=[]},
  listLogsPage:(taskId,level,q,limit,offset)=>{q=q.trim().toLowerCase();const rows=logs.filter(l=>(!taskId||l.task_id===taskId)&&(!level||l.level===level)&&(!q||l.recipient.toLowerCase().includes(q)||accounts[0].email.includes(q)));return{total:rows.length,items:rows.slice(offset,offset+limit)}},
  exportLogs:(path)=>path,
- listRepliesPage:(kind,taskId,q,limit,offset)=>{let rows=replies.filter(r=>(!kind||r.kind===kind)&&(!taskId||r.task_id===taskId)&&(!q||r.body.includes(q)));return{total:rows.length,items:rows.slice(offset,offset+limit)}},
+ setReplyRead:(id,isRead)=>{if(window.__failSeenStore)throw new Error('fixture IMAP STORE rejected');const reply=replies.find(r=>r.id===id);if(!reply)throw new Error('邮件不存在');serverSeen.set(id,isRead);reply.is_read=isRead;reply.read_synced=true},
+ syncReplyReadFlags:(ids)=>ids.map(id=>{const reply=replies.find(r=>r.id===id);if(!reply)return null;reply.is_read=serverSeen.get(id);reply.read_synced=true;return{id,is_read:reply.is_read,read_synced:true}}).filter(Boolean),
+ listRepliesPage:(kind,taskId,q,limit,offset,accountId)=>{let rows=replies.filter(r=>(!accountId||r.account_id===accountId)&&(!kind||r.kind===kind)&&(!taskId||r.task_id===taskId)&&(!q||r.body.includes(q)));return{total:rows.length,items:rows.slice(offset,offset+limit)}},
 };
 export const api=new Proxy({}, {get:(_,name)=>(...args)=>{window.__calls.push({name,args});if(!(name in functions))return Promise.reject(new Error('Unexpected API: '+name));return Promise.resolve(functions[name](...args))}});
 '''

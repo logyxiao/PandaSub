@@ -150,6 +150,92 @@ pub struct ManuscriptInput {
     pub file_data: Option<Vec<u8>>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AcceptedWork {
+    pub id: i64,
+    pub manuscript_id: Option<i64>,
+    pub source: String,
+    pub review_status: String,
+    pub title: String,
+    pub body: String,
+    pub file_name: String,
+    pub has_file: bool,
+    pub accepted_at: String,
+    pub sold_at: String,
+    pub deal_mode: String,
+    pub price_cents: i64,
+    pub guarantee_cents: i64,
+    pub per_thousand_cents: i64,
+    pub realized_share_cents: i64,
+    pub share_percent: f64,
+    pub sale_platform: String,
+    pub buyer_editor: String,
+    pub listing_platform: String,
+    pub article_url: String,
+    pub notes: String,
+    pub record_origin: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AcceptedWorkInput {
+    pub manuscript_id: Option<i64>,
+    pub source: String,
+    #[serde(default = "default_accepted_review_status")]
+    pub review_status: String,
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub file_name: String,
+    #[serde(default)]
+    pub file_data: Option<Vec<u8>>,
+    #[serde(default)]
+    pub remove_file: bool,
+    #[serde(default)]
+    pub accepted_at: String,
+    pub deal_mode: String,
+    pub price_cents: i64,
+    pub guarantee_cents: i64,
+    #[serde(default)]
+    pub per_thousand_cents: i64,
+    #[serde(default)]
+    pub realized_share_cents: i64,
+    pub share_percent: f64,
+    #[serde(default)]
+    pub sale_platform: String,
+    #[serde(default)]
+    pub buyer_editor: String,
+    #[serde(default)]
+    pub listing_platform: String,
+    #[serde(default)]
+    pub article_url: String,
+    #[serde(default)]
+    pub notes: String,
+}
+
+fn default_accepted_review_status() -> String {
+    "accepted".into()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AcceptedCandidate {
+    pub manuscript_id: i64,
+    pub title: String,
+    pub received_at: String,
+    pub sale_platform: String,
+    pub buyer_editor: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AcceptedWorkDocument {
+    pub title: String,
+    pub body: String,
+    pub file_name: String,
+    pub file_data: Option<Vec<u8>>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct MailTemplate {
     #[serde(default)]
@@ -215,6 +301,8 @@ pub struct Settings {
     pub update_feed_url: String,
     #[serde(default = "default_reply_poll")]
     pub reply_poll_minutes: i64,
+    #[serde(default = "default_auto_reply_subject_keywords")]
+    pub auto_reply_subject_keywords: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -226,6 +314,13 @@ fn default_editor_source() -> String {
 fn default_imap_port() -> u16 {
     993
 }
+pub fn default_auto_reply_subject_keywords() -> Vec<String> {
+    ["自动回复", "自動回覆", "AutoReply", "Auto-Reply"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 fn default_reply_poll() -> i64 {
     2
 }
@@ -279,6 +374,7 @@ impl Default for Settings {
             auto_backup: false,
             update_feed_url: String::new(),
             reply_poll_minutes: 2,
+            auto_reply_subject_keywords: default_auto_reply_subject_keywords(),
         }
     }
 }
@@ -690,6 +786,10 @@ pub struct Reply {
     pub kind: String,
     pub reason: String,
     pub accepted: bool,
+    #[serde(default)]
+    pub is_read: bool,
+    #[serde(default)]
+    pub read_synced: bool,
     pub message_id: String,
     pub in_reply_to: String,
     pub imap_uid: i64,
@@ -701,6 +801,13 @@ pub struct Reply {
     pub created_at: String,
     pub recipient: String,
     pub task_name: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ReplyReadState {
+    pub id: i64,
+    pub is_read: bool,
+    pub read_synced: bool,
 }
 
 #[derive(Serialize)]

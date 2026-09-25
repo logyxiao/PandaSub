@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS replies (
   message_id TEXT NOT NULL DEFAULT '',
   in_reply_to TEXT NOT NULL DEFAULT '',
   imap_uid INTEGER NOT NULL DEFAULT 0,
+  is_read INTEGER NOT NULL DEFAULT 0,
+  read_synced INTEGER NOT NULL DEFAULT 0,
   received_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -164,6 +166,34 @@ CREATE TABLE IF NOT EXISTS editor_group_members (
 );
 CREATE INDEX IF NOT EXISTS editor_group_members_editor ON editor_group_members(editor_id);
 CREATE INDEX IF NOT EXISTS editor_group_members_group_position ON editor_group_members(group_id, position);
+
+CREATE TABLE IF NOT EXISTS accepted_works (
+  id INTEGER PRIMARY KEY,
+  manuscript_id INTEGER UNIQUE,
+  source TEXT NOT NULL CHECK(source IN ('plan','external')),
+  review_status TEXT NOT NULL DEFAULT 'accepted' CHECK(review_status IN ('accepted','preliminary','final_rejected','not_accepted')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  file_name TEXT NOT NULL DEFAULT '',
+  file_data BLOB,
+  accepted_at TEXT NOT NULL DEFAULT '',
+  sold_at TEXT NOT NULL DEFAULT '',
+  deal_mode TEXT NOT NULL DEFAULT 'undecided' CHECK(deal_mode IN ('undecided','buyout','guarantee_share')),
+  price_cents INTEGER NOT NULL DEFAULT 0,
+  guarantee_cents INTEGER NOT NULL DEFAULT 0,
+  per_thousand_cents INTEGER NOT NULL DEFAULT 0,
+  realized_share_cents INTEGER NOT NULL DEFAULT 0,
+  share_percent REAL NOT NULL DEFAULT 50,
+  sale_platform TEXT NOT NULL DEFAULT '',
+  buyer_editor TEXT NOT NULL DEFAULT '',
+  listing_platform TEXT NOT NULL DEFAULT '',
+  article_url TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  record_origin TEXT NOT NULL DEFAULT 'manual' CHECK(record_origin IN ('manual','historical_import')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS accepted_works_accepted_at ON accepted_works(accepted_at DESC, id DESC);
 "#;
 
 pub fn open_database(path: PathBuf) -> Result<Connection, String> {
@@ -177,6 +207,16 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     connection
         .execute_batch(SCHEMA)
         .map_err(|e| e.to_string())?;
+    ensure_columns(&connection, "accepted_works", &[(
+        "review_status", "review_status TEXT NOT NULL DEFAULT 'accepted' CHECK(review_status IN ('accepted','preliminary','final_rejected','not_accepted'))",
+    )])?;
+    ensure_columns(&connection, "accepted_works", &[
+        ("sold_at", "sold_at TEXT NOT NULL DEFAULT ''"),
+        ("realized_share_cents", "realized_share_cents INTEGER NOT NULL DEFAULT 0"),
+        ("per_thousand_cents", "per_thousand_cents INTEGER NOT NULL DEFAULT 0"),
+        ("record_origin", "record_origin TEXT NOT NULL DEFAULT 'manual' CHECK(record_origin IN ('manual','historical_import'))"),
+    ])?;
+    migrate_accepted_review_status(&connection)?;
     add_account_imap_columns(&connection)?;
     add_manuscript_plan_columns(&connection)?;
     add_editor_enabled_column(&connection)?;
@@ -207,6 +247,14 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_send_interval_column(&connection)?;
     add_manuscript_send_interval_seconds_columns(&connection)?;
     add_reply_accepted_column(&connection)?;
+    ensure_columns(
+        &connection,
+        "replies",
+        &[
+            ("is_read", "is_read INTEGER NOT NULL DEFAULT 0"),
+            ("read_synced", "read_synced INTEGER NOT NULL DEFAULT 0"),
+        ],
+    )?;
     migrate_delivery_reliability(&connection)?;
     migrate_pending_recipient_scope(&connection)?;
     add_runtime_query_indexes(&connection)?;
@@ -216,6 +264,107 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
     Ok(connection)
+}
+
+#[cfg(test)]
+mod accepted_review_migration_tests {
+    use super::*;
+
+    #[test]
+    fn old_review_constraint_migrates_without_losing_saved_manuscripts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE accepted_works (
+              id INTEGER PRIMARY KEY, manuscript_id INTEGER UNIQUE,
+              source TEXT NOT NULL, review_status TEXT NOT NULL DEFAULT 'accepted'
+                CHECK(review_status IN ('accepted','not_accepted')),
+              title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', file_name TEXT NOT NULL DEFAULT '',
+              file_data BLOB, accepted_at TEXT NOT NULL DEFAULT '', deal_mode TEXT NOT NULL DEFAULT 'undecided',
+              price_cents INTEGER NOT NULL DEFAULT 0, guarantee_cents INTEGER NOT NULL DEFAULT 0,
+              share_percent REAL NOT NULL DEFAULT 50, sale_platform TEXT NOT NULL DEFAULT '',
+              buyer_editor TEXT NOT NULL DEFAULT '', listing_platform TEXT NOT NULL DEFAULT '',
+              article_url TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX accepted_works_accepted_at ON accepted_works(accepted_at DESC, id DESC);
+            INSERT INTO accepted_works (id, manuscript_id, source, review_status, title, file_name, file_data,
+              deal_mode, price_cents, share_percent)
+              VALUES (9, 12, 'plan', 'not_accepted', '原作品', '原稿.docx', X'010203', 'buyout', 120000, 45.5);",
+        ).unwrap();
+        ensure_columns(&conn, "accepted_works", &[
+            ("sold_at", "sold_at TEXT NOT NULL DEFAULT ''"),
+            ("realized_share_cents", "realized_share_cents INTEGER NOT NULL DEFAULT 0"),
+            ("per_thousand_cents", "per_thousand_cents INTEGER NOT NULL DEFAULT 0"),
+            ("record_origin", "record_origin TEXT NOT NULL DEFAULT 'manual' CHECK(record_origin IN ('manual','historical_import'))"),
+        ]).unwrap();
+        conn.execute("UPDATE accepted_works SET sold_at='2026-09-04', realized_share_cents=123,
+            per_thousand_cents=3000, record_origin='historical_import' WHERE id=9", []).unwrap();
+        migrate_accepted_review_status(&conn).unwrap();
+        let row: (String, Vec<u8>, i64, f64) = conn.query_row(
+            "SELECT review_status, file_data, price_cents, share_percent FROM accepted_works WHERE id=9",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(row, ("not_accepted".into(), vec![1, 2, 3], 120000, 45.5));
+        let new_fields: (String, i64, i64, String) = conn.query_row(
+            "SELECT sold_at, realized_share_cents, per_thousand_cents, record_origin FROM accepted_works WHERE id=9",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(new_fields, ("2026-09-04".into(), 123, 3000, "historical_import".into()));
+        conn.execute("INSERT INTO accepted_works (source, review_status, title) VALUES ('plan','preliminary','新作品')", []).unwrap();
+        conn.execute("INSERT INTO accepted_works (source, review_status, title) VALUES ('plan','final_rejected','终审未过')", []).unwrap();
+        migrate_accepted_review_status(&conn).unwrap();
+    }
+}
+
+fn migrate_accepted_review_status(conn: &Connection) -> Result<(), String> {
+    let schema: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='accepted_works'",
+        [], |row| row.get(0),
+    ).map_err(|e| e.to_string())?;
+    if schema.contains("'final_rejected'") { return Ok(()) }
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute_batch(
+        "CREATE TABLE accepted_works_rebuilt (
+          id INTEGER PRIMARY KEY,
+          manuscript_id INTEGER UNIQUE,
+          source TEXT NOT NULL CHECK(source IN ('plan','external')),
+          review_status TEXT NOT NULL DEFAULT 'accepted' CHECK(review_status IN ('accepted','preliminary','final_rejected','not_accepted')),
+          title TEXT NOT NULL,
+          body TEXT NOT NULL DEFAULT '',
+          file_name TEXT NOT NULL DEFAULT '',
+          file_data BLOB,
+          accepted_at TEXT NOT NULL DEFAULT '',
+          sold_at TEXT NOT NULL DEFAULT '',
+          deal_mode TEXT NOT NULL DEFAULT 'undecided' CHECK(deal_mode IN ('undecided','buyout','guarantee_share')),
+          price_cents INTEGER NOT NULL DEFAULT 0,
+          guarantee_cents INTEGER NOT NULL DEFAULT 0,
+          per_thousand_cents INTEGER NOT NULL DEFAULT 0,
+          realized_share_cents INTEGER NOT NULL DEFAULT 0,
+          share_percent REAL NOT NULL DEFAULT 50,
+          sale_platform TEXT NOT NULL DEFAULT '',
+          buyer_editor TEXT NOT NULL DEFAULT '',
+          listing_platform TEXT NOT NULL DEFAULT '',
+          article_url TEXT NOT NULL DEFAULT '',
+          notes TEXT NOT NULL DEFAULT '',
+          record_origin TEXT NOT NULL DEFAULT 'manual' CHECK(record_origin IN ('manual','historical_import')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        INSERT INTO accepted_works_rebuilt
+          (id, manuscript_id, source, review_status, title, body, file_name, file_data,
+           accepted_at, sold_at, deal_mode, price_cents, guarantee_cents, per_thousand_cents,
+           realized_share_cents, share_percent, sale_platform, buyer_editor, listing_platform,
+           article_url, notes, record_origin, created_at, updated_at)
+        SELECT id, manuscript_id, source, review_status, title, body, file_name, file_data,
+               accepted_at, sold_at, deal_mode, price_cents, guarantee_cents, per_thousand_cents,
+               realized_share_cents, share_percent, sale_platform, buyer_editor, listing_platform,
+               article_url, notes, record_origin, created_at, updated_at
+        FROM accepted_works;
+        DROP TABLE accepted_works;
+        ALTER TABLE accepted_works_rebuilt RENAME TO accepted_works;
+        CREATE INDEX accepted_works_accepted_at ON accepted_works(accepted_at DESC, id DESC);"
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 fn migrate_pending_recipient_scope(conn: &Connection) -> Result<(), String> {
@@ -1220,18 +1369,22 @@ fn reclassify_autoreply_history(conn: &Connection) -> Result<(), String> {
         )
         .unwrap_or(0);
     if exists > 0 {
+        let keywords = crate::store::load_settings(conn)?.auto_reply_subject_keywords;
         let replies = crate::store::load_replies(conn, None, None, 100_000).unwrap_or_default();
         for reply in replies {
             if reply.kind == "bounce" || reply.kind == "auto" {
                 continue;
             }
-            let result = crate::classify::classify(&crate::classify::IncomingMail {
-                from: reply.from_email.clone(),
-                subject: reply.subject.clone(),
-                body: reply.body.clone(),
-                content_type: String::new(),
-                extra_headers: Vec::new(),
-            });
+            let result = crate::classify::classify_with_keywords(
+                &crate::classify::IncomingMail {
+                    from: reply.from_email.clone(),
+                    subject: reply.subject.clone(),
+                    body: reply.body.clone(),
+                    content_type: String::new(),
+                    extra_headers: Vec::new(),
+                },
+                &keywords,
+            );
             if result.kind == crate::classify::ReplyKind::Auto {
                 crate::store::update_reply_kind(
                     conn,
@@ -1761,6 +1914,7 @@ mod reliability_tests {
                 10,
                 generation,
                 "2026-01-02 03:04:05",
+                false,
             )
             .unwrap()
         };
@@ -1780,7 +1934,7 @@ mod reliability_tests {
         let new = insert(1, "new-message");
         assert_ne!(old.id, new.id);
         assert_eq!(new.received_at, "2026-01-02 03:04:05");
-        let page = store::query_replies(&conn, None, None, "", 20, 0).unwrap();
+        let page = store::query_replies(&conn, None, None, "", 20, 0, None).unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.items[0].received_at, "2026-01-02 03:04:05");
         assert_ne!(page.items[0].created_at, page.items[0].received_at);
@@ -1804,24 +1958,169 @@ mod reliability_tests {
                 rusqlite::params![uid, if uid==1 {"old@example.com"} else {"other@example.com"}, if uid==1 {"最早的回复"} else {"普通回复"}, uid==1]).unwrap();
         }
         tx.commit().unwrap();
-        let page = store::query_replies(&conn, None, None, "", 20, 300).unwrap();
+        let page = store::query_replies(&conn, None, None, "", 20, 300, None).unwrap();
         assert_eq!(page.total, 305);
         assert_eq!(page.items.len(), 5);
         assert_eq!(page.items[4].imap_uid, 1);
         for query in ["最早", "老编辑", "平台甲", "OLD@EXAMPLE.COM"] {
             let found =
-                store::query_replies(&conn, Some("accepted"), Some(1), query, 20, 0).unwrap();
+                store::query_replies(&conn, Some("accepted"), Some(1), query, 20, 0, None).unwrap();
             assert_eq!(found.total, 1, "{query}");
             assert_eq!(found.items[0].imap_uid, 1);
         }
         assert_eq!(
-            store::query_replies(&conn, None, Some(2), "", 20, 0)
+            store::query_replies(&conn, None, Some(2), "", 20, 0, None)
                 .unwrap()
                 .total,
             0
         );
         assert_eq!(
-            store::query_replies(&conn, None, None, "%", 20, 0)
+            store::query_replies(&conn, None, None, "%", 20, 0, None)
+                .unwrap()
+                .total,
+            0
+        );
+    }
+
+    #[test]
+    fn inbox_read_state_persists_without_guessing_legacy_status() {
+        let conn = connection();
+        seed(&conn);
+        conn.execute("INSERT INTO replies(account_id,imap_uid,task_id,kind,subject) VALUES(1,101,1,'human','稿件回复')", []).unwrap();
+        let unread = store::query_replies(&conn, None, None, "", 20, 0, None).unwrap();
+        assert_eq!(unread.items.len(), 1);
+        assert!(!unread.items[0].is_read);
+        assert!(!unread.items[0].read_synced);
+        let stale = store::reply_flag_target(&conn, unread.items[0].id)
+            .unwrap()
+            .unwrap();
+        store::set_reply_read(&conn, unread.items[0].id, true).unwrap();
+        assert!(!store::update_reply_read_from_sync(&conn, &stale, false).unwrap());
+        assert!(
+            store::query_replies(&conn, None, None, "", 20, 0, Some(1))
+                .unwrap()
+                .items[0]
+                .is_read
+        );
+        store::set_reply_read(&conn, unread.items[0].id, false).unwrap();
+        assert!(
+            !store::query_replies(&conn, None, None, "", 20, 0, None)
+                .unwrap()
+                .items[0]
+                .is_read
+        );
+        assert!(store::set_reply_read(&conn, 999_999, true).is_err());
+        let server_read = store::insert_reply(
+            &conn,
+            None,
+            1,
+            None,
+            "editor@example.com",
+            "另一封回复",
+            "",
+            "正文",
+            "human",
+            "人工",
+            false,
+            "",
+            "",
+            102,
+            10,
+            0,
+            "2026-01-02 10:00:00",
+            true,
+        )
+        .unwrap();
+        assert!(server_read.is_read && server_read.read_synced);
+        let loaded = store::query_replies(&conn, None, None, "", 20, 0, None).unwrap();
+        assert!(loaded
+            .items
+            .iter()
+            .any(|reply| reply.id == server_read.id && reply.is_read && reply.read_synced));
+    }
+
+    #[test]
+    fn reply_keywords_persist_and_old_settings_keep_defaults() {
+        let conn = connection();
+        let mut settings = store::load_settings(&conn).unwrap();
+        assert_eq!(
+            settings.auto_reply_subject_keywords,
+            crate::models::default_auto_reply_subject_keywords()
+        );
+        settings.auto_reply_subject_keywords = vec!["系统回执".into(), "Receipt".into()];
+        store::save_settings(&conn, &settings).unwrap();
+        assert_eq!(
+            store::load_settings(&conn)
+                .unwrap()
+                .auto_reply_subject_keywords,
+            settings.auto_reply_subject_keywords
+        );
+        let mut legacy = serde_json::to_value(settings).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("auto_reply_subject_keywords");
+        conn.execute(
+            "UPDATE settings SET value = ?1 WHERE key = 'app'",
+            [legacy.to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            store::load_settings(&conn)
+                .unwrap()
+                .auto_reply_subject_keywords,
+            crate::models::default_auto_reply_subject_keywords()
+        );
+    }
+
+    #[test]
+    fn replies_account_filter_scopes_counts_pages_and_combined_filters() {
+        let conn = connection();
+        seed(&conn);
+        for uid in 1..=45 {
+            conn.execute("INSERT INTO replies(account_id,imap_uid,task_id,kind,body,accepted) VALUES(?1,?2,1,?3,'账号筛选',?4)",
+                rusqlite::params![if uid % 2 == 0 { 2 } else { 1 }, uid, if uid == 2 { "auto" } else { "human" }, uid == 4]).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO replies(account_id,body,kind) VALUES(NULL,'历史邮件','human')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            store::query_replies(&conn, None, None, "", 20, 0, None)
+                .unwrap()
+                .total,
+            46
+        );
+        let page = store::query_replies(&conn, None, None, "", 20, 20, Some(2)).unwrap();
+        assert_eq!(page.total, 22);
+        assert_eq!(page.items.len(), 2);
+        assert!(page.items.iter().all(|reply| reply.account_id == Some(2)));
+        let found =
+            store::query_replies(&conn, Some("accepted"), Some(1), "账号筛选", 20, 0, Some(2))
+                .unwrap();
+        assert_eq!(found.total, 1);
+        assert_eq!(found.items[0].imap_uid, 4);
+        assert_eq!(
+            store::query_replies(&conn, Some("auto"), None, "", 20, 0, Some(1))
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            store::query_replies(&conn, None, Some(2), "", 20, 0, Some(2))
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            store::query_replies(&conn, None, None, "历史邮件", 20, 0, Some(2))
+                .unwrap()
+                .total,
+            0
+        );
+        assert_eq!(
+            store::query_replies(&conn, None, None, "", 20, 0, Some(999))
                 .unwrap()
                 .total,
             0

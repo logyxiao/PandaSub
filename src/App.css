@@ -3053,18 +3053,16 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
   gap: 6px;
   min-height: 0;
 }
-.group-member-filter-tags {
+.group-member-filters > .library-tag-filter {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  max-height: 52px;
+  padding: 0;
+  border: 0;
+  max-height: min(180px, 25dvh);
   overflow-y: auto;
-  scrollbar-width: thin;
 }
-.group-member-filters .field-chip,
-.group-member-filter-tags .field-chip { height: 22px; padding: 0 7px; font-size: 11px; }
+.group-member-filters > .editor-fav-filter { flex: none; min-height: 28px; padding: 0 8px; font-size: 12px; }
+.group-member-filters .library-active-tags-head { flex-wrap: wrap; }
 .group-member-panes { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
 .group-member-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .group-member-pane.is-selected { border-color: var(--border); background: var(--brand-faint); }

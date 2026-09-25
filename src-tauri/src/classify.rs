@@ -33,6 +33,10 @@ pub struct Classification {
 }
 
 pub fn classify(mail: &IncomingMail) -> Classification {
+    classify_with_keywords(mail, &crate::models::default_auto_reply_subject_keywords())
+}
+
+pub fn classify_with_keywords(mail: &IncomingMail, keywords: &[String]) -> Classification {
     let from = mail.from.to_lowercase();
     let subject = mail.subject.to_lowercase();
     let body = unique_body(&mail.body);
@@ -44,8 +48,7 @@ pub fn classify(mail: &IncomingMail) -> Classification {
         .map(|(k, v)| (k.to_lowercase(), v.to_lowercase()))
         .collect::<Vec<_>>();
 
-    // 退信优先识别（投递失败通知），其余邮件只看主题：
-    // 主题包含「自动回复 / 自動回覆 / AutoReply」即判自动回复，否则一律按人工回复。
+    // 退信优先识别；其余邮件只按用户配置的主题关键词判断自动回复。
     if is_bounce(&from, &subject, &body_l, &content_type, &headers) {
         return Classification {
             kind: ReplyKind::Bounce,
@@ -53,27 +56,20 @@ pub fn classify(mail: &IncomingMail) -> Classification {
         };
     }
 
-    if let Some(reason) = auto_reply_reason(&subject) {
+    if let Some(keyword) = keywords.iter().find(|keyword| {
+        let keyword = keyword.trim();
+        !keyword.is_empty() && subject.contains(&keyword.to_lowercase())
+    }) {
         return Classification {
             kind: ReplyKind::Auto,
-            reason: reason.into(),
+            reason: format!("主题包含「{}」，判定为自动回复", keyword.trim()),
         };
     }
 
     Classification {
         kind: ReplyKind::Human,
-        reason: "主题不含自动回复标记，按人工回复处理".into(),
+        reason: "主题未命中自动回复关键词，按人工回复处理".into(),
     }
-}
-
-fn auto_reply_reason(subject: &str) -> Option<&'static str> {
-    if subject.contains("自动回复") || subject.contains("自動回覆") {
-        return Some("主题包含「自动回复」，判定为自动回复");
-    }
-    if subject.contains("autoreply") || subject.contains("auto-reply") {
-        return Some("主题包含 AutoReply，判定为自动回复");
-    }
-    None
 }
 
 /// 人工回复正文是否包含「过稿」信号：审核通过、初审、过稿、录用等。
@@ -212,6 +208,29 @@ mod tests {
             "请勿回复。",
         );
         assert_eq!(classify(&m).kind, ReplyKind::Auto);
+    }
+
+    #[test]
+    fn custom_subject_keywords_replace_defaults_and_empty_disables_auto() {
+        let custom = vec!["系统回执".to_string(), "Receipt".to_string()];
+        assert_eq!(
+            classify_with_keywords(&mail("editor@site.com", "AutoReply: 投稿", ""), &custom).kind,
+            ReplyKind::Human
+        );
+        let classified = classify_with_keywords(
+            &mail("editor@site.com", "Re: SYSTEM Receipt 已收到", ""),
+            &custom,
+        );
+        assert_eq!(classified.kind, ReplyKind::Auto);
+        assert!(classified.reason.contains("Receipt"));
+        assert_eq!(
+            classify_with_keywords(&mail("editor@site.com", "系统回执", ""), &[]).kind,
+            ReplyKind::Human
+        );
+        assert_eq!(
+            classify_with_keywords(&mail("MAILER-DAEMON@qq.com", "投递失败", ""), &[]).kind,
+            ReplyKind::Bounce
+        );
     }
 
     #[test]

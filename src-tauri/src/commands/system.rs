@@ -17,10 +17,28 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-pub fn update_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+pub fn update_settings(state: State<'_, AppState>, mut settings: Settings) -> Result<(), String> {
     if settings.reply_poll_minutes < 1 {
         return Err("检查回复间隔至少 1 分钟".into());
     }
+    settings.auto_reply_subject_keywords = settings
+        .auto_reply_subject_keywords
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    if settings.auto_reply_subject_keywords.len() > 30
+        || settings
+            .auto_reply_subject_keywords
+            .iter()
+            .any(|value| value.chars().count() > 80)
+    {
+        return Err("自动回复关键词最多 30 个，每个最多 80 字".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    settings
+        .auto_reply_subject_keywords
+        .retain(|value| seen.insert(value.to_lowercase()));
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     store::save_settings(&conn, &settings)
 }

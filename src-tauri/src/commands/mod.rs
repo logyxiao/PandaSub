@@ -3,6 +3,7 @@
 //! 拆分后 lib.rs 的 `generate_handler!` 仍引用 `commands::xxx` 路径，无需改动。
 
 pub mod accounts;
+pub mod accepted;
 pub mod dashboard;
 pub mod editors;
 pub mod logs;
@@ -13,6 +14,7 @@ pub mod system;
 pub mod tasks;
 
 pub use accounts::*;
+pub use accepted::*;
 pub use dashboard::*;
 pub use editors::*;
 pub use logs::*;

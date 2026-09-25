@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   CirclePause,
   CirclePlay,
-  Inbox,
   Mail,
   RefreshCw,
   Send,
@@ -484,31 +483,27 @@ export function DashboardView() {
                 <button
                   type="button"
                   key={reply.id}
+                  className={`dashboard-reply-item ${reply.is_read ? '' : 'is-unread'} ${reply.accepted ? 'is-accepted' : ''}`.trim()}
                   onClick={() => go('replies', { replyKind, reply })}
                 >
-                  <span className="dashboard-reply-avatar">
-                    <Inbox size={16} />
-                  </span>
                   <span className="dashboard-reply-copy">
-                    <span className="dashboard-reply-top">
-                      <b>{reply.from_email || '未填写发件人'}</b>
-                      <time>{formatTime(reply.received_at)}</time>
+                    <span className="dashboard-reply-heading">
+                      <span className="dashboard-reply-heading-main">
+                        <Badge
+                          tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}
+                        >
+                          {reply.accepted ? '过稿回复' : (replyKindLabel[reply.kind] ?? reply.kind)}
+                        </Badge>
+                        <b title={reply.subject || undefined}>{reply.subject || '未命名来信'}</b>
+                      </span>
+                      <time dateTime={reply.received_at.replace(' ', 'T')}>{formatTime(reply.received_at)}</time>
                     </span>
-                    <p>{reply.body || reply.snippet || '（无正文）'}</p>
-                    <span className="dashboard-reply-source">
-                      <Badge
-                        tone={
-                          reply.accepted
-                            ? 'success'
-                            : (replyKindTone[reply.kind] ?? 'neutral')
-                        }
-                      >
-                        {reply.accepted
-                          ? '过稿回复'
-                          : (replyKindLabel[reply.kind] ?? reply.kind)}
-                      </Badge>
-                      <small>{reply.task_name || '未关联计划'}</small>
+                    <span className="dashboard-reply-context">
+                      <span>{reply.from_email || '未填写发件人'}</span>
+                      <i aria-hidden="true">·</i>
+                      <span>{reply.task_name || '未关联计划'}</span>
                     </span>
+                    <span className="dashboard-reply-excerpt">{(reply.body || reply.snippet || '（无正文）').replace(/\s+/g, ' ').trim()}</span>
                   </span>
                 </button>
               ))}

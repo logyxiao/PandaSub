@@ -80,7 +80,7 @@ export function StatsView() {
     { key: 'deliveries', label: '投递次数', value: totals?.deliveries ?? 0, cls: '' },
     { key: 'human_replies', label: '人工回复', value: totals?.human_replies ?? 0, cls: 'is-brand' },
     { key: 'failures', label: '失败', value: totals?.failures ?? 0, cls: 'is-danger' },
-    { key: 'accepted', label: '过稿', value: totals?.accepted ?? 0, cls: 'is-success' },
+    { key: 'accepted', label: '过稿回复', value: totals?.accepted ?? 0, cls: 'is-success' },
   ]
 
   return (

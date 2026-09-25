@@ -11,6 +11,7 @@ const defaults: Settings = {
   default_retry_max: 3,
   anti_spam_mutation: true, auto_start: false, close_to_tray: true, auto_backup: false,
   update_feed_url: '', reply_poll_minutes: 2,
+  auto_reply_subject_keywords: ['自动回复', '自動回覆', 'AutoReply', 'Auto-Reply'],
 }
 
 const sections = [
@@ -156,7 +157,8 @@ export function SettingsView() {
               <div className="form-grid pad">
                 <label className="field span2">每隔几分钟检查一次
                   <input type="number" min={1} {...num('reply_poll_minutes')} />
-                  <span className="field-hint">至少 1 分钟。也可在「回复」页随时点立即检查。</span></label>
+                  <span className="field-hint">至少 1 分钟。也可在「收件箱」随时点立即检查。</span></label>
+
               </div>
             </div>
           )}

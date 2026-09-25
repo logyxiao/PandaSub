@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  BarChart3, ChevronLeft, ChevronRight, FileText, FolderOpen, Inbox, Info, LayoutDashboard, ListChecks, Mail, Plus, Settings, Users,
+  Award, BarChart3, ChevronLeft, ChevronRight, FileText, FolderOpen, Inbox, Info, LayoutDashboard, ListChecks, Mail, Plus, Settings, Users,
 } from 'lucide-react'
-import type { Reply } from './types'
+import type { Account, Reply } from './types'
 import logo from './assets/logo.png'
 import './App.css'
 import './panda.css'
@@ -16,6 +16,7 @@ import { PlansView } from './views/Plans'
 import { LogsView } from './views/Logs'
 import { RepliesView } from './views/Replies'
 import { StatsView } from './views/Stats'
+import { AcceptedView } from './views/Accepted'
 import { SettingsView } from './views/Settings'
 import { AboutView } from './views/About'
 import { EditorsView, EditorGroupsLibrary } from './views/Editors'
@@ -41,7 +42,8 @@ const groups: Array<{ label?: string; items: NavItem[] }> = [
     items: [
       { id: 'plans', label: '投稿计划', icon: ListChecks },
       { id: 'logs', label: '发送记录', icon: FileText },
-      { id: 'replies', label: '编辑回复', icon: Inbox },
+      { id: 'replies', label: '收件箱', icon: Inbox },
+      { id: 'accepted', label: '过稿统计', icon: Award },
       { id: 'stats', label: '投稿统计', icon: BarChart3 },
     ],
   },
@@ -57,9 +59,10 @@ const groups: Array<{ label?: string; items: NavItem[] }> = [
 const pageDescriptions: Record<ViewId, string> = {
   dashboard: '把好故事，送到合适的人手中。',
   plans: '管理作品内容、收稿名单与每一次投递。',
-  replies: '集中阅读编辑来信，及时跟进投稿反馈。',
+  replies: '集中查看各账号的来信，及时跟进投稿反馈。',
   logs: '查看每封邮件的发送结果，核对异常与失败记录。',
   stats: '回看投递与反馈，为下一次投稿积累经验。',
+  accepted: '确认过稿作品，记录文稿与交易信息。',
   accounts: '管理发件身份、邮箱连接与回复检查。',
   editors: '快速维护邮箱、收稿类型和备注。常投名单在「编辑组」管理。',
   groups: '把常投编辑整理成名单；移出组不会删除编辑资料。',
@@ -71,6 +74,8 @@ export default function App() {
   const [active, setActive] = useState<ViewId>('dashboard')
   const [initialReply, setInitialReply] = useState<Reply | undefined>(undefined)
   const [replyKind, setReplyKind] = useState<string | undefined>(undefined)
+  const [inboxAccount, setInboxAccount] = useState<number | ''>('')
+  const [inboxAccounts, setInboxAccounts] = useState<Account[]>([])
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('novelsub.sidebar') === '1')
   const [hideChrome, setHideChrome] = useState(false)
   const [running, setRunning] = useState(0)
@@ -80,7 +85,7 @@ export default function App() {
   const navigating = useRef(false)
   const setLeaveGuard = useCallback((guard: LeaveGuard | null) => { leaveGuard.current = guard }, [])
   const go = useCallback((id: ViewId, options?: NavOptions) => {
-    if (navigating.current || (id === active && !options)) return
+    if (navigating.current || (id === active && !options && !(id === 'replies' && inboxAccount !== ''))) return
     void (async () => {
       navigating.current = true
       try {
@@ -90,13 +95,26 @@ export default function App() {
         setActive(id)
         setReplyKind(id === 'replies' ? options?.replyKind : undefined)
         setInitialReply(id === 'replies' ? options?.reply : undefined)
+        if (id === 'replies') {
+          setInboxAccount(options?.accountId ?? '')
+          if (collapsed && window.innerWidth > 880) setCollapsed(false)
+        }
         if (id === 'plans' && options?.createPlan) setPlanRequest(n => n + 1)
         else if (id !== 'plans') setPlanRequest(0)
       } finally { navigating.current = false }
     })()
-  }, [active])
+  }, [active, inboxAccount, collapsed])
   const navigation = useMemo(() => ({ go, setChrome: setHideChrome, setLeaveGuard }), [go, setLeaveGuard])
   const currentLabel = groups.flatMap(g => g.items).find(item => item.id === active)?.label ?? ''
+
+  useEffect(() => {
+    if (active !== 'replies') return
+    let cancelled = false
+    void api.listAccounts().then((accounts) => {
+      if (!cancelled) setInboxAccounts(accounts)
+    }).catch(() => { if (!cancelled) setInboxAccounts([]) })
+    return () => { cancelled = true }
+  }, [active])
 
   useEffect(() => {
     let inFlight = false
@@ -162,13 +180,30 @@ export default function App() {
                   <div className="nav-group" key={g.label ?? `g-${gi}`}>
                     {!collapsed && g.label && <div className="nav-group-label">{g.label}</div>}
                     {g.items.map(({ id, label, icon: Icon }) => (
-                      <button key={id} className={`nav-item ${active === id ? 'active' : ''}`}
+                      <div key={id} className="nav-entry">
+                      <button className={`nav-item ${active === id ? 'active' : ''}`}
                         onClick={() => go(id)}
                         title={collapsed ? label : undefined} aria-label={label}
                         aria-current={active === id ? 'page' : undefined}>
                         <Icon size={18} />
                         {!collapsed && <span>{label}</span>}
                       </button>
+                      {id === 'replies' && active === 'replies' && !collapsed && (
+                        <div className="inbox-nav-accounts" role="group" aria-label="收件箱账号">
+                          <button type="button" className={`inbox-nav-account ${inboxAccount === '' ? 'active' : ''}`}
+                            aria-pressed={inboxAccount === ''} onClick={() => go('replies', { accountId: '' })}>
+                            <Inbox size={13} /><span>全部账号</span>
+                          </button>
+                          {inboxAccounts.map((account) => (
+                            <button type="button" key={account.id} title={account.email}
+                              className={`inbox-nav-account ${inboxAccount === account.id ? 'active' : ''}`}
+                              aria-pressed={inboxAccount === account.id} onClick={() => go('replies', { accountId: account.id })}>
+                              <Mail size={13} /><span>{account.email}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      </div>
                     ))}
                   </div>
                 ))}
@@ -190,8 +225,10 @@ export default function App() {
                 {active === 'dashboard' && <DashboardView />}
                 {active === 'plans' && <PlansView newPlanRequest={planRequest} />}
                 {active === 'logs' && <LogsView />}
-                {active === 'replies' && <RepliesView initialKind={replyKind} initialReply={initialReply} />}
+                {active === 'replies' && <RepliesView initialKind={replyKind} initialReply={initialReply}
+                  accountFilter={inboxAccount} onAccountChange={(accountId) => go('replies', { accountId })} />}
                 {active === 'stats' && <StatsView />}
+                {active === 'accepted' && <AcceptedView />}
                 {active === 'accounts' && <AccountsView />}
                 {active === 'editors' && <EditorsView />}
                 {active === 'groups' && <EditorGroupsLibrary />}

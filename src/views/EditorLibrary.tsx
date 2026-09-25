@@ -13,13 +13,9 @@ import { api } from '../api'
 import type { Editor, EditorGroup, EditorInput } from '../types'
 import { Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
 import { Modal } from '../components/Modal'
+import { EditorTagFilter } from '../components/EditorTagFilter'
 import { EditorNotePreview } from '../components/EditorNotePreview'
-import {
-  EditorTagDialog,
-  EditorTagField,
-  SelectedEditorTags,
-  TagMatchSwitch,
-} from '../components/EditorTags'
+import { EditorTagField } from '../components/EditorTags'
 import { useConfirm, useToast } from '../components/feedback'
 import {
   compareEditorsByFavorite,
@@ -70,9 +66,8 @@ export function EditorLibrary({
   const [workTypes, setWorkTypes] = useState<string[]>([])
   const [excluded, setExcluded] = useState<string[]>([])
   const [tagMode, setTagMode] = useState<TagMatchMode>('any')
-  const [showTags, setShowTags] = useState(false)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(6)
+  const [pageSize, setPageSize] = useState(10)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
@@ -197,18 +192,6 @@ export function EditorLibrary({
   useEffect(() => {
     onTagsChange(allTags)
   }, [allTags, onTagsChange])
-  const tagOptions = useMemo(() => {
-    const counts = new Map<string, number>()
-    candidates.forEach((editor) =>
-      editor.work_type.forEach((tag) =>
-        counts.set(tag, (counts.get(tag) ?? 0) + 1),
-      ),
-    )
-    return allTags
-      .map((label) => ({ label, count: counts.get(label) ?? 0 }))
-      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'))
-  }, [candidates, allTags])
-  const commonTags = tagOptions.filter((tag) => tag.count > 0).slice(0, 8)
   const allSelected = rows.length > 0 && rows.every((e) => selected.has(e.id))
   useEffect(() => {
     if (checkAllRef.current)
@@ -315,20 +298,6 @@ export function EditorLibrary({
       toast(String(error), 'error')
     }
   }
-  const toggleTag = (tag: string, exclude = false) =>
-    void filterChange(() => {
-      if (exclude) {
-        setWorkTypes((prev) => prev.filter((t) => t !== tag))
-        setExcluded((prev) =>
-          prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
-        )
-      } else {
-        setExcluded((prev) => prev.filter((t) => t !== tag))
-        setWorkTypes((prev) =>
-          prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
-        )
-      }
-    })
   const chooseGroups = async () => {
     if (!(await allowChange())) return
     setGroupOpen(true)
@@ -479,104 +448,18 @@ export function EditorLibrary({
           />
           <span className="hint">{filtered.length} 位编辑</span>
         </div>
-        <div className="library-tag-filter">
-          <div className="library-quick-tags">
-            <span className="library-filter-label">常用标签</span>
-            <div className="library-tags">
-              {commonTags.map(({ label, count }) => (
-                <button
-                  type="button"
-                  key={label}
-                  className={`chip ${workTypes.includes(label) ? 'on' : ''}`}
-                  aria-label={`筛选标签${label}`}
-                  title={`${count} 位编辑使用该标签`}
-                  aria-pressed={workTypes.includes(label)}
-                  onClick={() => toggleTag(label)}
-                >
-                  <span>{label}</span>
-                  <small>{count}</small>
-                  {workTypes.includes(label) && <Check size={12} />}
-                </button>
-              ))}
-              <Button
-                size="sm"
-                aria-label="选择筛选标签"
-                onClick={() =>
-                  void allowChange().then((ok) => {
-                    if (ok) setShowTags(true)
-                  })
-                }
-              >
-                <Search size={13} />
-                选择标签
-              </Button>
-            </div>
-          </div>
-          {Boolean(workTypes.length || excluded.length) && (
-            <div className="library-active-tags">
-              <div className="library-active-tags-head">
-                <span>当前筛选 · {filtered.length} 位编辑</span>
-                {workTypes.length > 1 && (
-                  <TagMatchSwitch
-                    value={tagMode}
-                    onChange={(value) =>
-                      void filterChange(() => setTagMode(value))
-                    }
-                  />
-                )}
-                <Button
-                  size="sm"
-                  variant="subtle"
-                  onClick={() =>
-                    void filterChange(() => {
-                      setWorkTypes([])
-                      setExcluded([])
-                    })
-                  }
-                >
-                  清空标签
-                </Button>
-              </div>
-              <div className="selected-editor-tags">
-                <SelectedEditorTags
-                  values={workTypes}
-                  onRemove={(tag) => toggleTag(tag)}
-                />
-                <SelectedEditorTags
-                  values={excluded}
-                  excluded
-                  onRemove={(tag) => toggleTag(tag, true)}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-        {showTags && (
-          <EditorTagDialog
-            title="筛选收稿标签"
-            filtering
-            options={tagOptions}
-            selection={{ included: workTypes, excluded, match: tagMode }}
-            previewCount={(value) =>
-              candidates.filter((editor) =>
-                matchesEditorTags(
-                  editor,
-                  value.included,
-                  value.excluded,
-                  value.match,
-                ),
-              ).length
-            }
-            onClose={() => setShowTags(false)}
-            onApply={(value) => {
-              setWorkTypes(value.included)
-              setExcluded(value.excluded)
-              setTagMode(value.match)
-              setPage(1)
-              setShowTags(false)
-            }}
-          />
-        )}
+        <EditorTagFilter
+          candidates={candidates}
+          tags={allTags}
+          value={{ included: workTypes, excluded, match: tagMode }}
+          beforeChange={allowChange}
+          onChange={(value) => {
+            setWorkTypes(value.included)
+            setExcluded(value.excluded)
+            setTagMode(value.match)
+            setPage(1)
+          }}
+        />
 
         <div
           className={selected.size ? 'library-selection' : 'library-caption'}
@@ -851,7 +734,7 @@ export function EditorLibrary({
           page={safePage}
           pageCount={pageCount}
           pageSize={pageSize}
-          pageSizes={[6, 15, 30, 50]}
+          pageSizes={[10, 15, 30, 50]}
           total={filtered.length}
           onPage={(value) =>
             void allowChange().then((ok) => {

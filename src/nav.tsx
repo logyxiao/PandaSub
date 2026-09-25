@@ -1,10 +1,11 @@
 import { createContext, useContext } from 'react'
 import type { Reply } from './types'
 
-export type ViewId = 'dashboard' | 'stats' | 'plans' | 'logs' | 'replies' | 'accounts' | 'editors' | 'groups' | 'settings' | 'about'
+export type ViewId = 'dashboard' | 'stats' | 'accepted' | 'plans' | 'logs' | 'replies' | 'accounts' | 'editors' | 'groups' | 'settings' | 'about'
 export interface NavOptions {
   replyKind?: string
   reply?: Reply
+  accountId?: number | ''
   createPlan?: boolean
 }
 export type LeaveGuard = () => boolean | Promise<boolean>

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, FileX2, FileUp, Mail, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Copy, FileX2, FileUp, Mail, MoreHorizontal, Pause, Pencil, Play, Plus, RefreshCw, Search, Square, Trash2 } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import { api, onLog, onTask } from '../api'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
-import { Badge, Button, EmptyState, IconButton, RuntimeTrack } from '../components/ui'
+import { Badge, Button, EmptyState, IconButton } from '../components/ui'
 import { Table } from '../components/Table'
 import { formatTime, fromDbTime, isValidEmail, statusLabel, taskTone, toDbTime } from '../format'
 import { useNav } from '../nav'
@@ -22,6 +23,96 @@ const emptyTask: TaskInput = {
   retry_max: 3,
 }
 
+type PlanAction = { label: string; icon: typeof Copy; onClick: () => void; disabled?: boolean; danger?: boolean }
+
+function PlanProgress({ sent, total, status, loop, title }: {
+  sent: number; total: number; status: Task['status']; loop: boolean; title: string
+}) {
+  const percent = total > 0 ? Math.min(100, Math.max(0, sent / total * 100)) : 0
+  return (
+    <div className="plan-progress" data-status={status}>
+      <div className="plan-progress-head">
+        <span>{loop ? '已成功' : '已发送'}</span>
+        <strong className="plan-progress-count">{loop ? `${sent} 封` : `${sent} / ${total || '—'}`}</strong>
+      </div>
+      <div className="plan-progress-bar" role="progressbar" aria-label={`《${title}》发送进度`}
+        aria-valuemin={0} aria-valuemax={total || undefined} aria-valuenow={total ? Math.min(total, Math.max(0, sent)) : undefined}
+        aria-valuetext={`已发送 ${sent} 封，共 ${total || '未知'} 封`}>
+        <span className="plan-progress-fill" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  )
+}
+
+function PlanMoreMenu({ actions, planTitle }: { actions: PlanAction[]; planTitle: string }) {
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState<{ top: number; right: number } | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const place = useCallback((measuredHeight?: number) => {
+    const rect = triggerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const menuHeight = measuredHeight ?? actions.length * 34 + 16
+    setPosition({
+      top: rect.bottom + 6 + menuHeight > window.innerHeight ? Math.max(8, rect.top - menuHeight - 6) : rect.bottom + 6,
+      right: Math.max(8, window.innerWidth - rect.right),
+    })
+  }, [actions.length])
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const updatePlace = () => place(menuRef.current?.offsetHeight)
+    const dismiss = (event: MouseEvent) => {
+      if (triggerRef.current?.contains(event.target as Node) || menuRef.current?.contains(event.target as Node)) return
+      setOpen(false)
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setOpen(false); triggerRef.current?.focus() }
+    }
+    updatePlace()
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+    window.addEventListener('resize', updatePlace)
+    window.addEventListener('scroll', updatePlace, true)
+    window.addEventListener('mousedown', dismiss)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('resize', updatePlace)
+      window.removeEventListener('scroll', updatePlace, true)
+      window.removeEventListener('mousedown', dismiss)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [open, place])
+
+  return <>
+    <button ref={triggerRef} type="button" className="plan-more-trigger" title={`更多操作：${planTitle}`} aria-label={`更多操作：${planTitle}`}
+      aria-haspopup="menu" aria-expanded={open} onClick={() => { if (!open) place(); setOpen((current) => !current) }}>
+      <MoreHorizontal size={17} />
+    </button>
+    {open && position && createPortal(
+      <div ref={menuRef} className="plan-more-menu" role="menu" aria-label={`${planTitle}的操作`} style={position}
+        onKeyDown={(event) => {
+          if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+          const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])]
+          if (!items.length) return
+          event.preventDefault()
+          const index = items.indexOf(document.activeElement as HTMLButtonElement)
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+            : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+          items[next]?.focus()
+        }}>
+        {actions.map(({ label, icon: Icon, onClick, disabled, danger }) => (
+          <button key={label} type="button" role="menuitem" disabled={disabled}
+            className={danger ? 'is-danger' : undefined}
+            onClick={() => { setOpen(false); onClick() }}>
+            <Icon size={15} /><span>{label}</span>
+          </button>
+        ))}
+      </div>, document.body,
+    )}
+  </>
+}
+
 export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   const consumedPlanRequest = useRef(0)
   const [manuscripts, setManuscripts] = useState<Manuscript[]>([])
@@ -33,6 +124,8 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   const [defaultTemplates, setDefaultTemplates] = useState<MailTemplate[]>(() => defaultMailTemplates())
   const [settings, setSettings] = useState<Settings | null>(null)
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState<'all' | 'active' | 'draft' | 'done'>('all')
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<Manuscript | null>(null)
   const [showEditor, setShowEditor] = useState(false)
@@ -131,6 +224,16 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     () => new Map(manuscripts.map((m) => [m.id, taskSendProgress(m, taskByManuscript.get(m.id))])),
     [manuscripts, taskByManuscript],
   )
+
+  const visibleManuscripts = useMemo(() => manuscripts.filter((m) => {
+    const task = taskByManuscript.get(m.id)
+    const matchesFilter = filter === 'all'
+      || (filter === 'active' && task && ['running', 'paused', 'scheduled'].includes(task.status))
+      || (filter === 'draft' && !task)
+      || (filter === 'done' && task && ['completed', 'stopped'].includes(task.status))
+    const query = search.trim().toLocaleLowerCase()
+    return matchesFilter && (!query || [m.title, m.category, ...(m.genres ?? [])].join(' ').toLocaleLowerCase().includes(query))
+  }), [manuscripts, taskByManuscript, filter, search])
 
   const saveDefaultTemplates = (templates: MailTemplate[]) => {
     const next = normalizeDefaultMailTemplates(templates)
@@ -448,10 +551,9 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
 
   return (
     <>
-      <div className="toolbar">
-        <p className="hint">一篇作品、一封邮件，收件人按作品类型匹配，每个平台只出一位编辑。</p>
+      <div className="toolbar plans-page-toolbar">
         <div className="toolbar-actions">
-          <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
+          <IconButton title="刷新计划" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
           <Button variant="primary" onClick={openAdd}><Plus size={16} />新建计划</Button>
         </div>
       </div>
@@ -467,12 +569,34 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
             action={<Button variant="primary" onClick={openAdd}><Plus size={16} />新建计划</Button>} />
         </div>
       ) : (
-        <div className="panel">
+        <div className="panel plans-list-panel">
+          <div className="plans-list-header">
+            <div className="plans-list-heading">
+              <h2>全部计划 <span>{manuscripts.length}</span></h2>
+              <p>每篇作品对应一份计划，点击记录可查看投递详情。</p>
+            </div>
+            <label className="plans-search">
+              <Search size={16} />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索作品或类型" aria-label="搜索投稿计划" />
+            </label>
+          </div>
+          <div className="plans-filters" aria-label="筛选投稿计划">
+            {([
+              ['all', '全部'], ['active', '进行中'], ['draft', '草稿'], ['done', '已结束'],
+            ] as const).map(([value, label]) => (
+              <button key={value} type="button" className={filter === value ? 'on' : ''}
+                aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>
+            ))}
+            <span>{visibleManuscripts.length} 个结果</span>
+          </div>
           <Table
+            className="plans-table"
+            minWidth={850}
             rowKey="id"
-            dataSource={manuscripts}
+            dataSource={visibleManuscripts}
+            resetKey={`${filter}:${search}`}
             pagination={{ pageSize: 6, pageSizeOptions: [6, 10, 20, 50], hideOnSinglePage: true }}
-            empty="还没有投稿计划"
+            empty="没有符合条件的计划，试试其他关键词或状态。"
             columns={[
               {
                 key: 'title',
@@ -504,8 +628,8 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
                   const n = m.recipients.filter((r) => isValidEmail(r)).length
                   const progress = progressByManuscript.get(m.id) ?? { sent: 0, total: 0 }
                   return task
-                    ? <RuntimeTrack sent={progress.sent} total={progress.total || n} status={task.status}
-                        meta={task.schedule_type === 'loop' ? `已成功 ${progress.sent} 封` : `${progress.sent} / ${progress.total || n || '—'}`} />
+                    ? <PlanProgress sent={progress.sent} total={progress.total || n} status={task.status}
+                        loop={task.schedule_type === 'loop'} title={m.title} />
                     : <span className="hint">草稿</span>
                 },
               },
@@ -522,53 +646,52 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
               },
               {
                 key: 'updated',
-                title: '更新',
-                width: 120,
+                title: '最近更新',
+                width: 112,
                 render: (_value, m) => formatTime(m.updated_at),
               },
               {
                 key: 'actions',
-                title: '',
-                width: 220,
+                title: '操作',
+                width: 280,
                 render: (_value, m) => {
                   const task = taskByManuscript.get(m.id)
                   const isWastePlan = m.title.trim().endsWith('（废稿）') || task?.name.trim().endsWith('（废稿）')
-                  const wasteActionLabel = task?.status === 'running' ? '废稿发送中'
-                    : task?.status === 'paused' ? '废稿已暂停'
-                    : task?.status === 'completed' ? '废稿已完成'
-                    : '废稿计划'
+                  const active = Boolean(task && ['running', 'paused'].includes(task.status))
+                  const primaryLabel = !task ? '编辑计划'
+                    : task.status === 'running' ? '暂停'
+                    : task.status === 'paused' ? '继续'
+                    : task.status === 'scheduled' ? '立即开始'
+                    : task.status === 'completed' ? '重新发送'
+                    : task.schedule_type === 'loop' ? (task.sent > 0 ? '重新循环' : '开始')
+                    : task.sent > 0 ? '继续发送' : '开始发送'
+                  const primaryIcon = !task ? null : task.status === 'running' ? <Pause size={14} /> : <Play size={14} />
+                  const actionTone = task?.status === 'paused' ? 'resume'
+                    : task?.status === 'completed' || (task?.schedule_type === 'loop' && task.sent > 0) ? 'repeat'
+                    : task?.status === 'stopped' && task.sent > 0 ? 'continue' : ''
+                  const moreActions: PlanAction[] = [
+                    ...(active && task ? [{ label: '停止发送', icon: Square, onClick: () => void control(task.id, 'stop') }] : []),
+                    { label: '复制计划', icon: Copy, onClick: () => openCopy(m) },
+                    { label: '配置投稿邮箱', icon: Mail, onClick: () => openAccountFor(m), disabled: active },
+                    { label: isWastePlan ? '已是废稿计划' : creatingWasteFor === m.id ? '废稿发送中' : '创建废稿计划',
+                      icon: FileX2, onClick: () => void createWasteDraft(m), disabled: isWastePlan || creatingWasteFor === m.id },
+                    ...(!active ? [{ label: '删除计划', icon: Trash2, onClick: () => void remove(m), danger: true }] : []),
+                  ]
                   return (
                     <div className="row-actions plan-row-actions">
-                      <div className="plan-row-actions-text">
-                        {task && ['stopped', 'completed', 'scheduled'].includes(task.status) && (
-                          <Button size="sm" variant="primary" onClick={() => void startAgain(task)}>
-                            {task.status === 'scheduled' ? '立即开始'
-                              : task.status === 'completed' ? '重新发送'
-                              : task.schedule_type === 'loop' ? (task.sent > 0 ? '重新循环' : '开始')
-                              : task.sent > 0 ? '继续' : '开始'}
-                          </Button>
-                        )}
-                        {task?.status === 'running' && <Button size="sm" onClick={() => void control(task.id, 'pause')}>暂停</Button>}
-                        {task?.status === 'paused' && <Button size="sm" variant="primary" onClick={() => void control(task.id, 'resume')}>继续</Button>}
-                        {task && ['running', 'paused'].includes(task.status) && <Button size="sm" onClick={() => void control(task.id, 'stop')}>停止</Button>}
-                        <Button size="sm" onClick={() => void openDetail(m)}>记录</Button>
-                        <Button size="sm" disabled={Boolean(task && ['running', 'paused'].includes(task.status))} onClick={() => openEdit(m)}>编辑</Button>
-                      </div>
-                      <div className="plan-row-actions-icons">
-                        {isWastePlan ? (
-                          <Button size="sm" disabled><FileX2 size={14} />{wasteActionLabel}</Button>
-                        ) : (
-                          <Button size="sm" disabled={creatingWasteFor === m.id}
-                            onClick={() => void createWasteDraft(m)}>
-                            <FileX2 size={14} />{creatingWasteFor === m.id ? '废稿发送中' : '一键废稿'}
-                          </Button>
-                        )}
-                        <IconButton title="复制计划" onClick={() => openCopy(m)}><Copy size={15} /></IconButton>
-                        <IconButton title="配置投稿邮箱" disabled={Boolean(task && ['running', 'paused'].includes(task.status))} onClick={() => openAccountFor(m)}><Mail size={15} /></IconButton>
-                        {!(task && ['running', 'paused'].includes(task.status)) && (
-                          <IconButton title="删除" className="danger" onClick={() => void remove(m)}><Trash2 size={15} /></IconButton>
-                        )}
-                      </div>
+                      <Button size="sm" variant={!task || task?.status === 'running' || actionTone ? 'ghost' : 'primary'}
+                        className={actionTone ? `plan-action-${actionTone}` : undefined}
+                        onClick={() => {
+                          if (!task) openEdit(m)
+                          else if (task.status === 'running') void control(task.id, 'pause')
+                          else if (task.status === 'paused') void control(task.id, 'resume')
+                          else void startAgain(task)
+                        }}>{primaryIcon}{primaryLabel}</Button>
+                      {task && <Button size="sm" variant="subtle" onClick={() => openDetail(m)}>记录</Button>}
+                      {task && <Button size="sm" variant="subtle" disabled={active} onClick={() => openEdit(m)}>
+                        <Pencil size={14} />编辑计划
+                      </Button>}
+                      <PlanMoreMenu actions={moreActions} planTitle={m.title} />
                     </div>
                   )
                 },

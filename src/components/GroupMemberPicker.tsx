@@ -3,7 +3,10 @@ import { ArrowRight, Heart, Plus, Search, X } from 'lucide-react'
 import type { Editor } from '../types'
 import { isValidEmail } from '../format'
 import { Button } from './ui'
-import { compareEditorsByFavorite, editorMatchesPlan, isEditorFavorited, normalizeEditorTags } from '../views/planShared'
+import { EditorTagFilter } from './EditorTagFilter'
+import type { EditorTagSelection } from './EditorTags'
+import { matchesEditorTags } from '../views/editorLibraryShared'
+import { compareEditorsByFavorite, isEditorFavorited, normalizeEditorTags } from '../views/planShared'
 
 const MemberRow = memo(function MemberRow({ editor, chosen }: { editor: Editor; chosen: boolean }) {
   return (
@@ -74,21 +77,21 @@ export function GroupMemberPicker({ editors, selectedIds, onChange, header }: {
   onChange: (ids: Set<number>) => void
 }) {
   const [query, setQuery] = useState('')
-  const [workTypes, setWorkTypes] = useState<string[]>([])
-  const [excludedTypes, setExcludedTypes] = useState<string[]>([])
+  const [tags, setTags] = useState<EditorTagSelection>({ included: [], excluded: [], match: 'any' })
   const [favoritedOnly, setFavoritedOnly] = useState(false)
   // Sorting/search text depend on the library, not on each membership click.
   const normalized = useMemo(() => editors.map(normalizeEditorTags).sort(compareEditorsByFavorite), [editors])
   const searchIndex = useMemo(() => new Map(normalized.map((editor) =>
     [editor.id, `${editor.name} ${editor.platform} ${editor.email}`.toLowerCase()])), [normalized])
   const types = useMemo(() => [...new Set(normalized.flatMap((e) => e.work_type))].sort((a, b) => a.localeCompare(b, 'zh')), [normalized])
-  const filtered = useMemo(() => {
+  const candidates = useMemo(() => {
     const search = query.trim().toLowerCase()
     return normalized.filter((editor) =>
       (!search || searchIndex.get(editor.id)!.includes(search)) &&
-      (!favoritedOnly || isEditorFavorited(editor)) &&
-      editorMatchesPlan(editor, workTypes, excludedTypes))
-  }, [normalized, searchIndex, query, favoritedOnly, workTypes, excludedTypes])
+      (!favoritedOnly || isEditorFavorited(editor)))
+  }, [normalized, searchIndex, query, favoritedOnly])
+  const filtered = useMemo(() => candidates.filter((editor) =>
+    matchesEditorTags(editor, tags.included, tags.excluded, tags.match)), [candidates, tags])
   const { available, selectedResults } = useMemo(() => {
     const available: Editor[] = []
     const selectedResults: Editor[] = []
@@ -96,16 +99,7 @@ export function GroupMemberPicker({ editors, selectedIds, onChange, header }: {
     return { available, selectedResults }
   }, [filtered, selectedIds])
   const selectedCount = useMemo(() => normalized.reduce((count, editor) => count + Number(selectedIds.has(editor.id)), 0), [normalized, selectedIds])
-  const filterKey = JSON.stringify([query, favoritedOnly, workTypes, excludedTypes])
-  const toggleType = (type: string, exclude = false) => {
-    if (exclude) {
-      setWorkTypes((current) => current.filter((item) => item !== type))
-      setExcludedTypes((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type])
-    } else {
-      setExcludedTypes((current) => current.filter((item) => item !== type))
-      setWorkTypes((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type])
-    }
-  }
+  const filterKey = JSON.stringify([query, favoritedOnly, tags])
   const add = (items: Editor[]) => onChange(new Set([...selectedIds, ...items.map((e) => e.id)]))
   const remove = (id: number) => {
     const next = new Set(selectedIds)
@@ -130,24 +124,10 @@ export function GroupMemberPicker({ editors, selectedIds, onChange, header }: {
       </div>
       <div className="group-member-filters">
         <button type="button" className={`field-chip editor-fav-filter ${favoritedOnly ? 'on' : ''}`}
-          onClick={() => { setFavoritedOnly((value) => !value) }}>
+          aria-pressed={favoritedOnly} onClick={() => { setFavoritedOnly((value) => !value) }}>
           <Heart size={11} fill={favoritedOnly ? 'currentColor' : 'none'} />收藏
         </button>
-        <div className="group-member-filter-tags" role="group" aria-label="按作品类型筛选两边名单">
-          <button type="button" className={`field-chip ${!workTypes.length && !excludedTypes.length ? 'on' : ''}`}
-            aria-pressed={!workTypes.length && !excludedTypes.length}
-            onClick={() => { setWorkTypes([]); setExcludedTypes([]) }}>全部</button>
-          {types.map((type) => (
-            <button key={type} type="button"
-              className={`field-chip ${workTypes.includes(type) ? 'on' : ''} ${excludedTypes.includes(type) ? 'is-excluded' : ''}`}
-              title="左键筛选两边，右键排除"
-              aria-pressed={workTypes.includes(type) || excludedTypes.includes(type)}
-              onClick={() => toggleType(type)}
-              onContextMenu={(event) => { event.preventDefault(); toggleType(type, true) }}>
-              {type}
-            </button>
-          ))}
-        </div>
+        <EditorTagFilter candidates={candidates} tags={types} value={tags} onChange={setTags} />
       </div>
       <div className="group-member-panes">
         <section className="group-member-pane" aria-label="待选编辑">
