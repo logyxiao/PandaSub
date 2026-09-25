@@ -14,9 +14,12 @@ use crate::store;
 const WORK_COLS: &str = "id, manuscript_id, source, title, body, file_name, \
     CASE WHEN file_data IS NOT NULL AND length(file_data) > 0 THEN 1 ELSE 0 END, \
     accepted_at, deal_mode, price_cents, guarantee_cents, share_percent, sale_platform, \
-    buyer_editor, listing_platform, article_url, notes, created_at, updated_at, review_status, sold_at, realized_share_cents, per_thousand_cents, record_origin";
+    buyer_editor, listing_platform, article_url, notes, created_at, updated_at, review_status, sold_at, realized_share_cents, per_thousand_cents, record_origin, monthly_settlements";
 
 fn map_work(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcceptedWork> {
+    let settlements_json: String = row.get(24)?;
+    let monthly_settlements = serde_json::from_str(&settlements_json).map_err(|error|
+        rusqlite::Error::FromSqlConversionFailure(24, rusqlite::types::Type::Text, Box::new(error)))?;
     Ok(AcceptedWork {
         id: row.get(0)?,
         manuscript_id: row.get(1)?,
@@ -33,6 +36,7 @@ fn map_work(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcceptedWork> {
         guarantee_cents: row.get(10)?,
         per_thousand_cents: row.get(22)?,
         realized_share_cents: row.get(21)?,
+        monthly_settlements,
         share_percent: row.get(11)?,
         sale_platform: row.get(12)?,
         buyer_editor: row.get(13)?,
@@ -66,12 +70,27 @@ fn validate(input: &AcceptedWorkInput) -> Result<(), String> {
     }
     if !matches!(
         input.deal_mode.as_str(),
-        "undecided" | "buyout" | "guarantee_share"
+        "undecided" | "buyout" | "guarantee_share" | "platform_share"
     ) {
         return Err("价格模式无效".into());
     }
     if input.price_cents < 0 || input.guarantee_cents < 0 || input.per_thousand_cents < 0 || input.realized_share_cents < 0 {
         return Err("金额不能为负数".into());
+    }
+    if input.review_status == "accepted" && input.deal_mode == "platform_share" && input.listing_platform.trim().is_empty() {
+        return Err("上架平台分成请填写上架平台，例如知乎或番茄".into());
+    }
+    let mut settlement_months = HashSet::new();
+    if input.monthly_settlements.len() > 240 { return Err("月结记录不能超过 240 条".into()); }
+    for settlement in &input.monthly_settlements {
+        let month = settlement.month.as_bytes();
+        if month.len() != 7 || month[4] != b'-' || !month.iter().enumerate().all(|(i, b)| i == 4 || b.is_ascii_digit())
+            || settlement.month[..4].parse::<u32>().unwrap_or(0) == 0
+            || !(1..=12).contains(&settlement.month[5..].parse::<u32>().unwrap_or(0)) {
+            return Err("月结月份格式应为 YYYY-MM".into());
+        }
+        if settlement.amount_cents <= 0 { return Err("月结收入须大于 0 元".into()); }
+        if !settlement_months.insert(&settlement.month) { return Err("同一个月份只能记录一笔月结收入".into()); }
     }
     if !input.accepted_at.is_empty() && !is_date(&input.accepted_at) {
         return Err("记录日期格式无效".into());
@@ -188,6 +207,7 @@ pub(crate) fn load_candidates(conn: &Connection) -> Result<Vec<AcceptedCandidate
 
 pub(crate) fn create_work(conn: &Connection, input: AcceptedWorkInput) -> Result<i64, String> {
     validate(&input)?;
+    let settlements_json = serde_json::to_string(&input.monthly_settlements).map_err(|error| error.to_string())?;
     let sold_at = if input.review_status == "accepted" && input.deal_mode != "undecided" {
         input.accepted_at.clone()
     } else {
@@ -230,8 +250,8 @@ pub(crate) fn create_work(conn: &Connection, input: AcceptedWorkInput) -> Result
     conn.execute(
         "INSERT INTO accepted_works (manuscript_id, source, title, body, file_name, file_data,
          accepted_at, deal_mode, price_cents, guarantee_cents, share_percent, sale_platform,
-         buyer_editor, listing_platform, article_url, notes, review_status, sold_at, realized_share_cents, per_thousand_cents)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+         buyer_editor, listing_platform, article_url, notes, review_status, sold_at, realized_share_cents, per_thousand_cents, monthly_settlements)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             input.manuscript_id,
             input.source,
@@ -252,7 +272,8 @@ pub(crate) fn create_work(conn: &Connection, input: AcceptedWorkInput) -> Result
             input.review_status,
             sold_at,
             input.realized_share_cents,
-            input.per_thousand_cents
+            input.per_thousand_cents,
+            settlements_json
         ],
     )
     .map_err(|e| {
@@ -271,6 +292,7 @@ pub(crate) fn update_work(
     input: AcceptedWorkInput,
 ) -> Result<(), String> {
     validate(&input)?;
+    let settlements_json = serde_json::to_string(&input.monthly_settlements).map_err(|error| error.to_string())?;
     let sold_at = if input.review_status == "accepted" && input.deal_mode != "undecided" {
         input.accepted_at.clone()
     } else {
@@ -291,8 +313,8 @@ pub(crate) fn update_work(
             "UPDATE accepted_works SET accepted_at=?1, deal_mode=?2, price_cents=?3,
              guarantee_cents=?4, share_percent=?5, sale_platform=?6, buyer_editor=?7,
              listing_platform=?8, article_url=?9, notes=?10, review_status=?11,
-             sold_at=?12, realized_share_cents=?13, per_thousand_cents=?14,
-             updated_at=datetime('now','localtime') WHERE id=?15",
+             sold_at=?12, realized_share_cents=?13, per_thousand_cents=?14, monthly_settlements=?15,
+             updated_at=datetime('now','localtime') WHERE id=?16",
             params![
                 input.accepted_at,
                 input.deal_mode,
@@ -308,6 +330,7 @@ pub(crate) fn update_work(
                 sold_at,
                 input.realized_share_cents,
                 input.per_thousand_cents,
+                settlements_json,
                 id
             ],
         )
@@ -319,8 +342,8 @@ pub(crate) fn update_work(
              accepted_at=?6, deal_mode=?7, price_cents=?8, guarantee_cents=?9,
              share_percent=?10, sale_platform=?11, buyer_editor=?12, listing_platform=?13,
              article_url=?14, notes=?15, review_status=?16,
-             sold_at=?17, realized_share_cents=?18, per_thousand_cents=?19,
-             updated_at=datetime('now','localtime') WHERE id=?20",
+             sold_at=?17, realized_share_cents=?18, per_thousand_cents=?19, monthly_settlements=?20,
+             updated_at=datetime('now','localtime') WHERE id=?21",
             params![
                 input.title.trim(),
                 input.body,
@@ -341,6 +364,7 @@ pub(crate) fn update_work(
                 sold_at,
                 input.realized_share_cents,
                 input.per_thousand_cents,
+                settlements_json,
                 id
             ],
         )
@@ -588,6 +612,7 @@ mod tests {
             guarantee_cents: 300_000,
             per_thousand_cents: 0,
             realized_share_cents: 0,
+            monthly_settlements: Vec::new(),
             share_percent: 47.5,
             sale_platform: "知乎".into(),
             buyer_editor: "编辑甲".into(),
@@ -705,6 +730,35 @@ mod tests {
         update_work(&conn, rate_id, edited).unwrap();
         let work = load_works(&conn).unwrap().into_iter().find(|work| work.id == rate_id).unwrap();
         assert_eq!(work.record_origin, "historical_import");
+    }
+
+    #[test]
+    fn platform_share_tracks_monthly_settlements_without_fixed_price() {
+        let conn = crate::db::open_database(":memory:".into()).unwrap();
+        let mut draft = input("external", None, "知乎上架文章");
+        draft.deal_mode = "platform_share".into();
+        draft.price_cents = 0;
+        draft.guarantee_cents = 0;
+        draft.listing_platform = "知乎".into();
+        draft.monthly_settlements = vec![
+            crate::models::AcceptedMonthlySettlement { month: "2026-08".into(), amount_cents: 12_345 },
+            crate::models::AcceptedMonthlySettlement { month: "2026-09".into(), amount_cents: 23_456 },
+        ];
+        let id = create_work(&conn, draft.clone()).unwrap();
+        let saved = load_works(&conn).unwrap().remove(0);
+        assert_eq!(saved.monthly_settlements.len(), 2);
+        assert_eq!(saved.monthly_settlements[0].amount_cents, 12_345);
+        assert_eq!(saved.sold_at, "2026-09-25");
+        draft.monthly_settlements[1].amount_cents = 25_000;
+        update_work(&conn, id, draft.clone()).unwrap();
+        assert_eq!(load_works(&conn).unwrap()[0].monthly_settlements[1].amount_cents, 25_000);
+        draft.monthly_settlements[1].month = "2026-08".into();
+        assert!(update_work(&conn, id, draft.clone()).is_err());
+        draft.monthly_settlements[1].month = "2026-13".into();
+        assert!(update_work(&conn, id, draft.clone()).is_err());
+        draft.monthly_settlements.clear();
+        draft.listing_platform.clear();
+        assert!(update_work(&conn, id, draft).is_err());
     }
 
     #[test]

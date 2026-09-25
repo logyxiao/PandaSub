@@ -39,6 +39,7 @@ function emptyWork(source: 'plan' | 'external' = 'external'): AcceptedWorkInput 
   return {
     manuscript_id: null, source, review_status: 'accepted', title: '', body: '', file_name: '', remove_file: false,
     accepted_at: today(), deal_mode: 'undecided', price_cents: 0, guarantee_cents: 0, per_thousand_cents: 0, realized_share_cents: 0,
+    monthly_settlements: [],
     share_percent: 50, sale_platform: '', buyer_editor: '', listing_platform: '', article_url: '', notes: '',
   }
 }
@@ -47,6 +48,10 @@ function saleLabel(work: AcceptedWork) {
   if (work.review_status === 'not_accepted') return <span className="hint">不计入卖出</span>
   if (work.review_status === 'preliminary') return <span className="hint">等待终审</span>
   if (work.review_status === 'final_rejected') return <span className="hint">终审未通过</span>
+  if (work.deal_mode === 'platform_share') {
+    const settled = (work.monthly_settlements || []).reduce((sum, entry) => sum + entry.amount_cents, 0)
+    return <>上架月结 <strong>{settled ? yuan(settled) : '待结算'}</strong><small>{work.monthly_settlements?.length || 0} 个月已记录 · 无固定价格</small></>
+  }
   if (work.deal_mode === 'buyout' && work.price_cents <= 0) return <span className="hint">买断价待补</span>
   if (work.deal_mode === 'guarantee_share' && work.guarantee_cents <= 0 && work.per_thousand_cents <= 0) return <span className="hint">保底价待补</span>
   if (work.deal_mode === 'buyout') return <>买断 <strong>{yuan(work.price_cents)}</strong><small>{work.accepted_at || '日期待补'}</small></>
@@ -78,6 +83,7 @@ export function AcceptedView() {
   const [guaranteeText, setGuaranteeText] = useState('')
   const [perThousandText, setPerThousandText] = useState('')
   const [realizedShareText, setRealizedShareText] = useState('')
+  const [settlementRows, setSettlementRows] = useState<{ month: string; amount: string }[]>([])
   const [shareText, setShareText] = useState('50')
   const [saving, setSaving] = useState(false)
   const [preview, setPreview] = useState<{ id: number; title: string; fileName: string; text: string; attachmentText: string; hasFile: boolean; articleUrl: string } | null>(null)
@@ -130,7 +136,7 @@ export function AcceptedView() {
     setDraft({ ...emptyWork(source), review_status: reviewStatus, manuscript_id: candidate?.manuscript_id ?? null,
       accepted_at: candidate?.received_at.slice(0, 10) || today(),
       sale_platform: candidate?.sale_platform ?? '', buyer_editor: candidate?.buyer_editor ?? '' })
-    setPriceText(''); setGuaranteeText(''); setPerThousandText(''); setRealizedShareText(''); setShareText('50'); setShowForm(true)
+    setPriceText(''); setGuaranteeText(''); setPerThousandText(''); setRealizedShareText(''); setSettlementRows([]); setShareText('50'); setShowForm(true)
   }
   const openEdit = (work: AcceptedWork) => {
     setEditing(work)
@@ -140,12 +146,14 @@ export function AcceptedView() {
       file_name: work.file_name, remove_file: false, accepted_at: work.accepted_at,
       deal_mode: work.deal_mode, price_cents: work.price_cents, guarantee_cents: work.guarantee_cents, per_thousand_cents: work.per_thousand_cents || 0,
       realized_share_cents: work.realized_share_cents,
+      monthly_settlements: work.monthly_settlements || [],
       share_percent: work.share_percent, sale_platform: work.sale_platform, buyer_editor: work.buyer_editor,
       listing_platform: work.listing_platform, article_url: work.article_url, notes: work.notes,
     })
     setPriceText(moneyText(work.price_cents)); setGuaranteeText(moneyText(work.guarantee_cents))
     setPerThousandText(moneyText(work.per_thousand_cents || 0))
     setRealizedShareText(moneyText(work.realized_share_cents))
+    setSettlementRows((work.monthly_settlements || []).map((entry) => ({ month: entry.month, amount: moneyText(entry.amount_cents) })))
     setShareText(String(work.share_percent)); setShowForm(true)
   }
 
@@ -167,6 +175,16 @@ export function AcceptedView() {
     const perThousand = draft.deal_mode === 'guarantee_share' ? toCents(perThousandText) : 0
     const realizedShare = draft.deal_mode === 'guarantee_share' ? toCents(realizedShareText) : 0
     if (price === null || guarantee === null || perThousand === null || realizedShare === null) { toast('金额最多保留两位小数，且不能为负数', 'warning'); return }
+    const monthlySettlements = draft.deal_mode === 'platform_share' ? settlementRows.map((row) => ({ month: row.month, amount_cents: toCents(row.amount) })) : draft.monthly_settlements
+    if (draft.deal_mode === 'platform_share') {
+      if (!draft.listing_platform.trim()) { toast('请填写上架平台，例如知乎或番茄', 'warning'); return }
+      if (monthlySettlements.some((entry) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(entry.month) || !entry.amount_cents)) {
+        toast('请填写完整的结算月份和大于 0 元的收入', 'warning'); return
+      }
+      if (new Set(monthlySettlements.map((entry) => entry.month)).size !== monthlySettlements.length) {
+        toast('同一个月份只能记录一笔月结收入', 'warning'); return
+      }
+    }
     if (draft.review_status === 'accepted' && ((draft.deal_mode === 'buyout' && !price)
       || (draft.deal_mode === 'guarantee_share' && !guarantee && !perThousand))) {
       toast('已卖出作品请填写买断价、保底价或千字单价', 'warning'); return
@@ -178,6 +196,7 @@ export function AcceptedView() {
     setSaving(true)
     try {
       const input = { ...draft, price_cents: price, guarantee_cents: guarantee, per_thousand_cents: perThousand, realized_share_cents: realizedShare,
+        monthly_settlements: monthlySettlements as { month: string; amount_cents: number }[],
         share_percent: draft.deal_mode === 'guarantee_share' ? share : 50 }
       if (editing) await api.updateAcceptedWork(editing.id, input)
       else await api.addAcceptedWork(input)
@@ -243,7 +262,7 @@ export function AcceptedView() {
     if (!canvas || shareSaving) return
     setShareSaving(true)
     try {
-      const path = await saveDialog({ title: '保存成交记录', defaultPath: `熊猫投稿-成交记录-${today()}.png`,
+      const path = await saveDialog({ title: '保存成绩记录', defaultPath: `熊猫投稿-成绩记录-${today()}.png`,
         filters: [{ name: 'PNG 图片', extensions: ['png'] }] })
       if (!path) return
       const [logo] = await Promise.all([loadShareLogo(), document.fonts.ready])
@@ -251,7 +270,7 @@ export function AcceptedView() {
       const image = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) =>
         blob ? resolve(blob) : reject(new Error('图片生成失败')), 'image/png'))
       const saved = await api.saveAcceptedShareImage(path, Array.from(new Uint8Array(await image.arrayBuffer())))
-      toast(`成交记录已保存到 ${saved}`, 'success')
+      toast(`成绩记录已保存到 ${saved}`, 'success')
     } catch (error) { toast(String(error), 'error') }
     finally { setShareSaving(false) }
   }
@@ -268,10 +287,10 @@ export function AcceptedView() {
     </div>
     {notice && <div className="notice notice-error">{notice}</div>}
     <div className="accepted-summary">
-      <div><span>近 7 天卖出</span><strong>{summary.last7Days.count}</strong><small>{yuan(summary.last7Days.cents)}</small></div>
-      <div><span>近 30 天卖出</span><strong>{summary.last30Days.count}</strong><small>{yuan(summary.last30Days.cents)}</small></div>
-      <div><span>累计卖出</span><strong>{summary.soldCount}</strong><small>买断 {summary.buyoutCount} · 保底分成 {summary.guaranteeShareCount}</small></div>
-      <div><span>累计已记录稿费</span><strong>{yuan(summary.totalCents)}</strong><small>含已结算分成{summary.unpricedSoldCount ? ` · ${summary.unpricedSoldCount} 篇待核算总价` : ''}</small></div>
+      <div><span>近 7 天新增成交 / 上架</span><strong>{summary.last7Days.count}</strong><small>直接成交已知金额 {yuan(summary.last7Days.cents)}</small></div>
+      <div><span>近 30 天新增成交 / 上架</span><strong>{summary.last30Days.count}</strong><small>直接成交已知金额 {yuan(summary.last30Days.cents)}</small></div>
+      <div><span>累计成交 / 上架</span><strong>{summary.soldCount}</strong><small>直接成交 {summary.directCount} · 平台上架 {summary.platformShareCount}</small></div>
+      <div><span>累计已记录金额</span><strong>{yuan(summary.totalCents)}</strong><small>成交价＋平台已结算 {yuan(summary.platformShareCents)}{summary.unpricedSoldCount ? ` · ${summary.unpricedSoldCount} 篇总价待核算` : ''}</small></div>
     </div>
     <div className="accepted-review-totals">初审通过 <strong>{summary.preliminaryCount}</strong> 篇 · 最终过稿 <strong>{summary.acceptedCount}</strong> 篇 · 未过终审 <strong>{summary.finalRejectedCount}</strong> 篇 · 未过稿 <strong>{summary.notAcceptedCount}</strong> 篇
       {summary.undatedSoldCount > 0 && <span> · {summary.undatedSoldCount} 篇已卖作品待补日期，暂不计入近期趋势</span>}</div>
@@ -296,17 +315,26 @@ export function AcceptedView() {
       </div>
     </section>}
 
+    <div className="accepted-channel-overview">
+      <div><span>直接卖给第三方</span><strong>{summary.directCount} 篇</strong><small>买断 {summary.buyoutCount} · 保底加分成 {summary.guaranteeShareCount}</small><b>{yuan(summary.directCents)}</b><em>已知成交金额</em></div>
+      <div><span>上架平台按月分成</span><strong>{summary.platformShareCount} 篇</strong><small>知乎、番茄等平台 · {summary.platformPaidCount} 篇已有月结</small><b>{yuan(summary.platformShareCents)}</b><em>历月已结算收入</em></div>
+    </div>
+    {summary.platformMonths.length > 0 && <section className="panel accepted-monthly-panel">
+      <div className="accepted-section-head"><div><h2>平台月结</h2><p>按结算月份汇总，知乎等平台的后续分成会持续累加。</p></div></div>
+      <div className="accepted-monthly-list">{summary.platformMonths.slice(0, 6).map((row) => <div className="accepted-monthly-item" key={row.month}>
+        <time>{row.month}</time><span>{row.platforms.map((item) => `${item.platform} ${yuan(item.cents)}`).join(' · ')}</span><strong>{yuan(row.totalCents)}</strong>
+      </div>)}</div>
+    </section>}
     <section className="panel accepted-sales-panel">
-      <div className="accepted-section-head"><div><h2>卖出成绩</h2><p>按平台汇总已经卖出的作品和已记录的稿费。</p></div>
-        <span className="accepted-sales-lead">已卖出 <strong>{summary.soldCount}</strong> 篇 · 累计 <strong>{yuan(summary.totalCents)}</strong></span></div>
-      {summary.platforms.length ? <Table className="accepted-sales-table" rowKey="platform" dataSource={summary.platforms} minWidth={650}
+      <div className="accepted-section-head"><div><h2>渠道成绩</h2><p>直接成交按已知价格汇总；平台上架按已录入的月结收入汇总。</p></div>
+        <span className="accepted-sales-lead">累计 <strong>{summary.soldCount}</strong> 篇 · 已记录 <strong>{yuan(summary.totalCents)}</strong></span></div>
+      {summary.platforms.length ? <Table className="accepted-sales-table" rowKey={(row) => `${row.channel}:${row.platform}`} dataSource={summary.platforms} minWidth={650}
         columns={[
-          { key: 'platform', title: '卖出平台', render: (_value, row) => <div className="accepted-sales-platform"><strong>{row.platform}</strong><i style={{ width: `${Math.max(9, row.count / summary.soldCount * 100)}%` }} /></div> },
-          { key: 'count', title: '已卖出', width: 100, render: (_value, row) => `${row.count} 篇` },
-          { key: 'buyout', title: '买断', width: 92, render: (_value, row) => `${row.buyout} 篇` },
-          { key: 'guarantee', title: '保底分成', width: 106, render: (_value, row) => `${row.guaranteeShare} 篇` },
-          { key: 'amount', title: '已记录稿费', width: 140, align: 'right', render: (_value, row) => <strong>{yuan(row.totalCents)}</strong> },
-        ]} /> : <div className="accepted-sales-empty">写下第一笔成交后，这里会按平台汇总卖出篇数和已记录稿费。</div>}
+          { key: 'platform', title: '渠道 / 平台', render: (_value, row) => <div className="accepted-sales-platform"><span>{row.channel === 'platform' ? '平台上架' : '第三方成交'}</span><strong>{row.platform}</strong></div> },
+          { key: 'count', title: '篇数', width: 90, render: (_value, row) => `${row.count} 篇` },
+          { key: 'modes', title: '出售方式', width: 210, render: (_value, row) => row.channel === 'platform' ? '按月分成' : `买断 ${row.buyout} · 保底分成 ${row.guaranteeShare}` },
+          { key: 'amount', title: '已记录金额', width: 140, align: 'right', render: (_value, row) => <strong>{yuan(row.totalCents)}</strong> },
+        ]} /> : <div className="accepted-sales-empty">记录直接成交或平台上架后，这里会按渠道汇总篇数与收入。</div>}
     </section>
 
     <section className="panel accepted-list-panel">
@@ -333,9 +361,8 @@ export function AcceptedView() {
           resetKey={`${query}:${statusFilter}:${originFilter}`} empty="没有找到符合条件的作品" pagination={{ pageSize: 8, pageSizeOptions: [8, 20, 50], hideOnSinglePage: true }}
           columns={[
             { key: 'title', title: '作品', render: (_value, work) => <div className="accepted-title"><span className="accepted-title-line"><strong>{work.title}</strong><Badge tone={work.review_status === 'accepted' ? 'success' : work.review_status === 'preliminary' ? 'info' : work.review_status === 'final_rejected' ? 'warning' : 'neutral'}>{reviewLabel(work.review_status)}</Badge>{work.record_origin === 'historical_import' && <Badge tone="info">历史导入</Badge>}</span><small>{work.source === 'plan' ? '投稿计划' : '外部文章'} · {work.accepted_at || '未填写核对日期'}</small></div> },
-            { key: 'sale', title: '价格模式', width: 185, render: (_value, work) => <div className="accepted-sale">{saleLabel(work)}</div> },
-            { key: 'buyer', title: '卖出信息', width: 190, render: (_value, work) => <div className="accepted-meta"><span>{work.sale_platform || '未填卖出平台'}</span><small>{work.buyer_editor || '未填买家编辑'}</small></div> },
-            { key: 'listing', title: '上架平台', width: 120, render: (_value, work) => work.listing_platform || <span className="hint">未填写</span> },
+            { key: 'sale', title: '价格 / 结算', width: 185, render: (_value, work) => <div className="accepted-sale">{saleLabel(work)}</div> },
+            { key: 'buyer', title: '渠道 / 平台', width: 190, render: (_value, work) => <div className="accepted-meta"><span>{work.review_status !== 'accepted' ? work.sale_platform || '邮件平台待核对' : work.deal_mode === 'platform_share' ? `平台上架 · ${work.listing_platform || '待填平台'}` : `第三方成交 · ${work.sale_platform || '待填平台'}`}</span><small>{work.review_status !== 'accepted' ? work.buyer_editor || '编辑待核对' : work.deal_mode === 'platform_share' ? `${work.monthly_settlements?.length || 0} 个月已结算` : [work.buyer_editor, work.listing_platform && `卖家上架 ${work.listing_platform}`].filter(Boolean).join(' · ') || '未填买家编辑'}</small></div> },
             { key: 'actions', title: '操作', width: 220, render: (_value, work) => <div className="accepted-actions">
               <Button size="sm" disabled={previewing === work.id} onClick={() => void openDocument(work)}><FileText size={14} />{previewing === work.id ? '读取中…' : '查看文稿'}</Button>
               <IconButton title="打开文稿所在文件夹" disabled={!work.has_file || openingSaved} onClick={() => void openSavedDocument(work.id, 'accepted', true)}><FolderOpen size={14} /></IconButton>
@@ -384,10 +411,18 @@ export function AcceptedView() {
         </div>
 
         {draft.review_status === 'accepted' && <div className="accepted-form-section"><h3>价格与出售方式</h3>
-          <div className="accepted-mode-switch" role="group" aria-label="出售方式">
-            {([['undecided', '暂未定价'], ['buyout', '买断'], ['guarantee_share', '保底加分成']] as [AcceptedDealMode, string][]).map(([mode, label]) =>
-              <button key={mode} type="button" className={draft.deal_mode === mode ? 'on' : ''} aria-pressed={draft.deal_mode === mode}
-                onClick={() => setDraft((current) => ({ ...current, deal_mode: mode }))}>{label}</button>)}
+          <div className="accepted-mode-groups" role="group" aria-label="出售方式">
+            <div className="accepted-mode-group"><span>直接卖给第三方</span><div className="accepted-mode-switch">
+              {([['buyout', '买断'], ['guarantee_share', '保底加分成']] as [AcceptedDealMode, string][]).map(([mode, label]) =>
+                <button key={mode} type="button" className={draft.deal_mode === mode ? 'on' : ''} aria-pressed={draft.deal_mode === mode}
+                  onClick={() => setDraft((current) => ({ ...current, deal_mode: mode }))}>{label}</button>)}
+            </div></div>
+            <div className="accepted-mode-group"><span>上架平台</span><div className="accepted-mode-switch">
+              <button type="button" className={draft.deal_mode === 'platform_share' ? 'on' : ''} aria-pressed={draft.deal_mode === 'platform_share'}
+                onClick={() => setDraft((current) => ({ ...current, deal_mode: 'platform_share' }))}>按月分成</button>
+            </div></div>
+            <button type="button" className={`accepted-mode-undecided${draft.deal_mode === 'undecided' ? ' on' : ''}`} aria-pressed={draft.deal_mode === 'undecided'}
+              onClick={() => setDraft((current) => ({ ...current, deal_mode: 'undecided' }))}>暂未定价</button>
           </div>
           {draft.deal_mode === 'buyout' && <label className="field">买断价格（元）<input type="text" inputMode="decimal" value={priceText} onChange={(event) => setPriceText(event.target.value)} placeholder="例如 5000" /></label>}
           {draft.deal_mode === 'guarantee_share' && <div className="accepted-form-grid">
@@ -397,13 +432,22 @@ export function AcceptedView() {
             <label className="field">已结算分成（元）<input type="text" inputMode="decimal" value={realizedShareText} onChange={(event) => setRealizedShareText(event.target.value)} placeholder="尚未结算可留空" /></label>
             <p className="field-hint accepted-span-all">总价与千字单价至少填一项。只知道千字单价时仍计入卖出篇数，累计金额暂不估算；新记录作者分成默认 50%，历史记录的 0% 表示比例待补。</p>
           </div>}
+          {draft.deal_mode === 'platform_share' && <div className="accepted-settlements">
+            <p className="field-hint">没有固定价格。作品计入平台上架篇数；每月拿到分成后，再记录当月实际收入。</p>
+            <div className="accepted-settlement-head"><strong>月结记录</strong><Button size="sm" type="button" onClick={() => setSettlementRows((rows) => [...rows, { month: '', amount: '' }])}><Plus size={13} />添加月份</Button></div>
+            {settlementRows.length ? settlementRows.map((row, index) => <div className="accepted-settlement-row" key={index}>
+              <label className="field">结算月份<input type="month" value={row.month} onChange={(event) => setSettlementRows((rows) => rows.map((item, rowIndex) => rowIndex === index ? { ...item, month: event.target.value } : item))} /></label>
+              <label className="field">实际收入（元）<input type="text" inputMode="decimal" value={row.amount} placeholder="例如 320.50" onChange={(event) => setSettlementRows((rows) => rows.map((item, rowIndex) => rowIndex === index ? { ...item, amount: event.target.value } : item))} /></label>
+              <IconButton title="删除这月结算" className="danger" onClick={() => setSettlementRows((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}><Trash2 size={14} /></IconButton>
+            </div>) : <span className="accepted-settlement-empty">尚未结算时可以留空，之后编辑作品补记。</span>}
+          </div>}
         </div>}
 
-        <div className="accepted-form-section"><h3>平台与买家</h3>
+        <div className="accepted-form-section"><h3>{draft.deal_mode === 'platform_share' ? '上架信息' : '平台与买家'}</h3>
           <div className="accepted-form-grid">
-            <label className="field">卖出平台<input value={draft.sale_platform} onChange={(event) => setDraft((current) => ({ ...current, sale_platform: event.target.value }))} placeholder="例如：知乎盐选" /></label>
-            <label className="field">买家编辑<input value={draft.buyer_editor} onChange={(event) => setDraft((current) => ({ ...current, buyer_editor: event.target.value }))} placeholder="编辑姓名或联系方式" /></label>
-            <label className="field">卖家上架平台<input value={draft.listing_platform} onChange={(event) => setDraft((current) => ({ ...current, listing_platform: event.target.value }))} placeholder="例如：番茄小说" /></label>
+            {draft.deal_mode !== 'platform_share' && <><label className="field">卖出平台<input value={draft.sale_platform} onChange={(event) => setDraft((current) => ({ ...current, sale_platform: event.target.value }))} placeholder="例如：知乎盐选" /></label>
+            <label className="field">买家编辑<input value={draft.buyer_editor} onChange={(event) => setDraft((current) => ({ ...current, buyer_editor: event.target.value }))} placeholder="编辑姓名或联系方式" /></label></>}
+            <label className="field">{draft.deal_mode === 'platform_share' ? '上架平台' : '卖家上架平台'}<input value={draft.listing_platform} onChange={(event) => setDraft((current) => ({ ...current, listing_platform: event.target.value }))} placeholder="例如：知乎、番茄小说" /></label>
             <label className="field">文章链接（可选）<input type="url" value={draft.article_url} onChange={(event) => setDraft((current) => ({ ...current, article_url: event.target.value }))} placeholder="https://" /></label>
             <label className="field accepted-span-all">备注<textarea rows={2} value={draft.notes} onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))} placeholder="合同、结算时间或其他需要记住的信息" /></label>
           </div>
@@ -411,10 +455,10 @@ export function AcceptedView() {
       </div>
     </Modal>}
 
-    {shareOpen && <Modal title="分享成交记录" width={1040} className="accepted-share-modal" onClose={() => { if (!shareSaving) setShareOpen(false) }}
-      footer={<><span>最多展示最近 8 笔成交的日期、平台、价格与模式，不包含作品名、买家编辑或备注原文。{summary.undatedSoldCount > 0 ? `另有 ${summary.undatedSoldCount} 篇已卖作品未填日期，暂未计入近期曲线。` : ''}</span><Button onClick={() => setShareZoomed((value) => !value)}>{shareZoomed ? '适应窗口' : '放大查看'}</Button><Button onClick={() => setShareOpen(false)} disabled={shareSaving}>关闭</Button><Button variant="primary" disabled={shareSaving} onClick={() => void saveShareImage()}><Download size={15} />{shareSaving ? '生成中…' : '保存 PNG 图片'}</Button></>}>
+    {shareOpen && <Modal title="分享成交与上架记录" width={1040} className="accepted-share-modal" onClose={() => { if (!shareSaving) setShareOpen(false) }}
+      footer={<><span>最多展示最近 8 篇成交或上架作品的日期、平台、方式与已知收入，不包含作品名、买家编辑或备注原文。{summary.undatedSoldCount > 0 ? `另有 ${summary.undatedSoldCount} 篇未填日期，暂未计入近期曲线。` : ''}</span><Button onClick={() => setShareZoomed((value) => !value)}>{shareZoomed ? '适应窗口' : '放大查看'}</Button><Button onClick={() => setShareOpen(false)} disabled={shareSaving}>关闭</Button><Button variant="primary" disabled={shareSaving} onClick={() => void saveShareImage()}><Download size={15} />{shareSaving ? '生成中…' : '保存 PNG 图片'}</Button></>}>
       <canvas ref={shareCanvasRef} width={1440} height={1080} className={`accepted-share-canvas${shareZoomed ? ' is-zoomed' : ''}`} role="img"
-        aria-label={`熊猫投稿成交记录：近 7 天卖出 ${summary.last7Days.count} 篇，近 30 天卖出 ${summary.last30Days.count} 篇，累计成交 ${yuan(summary.totalCents)}`} />
+        aria-label={`熊猫投稿成交与上架记录：近 7 天新增 ${summary.last7Days.count} 篇，近 30 天新增 ${summary.last30Days.count} 篇，累计已记录金额 ${yuan(summary.totalCents)}`} />
     </Modal>}
 
     {preview && <Modal title={`文稿 · ${preview.title}`} width={860} className="accepted-preview-modal" onClose={() => setPreview(null)}

@@ -178,11 +178,12 @@ CREATE TABLE IF NOT EXISTS accepted_works (
   file_data BLOB,
   accepted_at TEXT NOT NULL DEFAULT '',
   sold_at TEXT NOT NULL DEFAULT '',
-  deal_mode TEXT NOT NULL DEFAULT 'undecided' CHECK(deal_mode IN ('undecided','buyout','guarantee_share')),
+  deal_mode TEXT NOT NULL DEFAULT 'undecided' CHECK(deal_mode IN ('undecided','buyout','guarantee_share','platform_share')),
   price_cents INTEGER NOT NULL DEFAULT 0,
   guarantee_cents INTEGER NOT NULL DEFAULT 0,
   per_thousand_cents INTEGER NOT NULL DEFAULT 0,
   realized_share_cents INTEGER NOT NULL DEFAULT 0,
+  monthly_settlements TEXT NOT NULL DEFAULT '[]',
   share_percent REAL NOT NULL DEFAULT 50,
   sale_platform TEXT NOT NULL DEFAULT '',
   buyer_editor TEXT NOT NULL DEFAULT '',
@@ -213,6 +214,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     ensure_columns(&connection, "accepted_works", &[
         ("sold_at", "sold_at TEXT NOT NULL DEFAULT ''"),
         ("realized_share_cents", "realized_share_cents INTEGER NOT NULL DEFAULT 0"),
+        ("monthly_settlements", "monthly_settlements TEXT NOT NULL DEFAULT '[]'"),
         ("per_thousand_cents", "per_thousand_cents INTEGER NOT NULL DEFAULT 0"),
         ("record_origin", "record_origin TEXT NOT NULL DEFAULT 'manual' CHECK(record_origin IN ('manual','historical_import'))"),
     ])?;
@@ -294,6 +296,7 @@ mod accepted_review_migration_tests {
         ensure_columns(&conn, "accepted_works", &[
             ("sold_at", "sold_at TEXT NOT NULL DEFAULT ''"),
             ("realized_share_cents", "realized_share_cents INTEGER NOT NULL DEFAULT 0"),
+            ("monthly_settlements", "monthly_settlements TEXT NOT NULL DEFAULT '[]'"),
             ("per_thousand_cents", "per_thousand_cents INTEGER NOT NULL DEFAULT 0"),
             ("record_origin", "record_origin TEXT NOT NULL DEFAULT 'manual' CHECK(record_origin IN ('manual','historical_import'))"),
         ]).unwrap();
@@ -312,6 +315,7 @@ mod accepted_review_migration_tests {
         assert_eq!(new_fields, ("2026-09-04".into(), 123, 3000, "historical_import".into()));
         conn.execute("INSERT INTO accepted_works (source, review_status, title) VALUES ('plan','preliminary','新作品')", []).unwrap();
         conn.execute("INSERT INTO accepted_works (source, review_status, title) VALUES ('plan','final_rejected','终审未过')", []).unwrap();
+        conn.execute("INSERT INTO accepted_works (source, review_status, title, deal_mode, monthly_settlements) VALUES ('external','accepted','上架作品','platform_share','[{\"month\":\"2026-09\",\"amount_cents\":10000}]')", []).unwrap();
         migrate_accepted_review_status(&conn).unwrap();
     }
 }
@@ -321,7 +325,7 @@ fn migrate_accepted_review_status(conn: &Connection) -> Result<(), String> {
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='accepted_works'",
         [], |row| row.get(0),
     ).map_err(|e| e.to_string())?;
-    if schema.contains("'final_rejected'") { return Ok(()) }
+    if schema.contains("'final_rejected'") && schema.contains("'platform_share'") { return Ok(()) }
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     tx.execute_batch(
         "CREATE TABLE accepted_works_rebuilt (
@@ -335,11 +339,12 @@ fn migrate_accepted_review_status(conn: &Connection) -> Result<(), String> {
           file_data BLOB,
           accepted_at TEXT NOT NULL DEFAULT '',
           sold_at TEXT NOT NULL DEFAULT '',
-          deal_mode TEXT NOT NULL DEFAULT 'undecided' CHECK(deal_mode IN ('undecided','buyout','guarantee_share')),
+          deal_mode TEXT NOT NULL DEFAULT 'undecided' CHECK(deal_mode IN ('undecided','buyout','guarantee_share','platform_share')),
           price_cents INTEGER NOT NULL DEFAULT 0,
           guarantee_cents INTEGER NOT NULL DEFAULT 0,
           per_thousand_cents INTEGER NOT NULL DEFAULT 0,
           realized_share_cents INTEGER NOT NULL DEFAULT 0,
+          monthly_settlements TEXT NOT NULL DEFAULT '[]',
           share_percent REAL NOT NULL DEFAULT 50,
           sale_platform TEXT NOT NULL DEFAULT '',
           buyer_editor TEXT NOT NULL DEFAULT '',
@@ -353,11 +358,11 @@ fn migrate_accepted_review_status(conn: &Connection) -> Result<(), String> {
         INSERT INTO accepted_works_rebuilt
           (id, manuscript_id, source, review_status, title, body, file_name, file_data,
            accepted_at, sold_at, deal_mode, price_cents, guarantee_cents, per_thousand_cents,
-           realized_share_cents, share_percent, sale_platform, buyer_editor, listing_platform,
+           realized_share_cents, monthly_settlements, share_percent, sale_platform, buyer_editor, listing_platform,
            article_url, notes, record_origin, created_at, updated_at)
         SELECT id, manuscript_id, source, review_status, title, body, file_name, file_data,
                accepted_at, sold_at, deal_mode, price_cents, guarantee_cents, per_thousand_cents,
-               realized_share_cents, share_percent, sale_platform, buyer_editor, listing_platform,
+               realized_share_cents, monthly_settlements, share_percent, sale_platform, buyer_editor, listing_platform,
                article_url, notes, record_origin, created_at, updated_at
         FROM accepted_works;
         DROP TABLE accepted_works;

@@ -151,6 +151,12 @@ pub struct ManuscriptInput {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AcceptedMonthlySettlement {
+    pub month: String,
+    pub amount_cents: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AcceptedWork {
     pub id: i64,
     pub manuscript_id: Option<i64>,
@@ -167,6 +173,7 @@ pub struct AcceptedWork {
     pub guarantee_cents: i64,
     pub per_thousand_cents: i64,
     pub realized_share_cents: i64,
+    pub monthly_settlements: Vec<AcceptedMonthlySettlement>,
     pub share_percent: f64,
     pub sale_platform: String,
     pub buyer_editor: String,
@@ -202,6 +209,8 @@ pub struct AcceptedWorkInput {
     pub per_thousand_cents: i64,
     #[serde(default)]
     pub realized_share_cents: i64,
+    #[serde(default)]
+    pub monthly_settlements: Vec<AcceptedMonthlySettlement>,
     pub share_percent: f64,
     #[serde(default)]
     pub sale_platform: String,

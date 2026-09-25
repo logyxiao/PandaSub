@@ -135,8 +135,9 @@ export interface ManuscriptInput {
   has_file?: boolean
 }
 
-export type AcceptedDealMode = 'undecided' | 'buyout' | 'guarantee_share'
+export type AcceptedDealMode = 'undecided' | 'buyout' | 'guarantee_share' | 'platform_share'
 export type AcceptedReviewStatus = 'accepted' | 'preliminary' | 'final_rejected' | 'not_accepted'
+export interface AcceptedMonthlySettlement { month: string; amount_cents: number }
 
 export interface AcceptedWork {
   id: number
@@ -154,6 +155,7 @@ export interface AcceptedWork {
   guarantee_cents: number
   per_thousand_cents: number
   realized_share_cents: number
+  monthly_settlements: AcceptedMonthlySettlement[]
   share_percent: number
   sale_platform: string
   buyer_editor: string
@@ -180,6 +182,7 @@ export interface AcceptedWorkInput {
   guarantee_cents: number
   per_thousand_cents: number
   realized_share_cents: number
+  monthly_settlements: AcceptedMonthlySettlement[]
   share_percent: number
   sale_platform: string
   buyer_editor: string

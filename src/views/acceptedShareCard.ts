@@ -14,7 +14,8 @@ const amount = (cents: number) => (cents / 100).toLocaleString('zh-CN', { maximu
 export function recentSaleRows(works: AcceptedWork[]) {
   return works.filter((work) => work.review_status === 'accepted'
     && (work.deal_mode === 'buyout' ? work.price_cents > 0
-      : work.deal_mode === 'guarantee_share' && (work.guarantee_cents > 0 || work.per_thousand_cents > 0)))
+      : work.deal_mode === 'guarantee_share' ? (work.guarantee_cents > 0 || work.per_thousand_cents > 0)
+      : work.deal_mode === 'platform_share'))
     .sort((a, b) => (b.accepted_at || '').localeCompare(a.accepted_at || '') || b.id - a.id)
     .slice(0, 8)
 }
@@ -76,7 +77,7 @@ export function drawAcceptedShareCard(
   rule(ctx, 345, 58, 345, 112)
   ctx.fillStyle = '#596E60'
   ctx.font = '650 36px ' + sans
-  ctx.fillText('成交记录', 372, 98)
+  ctx.fillText('成交与上架记录', 372, 98)
   ctx.textAlign = 'right'
   ctx.fillStyle = c.muted
   ctx.font = '500 23px ' + dataFont
@@ -85,7 +86,7 @@ export function drawAcceptedShareCard(
   ctx.fillText('截至 ' + dateLabel, 1390, 97)
 
   ctx.font = '500 18px ' + sans
-  ctx.fillText(rows.length ? '最近 ' + rows.length + ' 笔成交' : '暂无成交记录', 1390, 151)
+  ctx.fillText(rows.length ? '最近 ' + rows.length + ' 篇成交 / 上架' : '暂无成交或上架记录', 1390, 151)
   ctx.textAlign = 'left'
 
   const x = [40, 164, 336, 570, 770, 1030, 1400]
@@ -125,14 +126,22 @@ export function drawAcceptedShareCard(
     ctx.fillText(work.accepted_at ? work.accepted_at.slice(5).replace('-', '.') : '待补日期', centers[1], y)
     ctx.fillStyle = c.ink
     ctx.font = '500 22px ' + sans
-    ctx.fillText(fitText(ctx, work.sale_platform.trim() || '未填写平台', x[3] - x[2] - 32), centers[2], y)
+    ctx.fillText(fitText(ctx, (work.deal_mode === 'platform_share' ? work.listing_platform : work.sale_platform).trim() || '未填写平台', x[3] - x[2] - 32), centers[2], y)
     ctx.font = '600 24px ' + dataFont
-    const price = work.deal_mode === 'buyout' ? amount(work.price_cents)
+    const price = work.deal_mode === 'platform_share' ? '按月结算'
+      : work.deal_mode === 'buyout' ? amount(work.price_cents)
       : work.guarantee_cents > 0 ? amount(work.guarantee_cents) : amount(work.per_thousand_cents) + '/千字'
     ctx.fillText(price, centers[3], y)
     ctx.font = '500 22px ' + sans
-    ctx.fillText(work.deal_mode === 'buyout' ? '买断' : '保底＋分成', centers[4], y)
-    if (work.deal_mode === 'guarantee_share') {
+    ctx.fillText(work.deal_mode === 'buyout' ? '买断' : work.deal_mode === 'platform_share' ? '平台上架' : '保底＋分成', centers[4], y)
+    if (work.deal_mode === 'platform_share') {
+      const settled = (work.monthly_settlements || []).reduce((sum, entry) => sum + entry.amount_cents, 0)
+      ctx.textAlign = 'left'
+      ctx.fillStyle = c.muted
+      ctx.font = '500 20px ' + sans
+      ctx.fillText(fitText(ctx, settled > 0 ? `${work.monthly_settlements.length} 个月 · 已结算 ${money(settled)}` : '待首笔月结', x[6] - x[5] - 36), x[5] + 18, y)
+      ctx.textAlign = 'center'
+    } else if (work.deal_mode === 'guarantee_share') {
       ctx.textAlign = 'left'
       ctx.fillStyle = c.muted
       ctx.font = '500 20px ' + sans
@@ -156,9 +165,9 @@ export function drawAcceptedShareCard(
   const stats = [
     ['近 7 天', summary.last7Days.count],
     ['近 30 天', summary.last30Days.count],
-    ['累计卖出', summary.soldCount],
-    ['买断', summary.buyoutCount],
-    ['保底＋分成', summary.guaranteeShareCount],
+    ['累计成交 / 上架', summary.soldCount],
+    ['直接成交', summary.directCount],
+    ['平台上架', summary.platformShareCount],
   ] as const
   stats.forEach(([label, value], index) => {
     const start = x[0] + index * cellWidth
@@ -177,7 +186,7 @@ export function drawAcceptedShareCard(
   ctx.fillRect(statsRight + 8, statsY, x[6] - statsRight - 8, statsH)
   ctx.fillStyle = c.soft
   ctx.font = '550 22px ' + sans
-  ctx.fillText('累计成交', statsRight + 28, statsY + 42)
+  ctx.fillText('累计已记录金额', statsRight + 28, statsY + 42)
   const total = money(summary.totalCents)
   ctx.fillStyle = c.surface
   fitSize(ctx, total, x[6] - statsRight - 54, 47)
@@ -185,7 +194,7 @@ export function drawAcceptedShareCard(
 
   ctx.fillStyle = c.ink
   ctx.font = '600 23px ' + sans
-  ctx.fillText('近 30 天累计成交', 48, 868 - compactBy)
+  ctx.fillText('近 30 天新增成交 / 上架', 48, 868 - compactBy)
   ctx.textAlign = 'right'
   ctx.fillStyle = c.muted
   ctx.font = '500 18px ' + sans
@@ -193,7 +202,7 @@ export function drawAcceptedShareCard(
       ? summary.undatedSoldCount + ' 笔过稿记录未填写日期，未计入趋势'
     : summary.unpricedSoldCount
       ? summary.unpricedSoldCount + ' 笔按千字计价，总价未计入金额'
-      : '按过稿日期统计 · 金额含已结算分成', 1392, 867 - compactBy)
+      : '按过稿日期统计篇数 · 金额含平台已结算月收', 1392, 867 - compactBy)
   ctx.textAlign = 'left'
 
   const plot = { left: 88, right: 1380, top: 909 - compactBy, bottom: 1006 - compactBy }

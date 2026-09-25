@@ -93,8 +93,8 @@ with sync_playwright() as playwright:
     dialog.get_by_role('button', name='保存未过稿记录').click()
     expect(page.locator('.accepted-candidate')).to_have_count(0)
     assert page.evaluate("window.__acceptedWorks.map(w=>w.review_status)") == ['accepted','preliminary','not_accepted']
-    assert page.locator('.accepted-summary > div').all_text_contents()[0].startswith('近 7 天卖出1')
-    assert page.locator('.accepted-summary > div').all_text_contents()[1].startswith('近 30 天卖出1')
+    assert page.locator('.accepted-summary > div').all_text_contents()[0].startswith('近 7 天新增成交 / 上架1')
+    assert page.locator('.accepted-summary > div').all_text_contents()[1].startswith('近 30 天新增成交 / 上架1')
     expect(page.locator('.accepted-review-totals')).to_contain_text('初审通过 2 篇 · 最终过稿 1 篇 · 未过终审 0 篇 · 未过稿 1 篇')
 
     first_row = page.locator('.accepted-table tbody tr').filter(has_text='回归测试计划')
@@ -124,7 +124,7 @@ with sync_playwright() as playwright:
     expect(page.locator('.accepted-table tbody tr')).to_have_count(4)
     assert page.evaluate('window.__acceptedWorks[3].price_cents') == 500000
     expect(page.locator('.accepted-sales-table tbody tr')).to_have_count(2)
-    assert page.locator('.accepted-summary > div').all_text_contents()[0].startswith('近 7 天卖出2')
+    assert page.locator('.accepted-summary > div').all_text_contents()[0].startswith('近 7 天新增成交 / 上架2')
     expect(page.locator('.accepted-summary > div').last).to_contain_text('¥8,200.5')
     page.screenshot(path='/tmp/novelsub-accepted-page.png')
 
@@ -137,11 +137,11 @@ with sync_playwright() as playwright:
       };
     }""")
     page.get_by_role('button', name='分享成绩').click()
-    share = page.get_by_role('dialog', name='分享成交记录')
+    share = page.get_by_role('dialog', name='分享成交与上架记录')
     expect(share.locator('canvas')).to_be_visible()
     expect(share.locator('canvas')).to_have_attribute('data-ready', 'true')
-    expect(share.locator('canvas')).to_have_attribute('aria-label', '熊猫投稿成交记录：近 7 天卖出 2 篇，近 30 天卖出 2 篇，累计成交 ¥8,200.5')
-    assert page.evaluate("window.__shareTexts.includes('熊猫投稿') && window.__shareTexts.includes('成交记录')")
+    expect(share.locator('canvas')).to_have_attribute('aria-label', '熊猫投稿成交与上架记录：近 7 天新增 2 篇，近 30 天新增 2 篇，累计已记录金额 ¥8,200.5')
+    assert page.evaluate("window.__shareTexts.includes('熊猫投稿') && window.__shareTexts.includes('成交与上架记录')")
     assert not page.evaluate("window.__shareTexts.some(text => text.includes('回归测试计划') || text.includes('外部上架小说') || text.includes('编辑甲'))")
     assert page.evaluate("""() => {
       const canvas = document.querySelector('.accepted-share-canvas');
@@ -178,6 +178,20 @@ with sync_playwright() as playwright:
         'first': {'date': '2026-08-27', 'count': 1},
         'last': {'date': '2026-09-25', 'count': 5},
     }
+    channels = page.evaluate("""async () => {
+      const { summarizeAcceptedSales } = await import('/src/views/acceptedStats.ts');
+      const base = { ...window.__acceptedWorks[0], review_status:'accepted', accepted_at:'2026-09-25' };
+      const direct = { ...base, id:20, deal_mode:'buyout', price_cents:20000, sale_platform:'知乎', monthly_settlements:[] };
+      const listed = { ...base, id:21, deal_mode:'platform_share', price_cents:0, guarantee_cents:0,
+        sale_platform:'知乎', listing_platform:'知乎', monthly_settlements:[
+          {month:'2026-08',amount_cents:12500},{month:'2026-09',amount_cents:35000}] };
+      const summary = summarizeAcceptedSales([direct, listed], new Date(2026, 8, 25));
+      return {sold:summary.soldCount, direct:summary.directCount, listed:summary.platformShareCount,
+        total:summary.totalCents, platform:summary.platformShareCents, rows:summary.platforms.map(r=>r.channel+':'+r.platform),
+        months:summary.platformMonths.map(r=>[r.month,r.totalCents])};
+    }""")
+    assert channels == {'sold':2,'direct':1,'listed':1,'total':67500,'platform':47500,
+        'rows':['direct:知乎','platform:知乎'],'months':[['2026-09',35000],['2026-08',12500]]}
 
     row = page.locator('.accepted-table tbody tr').filter(has_text='外部上架小说')
     row.get_by_role('button', name='编辑').click()
@@ -220,7 +234,7 @@ with sync_playwright() as playwright:
     }""")
     page.get_by_role('button', name='刷新过稿信息').click()
     page.get_by_role('button', name='分享成绩').click()
-    share = page.get_by_role('dialog', name='分享成交记录')
+    share = page.get_by_role('dialog', name='分享成交与上架记录')
     expect(share.locator('canvas')).to_have_attribute('data-ready', 'true')
     expect(share.locator('canvas')).to_have_attribute('height', '1080')
     share.locator('canvas').screenshot(path='/tmp/novelsub-accepted-share-eight.png')
@@ -240,6 +254,43 @@ with sync_playwright() as playwright:
     dialog.get_by_role('button', name='保存最终过稿记录').click()
     page.get_by_role('textbox', name='搜索过稿作品').fill('千字计价测试')
     expect(page.locator('.accepted-table tbody tr')).to_contain_text('¥30/千字')
+    page.get_by_role('textbox', name='搜索过稿作品').fill('')
+    page.get_by_role('button', name='新增外部文章').first.click()
+    dialog = page.get_by_role('dialog', name='核对作品结果')
+    dialog.get_by_label('作品名称').fill('知乎月结作品')
+    dialog.get_by_role('button', name='按月分成').click()
+    dialog.get_by_role('button', name='保存最终过稿记录').click()
+    expect(dialog).to_be_visible()
+    dialog.get_by_label('上架平台', exact=True).fill('知乎')
+    dialog.get_by_role('button', name='保存最终过稿记录').click()
+    page.get_by_role('textbox', name='搜索过稿作品').fill('知乎月结作品')
+    expect(page.locator('.accepted-table tbody tr').filter(has_text='知乎月结作品')).to_contain_text('待结算')
+    expect(page.locator('.accepted-channel-overview')).to_contain_text('上架平台按月分成1 篇')
+    row = page.locator('.accepted-table tbody tr').filter(has_text='知乎月结作品')
+    row.get_by_role('button', name='编辑').click()
+    dialog = page.get_by_role('dialog', name='编辑核对记录 · 知乎月结作品')
+    dialog.get_by_role('button', name='添加月份').click()
+    dialog.get_by_label('结算月份').fill('2026-08')
+    dialog.get_by_label('实际收入（元）').fill('100.50')
+    dialog.get_by_role('button', name='添加月份').click()
+    dialog.get_by_label('结算月份').nth(1).fill('2026-09')
+    dialog.get_by_label('实际收入（元）').nth(1).fill('350')
+    dialog.screenshot(path='/tmp/novelsub-platform-monthly-form.png')
+    dialog.get_by_role('button', name='保存最终过稿记录').click()
+    expect(page.locator('.accepted-monthly-item')).to_have_count(2)
+    expect(page.locator('.accepted-channel-overview')).to_contain_text('¥450.5')
+    assert page.evaluate("window.__acceptedWorks.find(w=>w.title==='知乎月结作品').monthly_settlements.map(s=>s.amount_cents)") == [10050, 35000]
+    expect(page.locator('.accepted-sales-table tbody tr').filter(has_text='平台上架知乎')).to_have_count(1)
+    row = page.locator('.accepted-table tbody tr').filter(has_text='知乎月结作品')
+    expect(row).to_contain_text('上架月结')
+    page.evaluate("document.querySelector('.main').scrollTop = 0")
+    page.screenshot(path='/tmp/novelsub-platform-monthly-page.png')
+    page.get_by_role('button', name='分享成绩').click()
+    share = page.get_by_role('dialog', name='分享成交与上架记录')
+    expect(share.locator('canvas')).to_have_attribute('data-ready', 'true')
+    assert page.evaluate("window.__shareTexts.includes('按月结算') && window.__shareTexts.includes('平台上架') && window.__shareTexts.some(text => text.includes('450.5'))")
+    share.locator('canvas').screenshot(path='/tmp/novelsub-platform-monthly-share.png')
+    share.get_by_role('button', name='关闭').last.click()
     assert not errors, errors
-    print('PASS: four review results, saved Word folder/open actions, sales table, PNG share card, external article, filtering and navigation')
+    print('PASS: review states, Word actions, direct and monthly platform sales, share card, filtering and navigation')
     browser.close()
