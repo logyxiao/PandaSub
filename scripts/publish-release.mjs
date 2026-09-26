@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { localPreflight, buildAndSignLocal, verifySignatures, deployAtomic } from './local-release.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const sshTarget = process.env.PANDASUB_SSH_TARGET || 'tx'
@@ -16,10 +17,10 @@ function fail(message) {
   throw new Error(message)
 }
 
-function run(command, args, { capture = false, allowFailure = false } = {}) {
+function run(command, args, { capture = false, allowFailure = false, env = {} } = {}) {
   const result = spawnSync(command, args, {
     cwd: root,
-    env: process.env,
+    env: { ...process.env, ...env },
     encoding: 'utf8',
     stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
   })
@@ -258,13 +259,22 @@ function prepareDeployment(version, notes, date, assetsDir) {
 }
 
 async function main() {
-  const [version, ...noteParts] = process.argv.slice(2)
+  const local = process.argv.includes('--local')
+  const args = process.argv.slice(2).filter(arg => arg !== '--local')
+  const notesFileIndex = args.indexOf('--notes-file')
+  let notesFile
+  if (notesFileIndex !== -1) {
+    notesFile = args[notesFileIndex + 1]
+    if (!notesFile) fail('--notes-file 缺少文件路径')
+    args.splice(notesFileIndex, 2)
+  }
+  const [version, ...noteParts] = args
   if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
     fail('用法：npm run release:publish -- 0.1.6 "更新说明一；更新说明二"')
   }
-  const noteText = noteParts.join(' ').trim()
+  const noteText = (notesFile ? fs.readFileSync(notesFile, 'utf8') : noteParts.join(' ')).trim()
   if (!noteText) fail('请填写本次更新说明')
-  const notes = noteText.split(/[；|]/).map((item) => item.trim()).filter(Boolean)
+  const notes = noteText.split(notesFile ? /\r?\n/ : /[；|]/).map((item) => item.trim()).filter(Boolean)
   const tag = `v${version}`
   const date = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -279,6 +289,18 @@ async function main() {
   runWithRetry('gh', ['auth', 'status'], { capture: true })
   run('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', sshTarget, 'true'])
   run('git', ['fetch', 'origin', '--tags'])
+  if (local) localPreflight(run)
+  const liveResponse = await fetch(`${siteUrl}/latest.json`, { cache: 'no-store', signal: AbortSignal.timeout(15_000) })
+  if (!liveResponse.ok) fail('无法读取线上版本，停止发布以避免意外回退')
+  const liveVersion = (await liveResponse.json()).version
+  const compareVersion = (a, b) => {
+    const left = a.split('.').map(Number), right = b.split('.').map(Number)
+    for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i] - right[i]
+    return 0
+  }
+  if (!/^\d+\.\d+\.\d+$/.test(liveVersion) || compareVersion(version, liveVersion) < 0) fail(`线上版本为 ${liveVersion}，拒绝降级发布`)
+  const published = run('gh', ['release', 'view', tag, '--json', 'isDraft'], { capture: true, allowFailure: true })
+  if (published && !JSON.parse(published).isDraft) fail(`${tag} 已正式发布，请使用新版本号`)
   const existingTag = run('git', ['tag', '--list', tag], { capture: true })
   let commit
   let runId
@@ -289,37 +311,46 @@ async function main() {
     }
     console.log(`\n继续上次未完成的 ${tag} 发布`)
     const pending = run('git', ['status', '--short'], { capture: true })
-    if (pending) {
+    if (local && run('git', ['status', '--porcelain', '--', '.', ':!release-site/latest.json', ':!release-site/release.json'], { capture: true })) {
+      fail('本机续跑只允许更新清单变化；请先处理源码修改，不能更改已打标签的应用')
+    }
+    if (local) {
+      const diff = run('git', ['diff', tag, '--', '.', ':!release-site/latest.json', ':!release-site/release.json'], { capture: true })
+      if (diff) fail('当前源码与发布标签不一致，请使用新版本号')
+    }
+    if (pending && !local) {
       console.log(`\n本次会提交这些发布修复：\n${pending}`)
       run('git', ['add', '-A'])
       run('git', ['commit', '-m', `fix: repair ${tag} release pipeline`])
     }
-    run('git', ['push', 'origin', 'main'])
+    run('git', ['push', 'origin', 'main', `refs/tags/${tag}`])
     // 续跑发布时复用标签已经成功的安装包构建；发布脚本修复不需要重新构建应用。
     commit = run('git', ['rev-list', '-n', '1', tag], { capture: true })
-    runId = waitForReleaseBuild(tag, commit)
+    if (!local) runId = waitForReleaseBuild(tag, commit)
   } else {
     console.log(`\n准备发布熊猫投稿 ${tag}`)
     const pending = run('git', ['status', '--short'], { capture: true })
     if (pending) console.log(`\n本次会一并发布这些修改：\n${pending}`)
     updateVersionFiles(version, notes, date)
     run('git', ['add', '-A'])
-    run('git', ['commit', '-m', `release: prepare ${tag}`])
+    run('git', ['commit', '-m', `release: prepare ${tag}${local ? " [skip ci]" : ""}`])
     run('git', ['tag', '-a', tag, '-m', `熊猫投稿 ${tag}`])
     run('git', ['push', 'origin', 'main', `refs/tags/${tag}`])
     commit = run('git', ['rev-parse', 'HEAD'], { capture: true })
-    runId = waitForReleaseBuild(tag, commit)
+    if (!local) runId = waitForReleaseBuild(tag, commit)
   }
 
-  const downloadDir = downloadReleaseArtifacts(runId, version)
+  const downloadDir = local
+    ? buildAndSignLocal({ root, version, commit, notes, run, runWithRetry })
+    : downloadReleaseArtifacts(runId, version)
+  if (local) verifySignatures(root, downloadDir, version, run)
   const deployDir = prepareDeployment(version, notes, date, downloadDir)
 
   console.log('\n上传下载站和安装包...')
-  run('ssh', [sshTarget, 'mkdir', '-p', `${deployPath}/releases`])
-  run('rsync', ['-az', `${deployDir}/`, `${sshTarget}:${deployPath}/`])
+  deployAtomic({ directory: deployDir, deployPath, sshTarget, version, run })
 
   const response = await fetch(`${siteUrl}/latest.json?version=${encodeURIComponent(version)}`, {
-    cache: 'no-store',
+    cache: 'no-store', signal: AbortSignal.timeout(15_000),
   })
   if (!response.ok) fail(`下载站校验失败：HTTP ${response.status}`)
   const deployed = await response.json()

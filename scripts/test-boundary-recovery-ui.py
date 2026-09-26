@@ -55,19 +55,20 @@ with sync_playwright() as p:
     print('PASS repeated startup + refresh failures reuse one persisted task and manuscript', flush=True)
     s.close()
 
-    update = """export const currentVersion=async()=> '0.2.5';export const availableUpdate=async()=>({version:'99.0.0',close:async()=>{}});export const installUpdate=async()=>{};export const restartApp=async()=>{if(window.__failRestart)throw Error('fixture restart rejected');window.__restarts=(window.__restarts||0)+1};export const RELEASES_URL='';"""
+    update = """export const currentVersion=async()=> '0.2.5';export const availableUpdate=async()=>({version:'99.0.0',close:async()=>{}});export const downloadUpdate=async()=>{};export const installUpdate=async()=>{window.__installs=(window.__installs||0)+1};export const restartApp=async()=>{if(window.__failRestart)throw Error('fixture restart rejected');window.__restarts=(window.__restarts||0)+1};export const RELEASES_URL='';"""
     s = page(update=update)
     s.get_by_role('button', name='投稿计划', exact=True).click()
     s.get_by_role('button', name='新建计划', exact=True).click()
     s.get_by_label('作品名称', exact=True).fill('尚未保存的稿件')
     s.clock.fast_forward(5000)
-    s.get_by_role('button', name='下载并安装', exact=True).click()
-    s.get_by_role('button', name='立即重启', exact=True).click()
+    s.get_by_role('button', name='更新并重启', exact=True).click()
     guard = s.get_by_role('alertdialog', name='放弃未保存的修改？')
     expect(guard).to_be_visible()
     guard.get_by_role('button', name='继续编辑', exact=True).click()
     expect(s.get_by_label('作品名称', exact=True)).to_have_value('尚未保存的稿件')
     assert s.evaluate('window.__restarts||0') == 0
+    assert s.evaluate('window.__installs||0') == 0
+    s.get_by_role('button', name='稍后', exact=True).click()
     # Navigate out, then ensure the installed-update button consults the new page's guard.
     s.get_by_role('button', name='返回', exact=True).click()
     guard.get_by_role('button', name='放弃修改', exact=True).click()
@@ -75,7 +76,7 @@ with sync_playwright() as p:
     s.get_by_role('button', name='发送', exact=True).click()
     s.get_by_role('spinbutton').fill('7')
     s.get_by_role('button', name='更新', exact=True).click()
-    s.get_by_role('button', name='重启使用新版本', exact=True).click()
+    s.get_by_role('button', name='更新并重启', exact=True).click()
     expect(guard).to_be_visible()
     guard.get_by_role('button', name='继续编辑', exact=True).click()
     assert s.evaluate('window.__restarts||0') == 0
@@ -83,9 +84,9 @@ with sync_playwright() as p:
     expect(s.get_by_role('spinbutton')).to_have_value('7')
     s.get_by_role('button', name='更新', exact=True).click()
     s.evaluate('window.__failRestart=true')
-    s.get_by_role('button', name='重启使用新版本', exact=True).click()
+    s.get_by_role('button', name='更新并重启', exact=True).click()
     guard.get_by_role('button', name='放弃修改', exact=True).click()
-    expect(s.get_by_text('重启失败：Error: fixture restart rejected', exact=True)).to_be_visible()
+    expect(s.get_by_text('暂时无法更新：Error: fixture restart rejected', exact=True)).to_be_visible()
     s.evaluate('window.__failRestart=false')
     s.get_by_role('button', name='重启使用新版本', exact=True).click()
     guard.get_by_role('button', name='放弃修改', exact=True).click()

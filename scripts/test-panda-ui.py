@@ -328,6 +328,8 @@ with sync_playwright() as p:
     # Existing inbox supports selection, quote folding, full reading and pagination.
     nav.get_by_role('button',name='收件箱',exact=True).click()
     expect(page.locator('.reply-list-item')).to_have_count(20)
+    if nav.get_by_role('button',name='收件箱',exact=True).get_attribute('aria-expanded') != 'true':
+        nav.get_by_role('button',name='收件箱',exact=True).click()
     expect(page.get_by_role('group',name='收件箱账号').get_by_role('button',name='全部账号',exact=True)).to_have_attribute('aria-pressed','true')
     expect(page.get_by_role('dialog')).to_have_count(0)
     expect(page.locator('.reply-list-item').first).to_have_class('reply-list-item is-unread')

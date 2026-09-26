@@ -8,6 +8,7 @@ mod smtp;
 mod state;
 mod store;
 mod tray;
+mod update_gate;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -131,6 +132,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            update_gate::prepare_update_install,
+            update_gate::release_update_install,
             commands::get_dashboard,
             tray::take_tray_inbox_request,
             commands::running_task_count,

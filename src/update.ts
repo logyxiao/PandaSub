@@ -12,10 +12,10 @@ export async function availableUpdate() {
   return check({ timeout: 12_000 })
 }
 
-export async function installUpdate(update: Update, onProgress?: (percent: number | null) => void) {
+export async function downloadUpdate(update: Update, onProgress?: (percent: number | null) => void) {
   let downloaded = 0
   let total: number | undefined
-  await update.downloadAndInstall((event) => {
+  await update.download((event) => {
     if (event.event === 'Started') {
       total = event.data.contentLength
       downloaded = 0
@@ -26,9 +26,11 @@ export async function installUpdate(update: Update, onProgress?: (percent: numbe
     } else {
       onProgress?.(100)
     }
-  })
+  }, { timeout: 300_000 })
 }
 
 export async function restartApp() {
   await relaunch()
 }
+
+export async function installUpdate(update: Update) { await update.install() }

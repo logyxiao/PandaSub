@@ -1341,3 +1341,5 @@ details.advanced .advanced-body { padding: 4px 0 16px; }
 .mail-server-settings { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
 .mail-server-settings > summary { cursor: pointer; font-size: 13px; font-weight: 600; }
 .mail-server-settings .check-line { display: flex; gap: 8px; align-items: center; margin: 12px 0; font-size: 12px; }
+
+.update-ready-notice { position: fixed; bottom: 18px; right: 20px; z-index: 80; display: flex; gap: 10px; align-items: center; max-width: calc(100vw - 40px); padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); font-size: 13px; flex-wrap: wrap; }

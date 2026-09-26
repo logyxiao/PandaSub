@@ -117,12 +117,16 @@ export default function App() {
       } finally { navigating.current = false }
     })()
   }, [active, inboxAccount, collapsed])
-  const restart = useCallback(async () => {
+  const restart = useCallback(async (beforeRestart?: () => Promise<void>) => {
     if (navigating.current) return
     navigating.current = true
     try {
       if (leaveGuard.current && !await leaveGuard.current()) return
-      await restartApp()
+      await api.prepareUpdateInstall()
+      try {
+        await beforeRestart?.()
+        await restartApp()
+      } finally { await api.releaseUpdateInstall().catch(() => {}) }
     } finally { navigating.current = false }
   }, [])
   useTrayInboxNavigation(go)

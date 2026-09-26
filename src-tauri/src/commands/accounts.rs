@@ -123,6 +123,7 @@ pub fn toggle_account(state: State<'_, AppState>, id: i64, enabled: bool) -> Res
 
 #[tauri::command]
 pub async fn test_account(state: State<'_, AppState>, id: i64) -> Result<String, String> {
+    let _activity = crate::update_gate::UPDATE_GATE.enter_test()?;
     let account = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         store::load_account(&conn, id)?.ok_or("账号不存在")?
@@ -159,6 +160,7 @@ pub async fn send_test_email(
     body: String,
     content_type: String,
 ) -> Result<String, String> {
+    let _activity = crate::update_gate::UPDATE_GATE.enter_test()?;
     let account = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         store::load_account(&conn, account_id)?.ok_or("账号不存在")?

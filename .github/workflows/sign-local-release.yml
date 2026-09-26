@@ -1,0 +1,51 @@
+name: 签名本机安装包
+run-name: 签名本机安装包 ${{ github.ref_name }}
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: sign-local-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  sign:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: 下载并验证本机构建来源和 SHA-256
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs'
+          import { execFileSync } from 'node:child_process'
+          import { assetNames, validateManifest } from './scripts/local-release.mjs'
+          const version = process.env.GITHUB_REF_NAME.slice(1)
+          if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid release tag')
+          if (JSON.parse(fs.readFileSync('package.json')).version !== version) throw new Error('Version mismatch')
+          const release = JSON.parse(execFileSync('gh', ['release', 'view', process.env.GITHUB_REF_NAME, '--json', 'isDraft']))
+          if (!release.isDraft) throw new Error('Only draft releases can be signed')
+          fs.mkdirSync('signing')
+          for (const name of [...assetNames(version), 'local-build.json']) execFileSync('gh', ['release', 'download', process.env.GITHUB_REF_NAME, '--pattern', name, '--dir', 'signing'], { stdio: 'inherit' })
+          const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+          validateManifest(JSON.parse(fs.readFileSync('signing/local-build.json')), version, commit, 'signing')
+          JS
+      - name: 使用现有更新密钥签名（私钥只在此步骤可用）
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for file in signing/*.exe signing/*.app.tar.gz; do
+            npm run tauri -- signer sign "$file"
+          done
+      - name: 上传签名
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" signing/*.sig --clobber

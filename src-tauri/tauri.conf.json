@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "熊猫投稿",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "identifier": "com.novelsub.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -31,7 +31,10 @@
       "endpoints": [
         "https://pandasub.zhudot.com/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDQTEwNDM5OEVBQ0IwNzkKUldSNXNLeU9PUVNoZkJGZkNka1o4ZlFVWHF5bFJYUDFtMW1YUUNSSnBFdG1WdnN4clVRTGorMGEK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdDQTEwNDM5OEVBQ0IwNzkKUldSNXNLeU9PUVNoZkJGZkNka1o4ZlFVWHF5bFJYUDFtMW1YUUNSSnBFdG1WdnN4clVRTGorMGEK",
+      "windows": {
+        "installMode": "quiet"
+      }
     }
   },
   "bundle": {

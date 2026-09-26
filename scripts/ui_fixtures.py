@@ -17,6 +17,7 @@ export const onTask=(fn)=>on('task',fn);export const onLog=(fn)=>on('log',fn);ex
 const stats=Array.from({length:405},(_,i)=>({period:new Date(Date.UTC(2025,0,i+1)).toISOString().slice(0,10),deliveries:1,human_replies:0,accepted:0,failures:0}));
 window.__sentToday=1;
 const functions={
+ prepareUpdateInstall:()=>null,releaseUpdateInstall:()=>null,
  getLocalReplyContent:id=>{const r=replies.find(r=>r.id===id);return{from:[],to:[],cc:[],bcc:[],reply_to:[],sent_at:'',text:r?.body||'',html:'',attachments:[],inline_images:{},complete:false}},
  getReplyContent:id=>{const r=replies.find(r=>r.id===id);return{from:[{name:'',email:r.from_email}],to:[{name:'',email:'fixture@example.com'}],cc:[],bcc:[],reply_to:[],sent_at:'',text:r.body,html:'',attachments:[],inline_images:{},complete:true}},
  saveReplyAttachment:()=>null,openMailLink:()=>null,
@@ -64,4 +65,4 @@ const functions={
 };
 export const api=new Proxy({}, {get:(_,name)=>(...args)=>{window.__calls.push({name,args});if(!(name in functions))return Promise.reject(new Error('Unexpected API: '+name));return Promise.resolve(functions[name](...args))}});
 '''
-UPDATE = '''export const RELEASES_URL='';export const currentVersion=async()=> '0.2.3';export const availableUpdate=async()=>null;export const installUpdate=async()=>{};export const restartApp=async()=>{};'''
+UPDATE = '''export const RELEASES_URL='';export const currentVersion=async()=> '0.2.3';export const availableUpdate=async()=>null;export const downloadUpdate=async()=>{};export const installUpdate=async()=>{};export const restartApp=async()=>{};'''

@@ -12,7 +12,7 @@ export type LeaveGuard = () => boolean | Promise<boolean>
 
 export const NavContext = createContext<{
   go: (id: ViewId, options?: NavOptions) => void
-  restart: () => Promise<void>
+  restart: (beforeRestart?: () => Promise<void>) => Promise<void>
   setChrome: (hidden: boolean) => void
   setLeaveGuard: (guard: LeaveGuard | null) => void
 }>({ restart: async () => {}, go: () => {}, setChrome: () => {}, setLeaveGuard: () => {} })

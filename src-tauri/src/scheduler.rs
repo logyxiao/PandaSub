@@ -94,6 +94,7 @@ pub fn try_reserve_task_handle(
 ) -> Result<Option<Arc<TaskHandle>>, String> {
     let handle = Arc::new(TaskHandle::new());
     let mut tasks = registry.lock().map_err(|e| e.to_string())?;
+    crate::update_gate::UPDATE_GATE.ensure_available()?;
     if tasks.contains_key(&task_id) {
         return Ok(None);
     }

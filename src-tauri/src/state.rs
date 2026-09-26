@@ -91,6 +91,7 @@ impl ManualSendLease {
         account_id: i64,
         task_id: Option<i64>,
     ) -> Result<Self, String> {
+        crate::update_gate::UPDATE_GATE.ensure_available()?;
         ensure_no_manual_sends(pending, &[manuscript_id])?;
         pending.insert(
             manuscript_id,

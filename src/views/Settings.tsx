@@ -1,7 +1,7 @@
 import { StorageManager } from '../components/StorageManager'
 import { useRequestGuard } from '../hooks/useRequestGuard'
 import { useBusyAction } from '../hooks/useBusyAction'
-import { runUpdateFlow, useUpdateFlow } from '../lib/updateFlow'
+import { applyPreparedUpdate, runUpdateFlow, useUpdateFlow } from '../lib/updateFlow'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { Check, Coffee, DatabaseBackup, Download, Inbox, Palette, Power, RefreshCw, Save, Send, ShieldCheck } from 'lucide-react'
@@ -218,12 +218,14 @@ export function SettingsView() {
 
           {section === 'update' && (
             <div className="panel settings-section">
-              <div className="panel-heading"><div><h2>更新</h2><p>自动检查官方版本，安装前会验证发布签名。</p></div></div>
+              <div className="panel-heading"><div><h2>更新</h2><p>后台检查并下载官方更新，签名验证通过后可一键更新重启；不会自动中断编辑或发送。</p></div></div>
               <div className="update-status pad">
                 <Download size={18} />
                 <div>
                   <b>{updateState === 'checking' ? '正在检查更新'
                     : updateState === 'downloading' ? `正在下载${updateProgress === null ? '' : ` ${updateProgress}%`}`
+                      : updateState === 'ready' ? '更新已下载，等待空闲时安装'
+                        : updateState === 'installing' ? '正在安装更新'
                       : updateState === 'installed' ? '更新已安装，等待重启'
                         : '熊猫投稿桌面版'}</b>
                   <span>{version ? `当前版本 v${version}` : versionError ? '版本读取失败' : '正在读取当前版本'}</span>
@@ -233,7 +235,7 @@ export function SettingsView() {
                 <Button variant="ghost" disabled={updateState !== 'idle'} onClick={() => void checkUpdate()}>
                   <RefreshCw size={15} className={updateState === 'checking' ? 'is-spinning' : ''} />检查更新
                 </Button>
-                {updateState === 'installed' && <Button onClick={() => void restart().catch(error => toast(`重启失败：${String(error)}`, 'error'))}>重启使用新版本</Button>}
+                {['ready', 'installed'].includes(updateState) && <Button onClick={() => void applyPreparedUpdate(restart, toast)}>{updateState === 'ready' ? '更新并重启' : '重启使用新版本'}</Button>}
               </div>
             </div>
           )}

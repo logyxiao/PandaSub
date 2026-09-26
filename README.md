@@ -131,16 +131,49 @@ npm run tauri build
 
 ## 一键发布
 
-在 `main` 分支运行，当前未提交的修改也会一起纳入本次版本：
+推荐在本机 Mac 编译 macOS 通用版和 Windows x64，服务器只接收安装包。
+首次准备（当前开发机已配置）：
 
 ```bash
-npm run release:publish -- 0.1.6 "更新说明一；更新说明二"
+brew install llvm lld nsis minisign
+cargo install cargo-xwin --locked
+rustup target add aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc
+npm ci
+gh auth login
+ssh tx true
 ```
 
-该命令会更新应用版本，提交并推送 `main` 和版本标签，等待 GitHub 自动构建
-macOS 与 Windows 安装包，然后生成更新清单并部署到 `pandasub.zhudot.com`。
-本机需要已登录 GitHub CLI，并能通过 `ssh tx` 连接部署服务器。
-如果构建或上传中途失败，使用相同版本号重新运行即可从发布流程继续。
+在 `main` 分支发布，当前未提交的修改会一起纳入版本：
+
+```bash
+npm run release:local -- 0.2.7 "更新说明一；更新说明二"
+# 长更新说明可以放进 UTF-8 文件，每行一项：
+npm run release:local -- 0.2.7 --notes-file docs/releases/0.2.7.txt
+```
+
+脚本会提交版本、推送标签、本机构建两端安装包、签名、校验并部署至
+`pandasub.zhudot.com`，最后发布 GitHub Release。本地发布提交带 `[skip ci]`，
+避免标签再次触发云端全量编译。请在发布前运行项目回归检查。
+
+未在本机设置 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PATH` 时，
+GitHub 仅负责签名，使用仓库已有的 `TAURI_SIGNING_PRIVATE_KEY` 和
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Secrets，不导出私钥，也不重新生成密钥。
+本机会用应用原公钥验证 Windows 和 macOS 更新包，服务器再次检查 SHA-256，
+安装包上传完整后才原子替换更新清单；旧版本文件保留。
+
+中断后使用相同命令续跑。产物缓存在 `src-tauri/target/local-release/v版本号`，
+仅复用来源提交和 SHA-256 一致的文件。已打标签的源码不能变更，正式发布的安装包
+不能覆盖；修复应用请递增版本号。云端完整构建仍可使用：
+
+```bash
+npm run release:publish -- 0.2.8 "更新说明"
+```
+
+客户端启动后及每隔四小时检查更新，后台下载并验证签名，完成后轻提示。
+点击“更新并重启”先检查未保存内容和发送任务；Windows 使用静默安装模式。
+关闭应用前未安装的下载包不会持久化，下一次启动会重新下载。
+旧客户端首次升级仍沿用其已有的提示方式，安装此版本后才使用新流程。
+Windows 包在 Mac 上交叉编译，应在 Windows 机器上补充安装与升级验收。
 
 ## 项目结构
 
