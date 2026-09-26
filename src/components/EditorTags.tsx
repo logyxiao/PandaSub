@@ -86,6 +86,7 @@ export function EditorTagDialog({
   options,
   selection,
   filtering = false,
+  allowMatchModeChange = true,
   previewCount,
   onApply,
   onClose,
@@ -94,6 +95,7 @@ export function EditorTagDialog({
   options: readonly EditorTagOption[]
   selection: EditorTagSelection
   filtering?: boolean
+  allowMatchModeChange?: boolean
   previewCount?: (value: EditorTagSelection) => number
   onApply: (value: EditorTagSelection) => void
   onClose: () => void
@@ -277,7 +279,7 @@ export function EditorTagDialog({
               </span>
             )}
           </div>
-          {filtering && draft.included.length > 1 && (
+          {filtering && allowMatchModeChange && draft.included.length > 1 && (
             <div className="tag-dialog-match">
               <span>包含条件</span>
               <TagMatchSwitch

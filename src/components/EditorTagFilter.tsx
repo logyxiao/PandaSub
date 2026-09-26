@@ -10,19 +10,24 @@ import {
   type EditorTagSelection,
 } from './EditorTags'
 
-/** Shared tag filtering for the editor library and member pickers. */
+/** Shared tag filtering for the editor library, member pickers and submission plans. */
 export function EditorTagFilter({
   candidates,
   tags,
   value,
   onChange,
   beforeChange,
+  previewCount: customPreviewCount,
+  allowMatchModeChange = true,
 }: {
   candidates: readonly Pick<Editor, 'work_type'>[]
   tags: readonly string[]
   value: EditorTagSelection
   onChange: (value: EditorTagSelection) => void
   beforeChange?: () => boolean | Promise<boolean>
+  /** Domain-specific matching, e.g. submission length and rejection rules. */
+  previewCount?: (value: EditorTagSelection) => number
+  allowMatchModeChange?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const options = useMemo(() => {
@@ -36,7 +41,7 @@ export function EditorTagFilter({
       .map((label) => ({ label, count: counts.get(label) ?? 0 }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'))
   }, [candidates, tags])
-  const previewCount = (selection: EditorTagSelection) =>
+  const previewCount = customPreviewCount ?? ((selection: EditorTagSelection) =>
     candidates.filter((editor) =>
       matchesEditorTags(
         editor,
@@ -44,7 +49,7 @@ export function EditorTagFilter({
         selection.excluded,
         selection.match,
       ),
-    ).length
+    ).length)
   const change = async (next: EditorTagSelection) => {
     if (beforeChange && !(await beforeChange())) return
     onChange(next)
@@ -100,7 +105,7 @@ export function EditorTagFilter({
         <div className="library-active-tags">
           <div className="library-active-tags-head">
             <span>当前筛选 · {previewCount(value)} 位编辑</span>
-            {value.included.length > 1 && (
+            {allowMatchModeChange && value.included.length > 1 && (
               <TagMatchSwitch
                 value={value.match}
                 onChange={(match) => void change({ ...value, match })}
@@ -133,6 +138,7 @@ export function EditorTagFilter({
         <EditorTagDialog
           title="筛选收稿标签"
           filtering
+          allowMatchModeChange={allowMatchModeChange}
           options={options}
           selection={value}
           previewCount={previewCount}

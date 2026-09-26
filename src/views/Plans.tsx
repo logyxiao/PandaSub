@@ -388,6 +388,10 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   const importFile = async (file: File | null) => {
     if (!file) return
     const ext = file.name.split('.').pop()?.toLowerCase()
+    if (!ext || !['docx', 'txt', 'md', 'html', 'htm'].includes(ext)) {
+      toast('请导入 DOCX、TXT、MD 或 HTML 格式的稿件', 'warning')
+      return
+    }
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
       const text = ext === 'docx'
@@ -544,7 +548,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
         onClose={() => setShowEditor(false)}
         onSaveDraft={() => void saveDraft()}
         onSaveAndSend={() => void saveAndSend()}
-        onImportFile={(file) => void importFile(file)}
+        onImportFile={importFile}
       />
     )
   }

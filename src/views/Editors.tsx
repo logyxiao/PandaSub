@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { ChevronDown, Download, FolderOpen, Heart, Pencil, Plus, RotateCcw, Search, Trash2, Upload, Users, X } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
-import { EditorTagField } from '../components/EditorTags'
+import { EditorTagField, type EditorTagSelection } from '../components/EditorTags'
+import { EditorTagFilter } from '../components/EditorTagFilter'
 import { EditorLibrary } from './EditorLibrary'
 import { Modal } from '../components/Modal'
 import { GroupMemberPicker } from '../components/GroupMemberPicker'
@@ -118,18 +119,14 @@ export function EditorsList({
     return [e.name, e.email, e.platform, e.source, e.notes, ...(e.work_type ?? []), ...(e.rejected_types ?? [])].join(' ').toLowerCase().includes(q)
   }), [list, platform, query])
 
-  const workTypeCounts = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const e of basePool) for (const d of e.work_type ?? []) map.set(d, (map.get(d) ?? 0) + 1)
-    return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
-  }, [basePool])
+  const allWorkTypes = useMemo(() => [...new Set(list.flatMap((editor) => editor.work_type))], [list])
+  const tagCandidates = useMemo(() => basePool.filter((editor) =>
+    (!favoritedOnly || isEditorFavorited(editor)) && (!source || editor.source === source)),
+  [basePool, favoritedOnly, source])
 
-  const visible = useMemo(() => {
-    const filtered = [...basePool.filter((e) => {
-      if (favoritedOnly && !isEditorFavorited(e)) return false
-      if (source && e.source !== source) return false
-      return editorMatchesPlan(e, workTypes, excludedWorkTypes)
-    })].sort(compareEditorsByFavorite)
+  const matchingEditors = useCallback((selection: EditorTagSelection) => {
+    const filtered = tagCandidates.filter((editor) =>
+      editorMatchesPlan(editor, selection.included, selection.excluded)).sort(compareEditorsByFavorite)
     // 搜索时列出库里所有命中的人，方便从编辑库找人；平时每个平台只留一位。
     if (!onePerPlatform || query.trim()) return filtered
     const groups = new Map<string, Editor[]>()
@@ -147,7 +144,10 @@ export function EditorsList({
       const list = groups.get(key) ?? []
       return list.find((item) => selectedIds?.has(item.id)) ?? list[0]
     })
-  }, [basePool, source, workTypes, excludedWorkTypes, favoritedOnly, onePerPlatform, query, selectedIds])
+  }, [tagCandidates, onePerPlatform, query, selectedIds])
+  const visible = useMemo(() => matchingEditors({
+    included: workTypes, excluded: excludedWorkTypes, match: 'any',
+  }), [matchingEditors, workTypes, excludedWorkTypes])
 
   useEffect(() => { onTotalChange?.(visible.length) }, [visible.length, onTotalChange])
   const onVisibleChangeRef = useRef(onVisibleChange)
@@ -155,20 +155,6 @@ export function EditorsList({
   useEffect(() => { onVisibleChangeRef.current?.(visible) }, [visible])
   useEffect(() => { setMore(null); setPeerPick(null) }, [platform, query, source, workTypes, excludedWorkTypes, favoritedOnly, list])
 
-  const toggleWorkType = (tag: string) => {
-    setFilters({
-      excludedWorkTypes: excludedWorkTypes.filter((item) => item !== tag),
-      workTypes: workTypes.includes(tag) ? workTypes.filter((item) => item !== tag) : [...workTypes, tag],
-    })
-  }
-  const excludeWorkType = (tag: string) => {
-    setFilters({
-      workTypes: workTypes.filter((item) => item !== tag),
-      excludedWorkTypes: excludedWorkTypes.includes(tag)
-        ? excludedWorkTypes.filter((item) => item !== tag)
-        : [...excludedWorkTypes, tag],
-    })
-  }
   const resetFilters = () => {
     setFilters(emptyEditorListFilters())
     setMore(null)
@@ -344,22 +330,14 @@ export function EditorsList({
           {actions}
         </div>
       </div>
-      <div className="worktype-filter-bar">
-        {workTypeCounts.length ? (
-          <div className="field-filter-chips">
-            {workTypeCounts.map(([tag, count]) => (
-              <button type="button" key={tag} title="左键筛选，右键排除"
-                className={`field-chip ${workTypes.includes(tag) ? 'on' : ''} ${excludedWorkTypes.includes(tag) ? 'is-excluded' : ''}`}
-                onClick={() => toggleWorkType(tag)}
-                onContextMenu={(ev) => { ev.preventDefault(); excludeWorkType(tag) }}>
-                {tag}{count > 0 && <small>{count}</small>}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <span className="hint">还没有作品类型，添加编辑时补上即可筛选</span>
-        )}
-      </div>
+      <EditorTagFilter
+        candidates={tagCandidates}
+        tags={allWorkTypes}
+        value={{ included: workTypes, excluded: excludedWorkTypes, match: 'any' }}
+        allowMatchModeChange={false}
+        previewCount={(selection) => matchingEditors(selection).length}
+        onChange={(selection) => setFilters({ workTypes: selection.included, excludedWorkTypes: selection.excluded })}
+      />
       {notice && <div className="notice notice-error">{notice}</div>}
 
       {!loading && !list.length ? (
