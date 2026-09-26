@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useModalFocus } from '../hooks/useModalFocus'
+import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 type ToastTone = 'info' | 'success' | 'warning' | 'error'
 interface ToastItem { id: number; message: string; tone: ToastTone }
@@ -41,50 +42,39 @@ const ConfirmCtx = createContext<(opts: ConfirmOptions) => Promise<boolean>>(() 
 export function useConfirm() { return useContext(ConfirmCtx) }
 
 export function ConfirmProvider({ children }: { children: ReactNode }) {
-  const [pending, setPending] = useState<{ opts: ConfirmOptions; resolve: (v: boolean) => void } | null>(null)
-  const queue = useRef<Array<{ opts: ConfirmOptions; resolve: (v: boolean) => void }>>([])
+  type Request = { id: number; opts: ConfirmOptions; resolve: (v: boolean) => void }
+  const [pending, setPending] = useState<Request | null>(null)
+  const current = useRef<Request | null>(null)
+  const queue = useRef<Request[]>([])
+  const sequence = useRef(0)
 
   const confirm = useCallback((opts: ConfirmOptions) => new Promise<boolean>((resolve) => {
-    setPending((current) => {
-      if (current) {
-        queue.current.push({ opts, resolve })
-        return current
-      }
-      return { opts, resolve }
-    })
+    const request = { id: ++sequence.current, opts, resolve }
+    if (current.current) queue.current.push(request)
+    else { current.current = request; setPending(request) }
   }), [])
 
   const close = useCallback((v: boolean) => {
-    setPending((current) => {
-      current?.resolve(v)
-      return queue.current.shift() ?? null
-    })
+    const request = current.current
+    if (!request) return
+    current.current = queue.current.shift() ?? null
+    setPending(current.current)
+    // Mutate the queue and settle promises outside React state updaters.
+    request.resolve(v)
   }, [])
-
-  useEffect(() => {
-    if (!pending) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        close(false)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [pending, close])
 
   return (
     <ConfirmCtx.Provider value={confirm}>
       {children}
       {pending && (
         <div className="modal-backdrop" onClick={() => close(false)}>
-          <div className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"
-            onClick={(e) => e.stopPropagation()}>
+          <ConfirmDialog requestId={pending.id} onClose={() => close(false)}>
             <div className="modal-body">
               <h2 id="confirm-title" style={{ margin: 0, fontSize: 16, fontWeight: 650 }}>{pending.opts.title}</h2>
               <p className="confirm-message">{pending.opts.message}</p>
             </div>
             <div className="modal-foot">
-              <button className="btn btn-ghost" onClick={() => close(false)} autoFocus>
+              <button className="btn btn-ghost" onClick={() => close(false)} data-modal-initial-focus>
                 {pending.opts.cancelLabel ?? '取消'}
               </button>
               <button className={`btn ${pending.opts.tone === 'danger' ? 'btn-danger' : 'btn-primary'}`}
@@ -92,9 +82,17 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
                 {pending.opts.confirmLabel ?? '确认'}
               </button>
             </div>
-          </div>
+          </ConfirmDialog>
         </div>
       )}
     </ConfirmCtx.Provider>
   )
+}
+
+function ConfirmDialog({ children, onClose, requestId }: { children: ReactNode; onClose: () => void; requestId: number }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useModalFocus(ref, onClose)
+  useLayoutEffect(() => { ref.current?.querySelector<HTMLButtonElement>('[data-modal-initial-focus]')?.focus() }, [requestId])
+  return <div ref={ref} tabIndex={-1} className="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"
+    onClick={event => event.stopPropagation()}>{children}</div>
 }

@@ -219,9 +219,9 @@ fn resolve_imap(input: &AccountInput) -> (String, u16) {
             },
         );
     }
-    match input.provider.as_str() {
-        "qq" => ("imap.qq.com".into(), 993),
-        "163" => ("imap.163.com".into(), 993),
+    let email = input.email.trim().to_lowercase();
+    match email.rsplit_once('@').map(|(_, domain)| domain) {
+        Some(domain @ ("qq.com" | "163.com" | "126.com" | "yeah.net")) => (format!("imap.{domain}"), 993),
         _ => (String::new(), 993),
     }
 }
@@ -250,5 +250,24 @@ mod account_response_tests {
         let json = serde_json::to_value(account).unwrap();
         assert!(json.get("password").is_none());
         assert_eq!(json["email"], "fixture@example.com");
+    }
+}
+
+#[cfg(test)]
+mod server_tests {
+    use super::*;
+    #[test]
+    fn imap_fallback_uses_domain_and_preserves_explicit_servers() {
+        let mut input: AccountInput = serde_json::from_value(serde_json::json!({
+            "email":"fixture@126.com", "password":"fixture", "smtp_host":"smtp.126.com", "smtp_port":465,
+            "sender_name":"", "provider":"163", "enabled":true, "imap_host":"", "imap_port":993, "check_replies":true
+        })).unwrap();
+        for domain in ["qq.com", "163.com", "126.com", "yeah.net"] {
+            input.email = format!("fixture@{domain}");
+            assert_eq!(resolve_imap(&input), (format!("imap.{domain}"), 993));
+        }
+        input.imap_host = "imap.enterprise.example".into();
+        input.imap_port = 2993;
+        assert_eq!(resolve_imap(&input), ("imap.enterprise.example".into(), 2993));
     }
 }

@@ -278,12 +278,28 @@ pub fn get_inbox_status(state: State<'_, AppState>) -> Vec<crate::inbox::InboxSt
 }
 
 #[tauri::command]
+pub async fn get_local_reply_content(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<crate::inbox::content::MailContent, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::inbox::content::load_local(&db, id))
+        .await.map_err(|e| e.to_string())?
+}
+
+static DETAIL_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
+#[tauri::command]
 pub async fn get_reply_content(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<crate::inbox::content::MailContent, String> {
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || crate::inbox::content::load(&db, id))
+    let permit = DETAIL_SLOTS.acquire().await.map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        crate::inbox::content::load(&db, id)
+    })
         .await
         .map_err(|e| e.to_string())?
 }

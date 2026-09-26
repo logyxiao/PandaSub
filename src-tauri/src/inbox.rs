@@ -110,10 +110,11 @@ fn scan_one_account(
             let conn = db.lock().map_err(|e| e.to_string())?;
             persist_incoming(&conn, account, &mail, delivery, validity, auto_keywords)?
         };
-        let Some(reply) = reply else {
+        let Some(mut reply) = reply else {
             continue;
         };
         saved += 1;
+        reply.body.clear(); // Notifications carry summaries; full text is loaded on demand.
         let _ = app.emit("reply", &reply);
         let kind_label = match reply.kind.as_str() {
             "human" => "人工回复",

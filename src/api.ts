@@ -31,6 +31,7 @@ async function changesStats<T>(operation: Promise<T>): Promise<T> {
 }
 
 export const api = {
+  getLocalReplyContent: (id: number) => invoke<import('./types').MailContent>('get_local_reply_content', { id }),
   getReplyContent: (id: number) => invoke<import('./types').MailContent>('get_reply_content', { id }),
   saveReplyAttachment: (id: number, index: number, path: string) => invoke<void>('save_reply_attachment', { id, index, path }),
   openMailLink: (url: string) => invoke<void>('open_mail_link', { url }),

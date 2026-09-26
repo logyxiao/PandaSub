@@ -33,11 +33,12 @@ function MailContentView({ reply, account }: { reply: Reply; account: string }) 
   const toast = useToast()
   useEffect(() => {
     let active = true
+    const controller = new AbortController()
     if (!cachedMailContent(identity)) setLoading(true)
     setError('')
-    void Promise.resolve().then(() => active ? loadMailContent(identity) : null).then(value => { if (active && value) { setContent(value); setError(value.warning || '') } })
+    void Promise.resolve().then(() => active ? loadMailContent(identity, controller.signal, local => { if (active) setContent(local) }) : null).then(value => { if (active && value) { setContent(value); setError(value.warning || '') } })
       .catch(e => { if (active) setError(String(e)) }).finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
+    return () => { active = false; controller.abort() }
   }, [identity, attempt])
   const save = async (file: MailAttachment) => {
     setSaving(file.index)

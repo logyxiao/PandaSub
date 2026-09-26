@@ -41,13 +41,13 @@ with sync_playwright() as p:
  window.__accounts=accounts;
  ''')
  s.get_by_role('button',name='邮箱管理',exact=True).click();s.get_by_role('button',name='添加邮箱',exact=True).first.click()
- d=s.get_by_role('dialog');d.get_by_label('邮箱地址').fill('first@qq.com');d.get_by_label('授权码',exact=True).fill('fixture')
+ d=s.get_by_role('dialog');d.get_by_label('邮箱地址',exact=True).fill('first@qq.com');d.get_by_label('授权码',exact=True).fill('fixture')
  d.get_by_role('button',name='添加邮箱',exact=True).click()
- d.get_by_label('邮箱地址').nth(1).fill('second@qq.com');d.get_by_label('授权码',exact=True).nth(1).fill('fixture')
+ d.get_by_label('邮箱地址',exact=True).nth(1).fill('second@qq.com');d.get_by_label('授权码',exact=True).nth(1).fill('fixture')
  d.get_by_role('button',name='保存配置').click()
  expect(s.get_by_text(re.compile('已添加 1 个邮箱，剩余项目可继续保存'))).to_be_visible()
- expect(d.get_by_label('邮箱地址')).to_have_count(1)
- expect(d.get_by_label('邮箱地址')).to_have_value('second@qq.com')
+ expect(d.get_by_label('邮箱地址',exact=True)).to_have_count(1)
+ expect(d.get_by_label('邮箱地址',exact=True)).to_have_value('second@qq.com')
  s.evaluate('window.__allowSecond=true');d.get_by_role('button',name='保存配置').click()
  expect(d).to_have_count(0)
  assert s.evaluate("window.__accounts.filter(a=>a.email==='first@qq.com').length")==1

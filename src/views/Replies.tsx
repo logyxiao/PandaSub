@@ -1,7 +1,7 @@
 import { createLatestRequestQueue } from '../lib/latestRequestQueue'
 import { useEventSubscription } from '../hooks/useEventSubscription'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
-import { loadMailContent, mailIdentityKey } from '../lib/mailContentCache'
+import { mailIdentityKey } from '../lib/mailContentCache'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Heart, Inbox, Mail, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { api, onReply, onInboxStatus } from '../api'
@@ -15,7 +15,7 @@ import type { Account, Editor, Reply, Task, Settings, InboxStatus } from '../typ
 import { isEditorFavorited } from './planShared'
 
 function replyBodyPreview(reply: Reply) {
-  return (reply.body || reply.snippet || '').replace(/\s+/g, ' ').trim() || '（无正文）'
+  return (reply.snippet || reply.body.slice(0, 180) || '').replace(/\s+/g, ' ').trim() || '（无正文）'
 }
 
 function replyDelivery(reply: Reply) {
@@ -290,7 +290,6 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
     }
   }, [toast, kind])
   const openPreview = (reply: Reply) => {
-    void loadMailContent(reply).catch(() => {})
     setPreview(reply)
     void setReadState(reply, true)
   }
@@ -298,7 +297,6 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
     if (openedInitialReply.current === initialReply) return
     openedInitialReply.current = initialReply
     if (!initialReply) return
-    void loadMailContent(initialReply).catch(() => {})
     setPreview(initialReply)
     void setReadState(initialReply, true)
   }, [initialReply, setReadState]) // dashboard deep link opens the same preview

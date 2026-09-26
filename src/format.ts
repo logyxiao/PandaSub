@@ -39,7 +39,7 @@ export const scheduleLabel: Record<string, string> = {
 }
 
 export const providerName: Record<string, string> = {
-  qq: 'QQ 邮箱', '163': '163 邮箱', other: '其他',
+  qq: 'QQ 邮箱', '163': '163 邮箱', '126': '126 邮箱', yeah: 'Yeah 邮箱', other: '其他',
 }
 
 export const logCategoryLabel: Record<string, string> = {

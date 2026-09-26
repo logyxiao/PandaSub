@@ -140,8 +140,11 @@ export function Select<T extends string | number>({ value, options, onChange, ar
       event.preventDefault()
       if (open) { if (visible[active]) choose(visible[active]) }
       else setOpen(true)
-    } else if (event.key === 'Escape') {
+    } else if (event.key === 'Escape' && open) {
+      event.preventDefault()
+      event.stopPropagation()
       setOpen(false)
+      rootRef.current?.querySelector<HTMLButtonElement>('.select-trigger')?.focus()
     } else if (event.key === 'Home' && open) {
       event.preventDefault(); setActive(0)
     } else if (event.key === 'End' && open) {
@@ -156,7 +159,13 @@ export function Select<T extends string | number>({ value, options, onChange, ar
         <span className={selected ? '' : 'is-placeholder'}>{selected?.label ?? placeholder}</span><ChevronDown size={15} />
       </button>
       {open && menuStyle && createPortal(
-        <div ref={menuRef} id={listId} className={`select-menu ${up ? 'is-up' : ''} ${searchable ? 'is-searchable' : ''}`} role="listbox" aria-label={ariaLabel} style={menuStyle}>
+        <div ref={menuRef} id={listId} className={`select-menu ${up ? 'is-up' : ''} ${searchable ? 'is-searchable' : ''}`} role="listbox" aria-label={ariaLabel} style={menuStyle}
+          onKeyDown={event => {
+            if (event.key === 'Escape') {
+              event.preventDefault(); event.stopPropagation(); setOpen(false)
+              rootRef.current?.querySelector<HTMLButtonElement>('.select-trigger')?.focus()
+            }
+          }}>
           {searchable && (
             <label className="select-search">
               <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)}

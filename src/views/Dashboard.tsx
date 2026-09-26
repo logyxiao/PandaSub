@@ -518,7 +518,7 @@ export function DashboardView() {
                       <b className="dashboard-reply-subject" title={reply.subject || undefined}>{reply.subject || '未命名来信'}</b>
                       {reply.read_synced && !reply.is_read && <span className="dashboard-reply-unread" title="未读"><span className="sr-only">未读</span></span>}
                     </span>
-                    <span className="dashboard-reply-excerpt">{(reply.body || reply.snippet || '（无正文）').replace(/\s+/g, ' ').trim()}</span>
+                    <span className="dashboard-reply-excerpt">{(reply.snippet || reply.body.slice(0, 180) || '（无正文）').replace(/\s+/g, ' ').trim()}</span>
                     <span className="dashboard-reply-context">
                       <span className="dashboard-reply-plan" title={reply.task_name || undefined}><BookOpenText size={13} aria-hidden="true" /><span>{reply.task_name || '未关联计划'}</span></span>
                       <span className="dashboard-reply-sender" title={reply.from_email || undefined}>{reply.from_email || '未填写发件人'}</span>

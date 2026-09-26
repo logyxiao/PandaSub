@@ -111,7 +111,7 @@ pub fn scan_all_accounts(
     let _manual = acquire_scan(&runtime.manual)?;
     let accounts = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        store::load_accounts(&conn)?
+        store::load_enabled_account_configs(&conn)?
     };
     // A slow account never holds up another account's receipt/database/event updates.
     let results = std::thread::scope(|scope| {
@@ -210,10 +210,11 @@ pub fn start_reply_watcher(app: AppHandle, db: Arc<Mutex<Connection>>, runtime: 
             {
                 break;
             }
-            let accounts = {
-                let conn = db.lock().unwrap();
-                store::load_accounts(&conn)
-            };
+            let config_db = db.clone();
+            let accounts = tauri::async_runtime::spawn_blocking(move || {
+                let conn = config_db.lock().map_err(|e| e.to_string())?;
+                store::load_enabled_account_configs(&conn)
+            }).await.unwrap_or_else(|error| Err(error.to_string()));
             let Ok(accounts) = accounts else {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;

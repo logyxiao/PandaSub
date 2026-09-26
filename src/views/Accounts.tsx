@@ -1,3 +1,4 @@
+import { detectProvider, normalizeAccountForm, serverPreset } from '../lib/accountPresets'
 import { useRequestGuard } from '../hooks/useRequestGuard'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -12,45 +13,9 @@ import { useNav } from '../nav'
 import type { Account, AccountInput } from '../types'
 import { accountTodayQuota } from './planShared'
 
-const presets: Record<string, { host: string; port: number; imap_host: string; imap_port: number }> = {
-  qq: { host: 'smtp.qq.com', port: 465, imap_host: 'imap.qq.com', imap_port: 993 },
-  '163': { host: 'smtp.163.com', port: 465, imap_host: 'imap.163.com', imap_port: 993 },
-  other: { host: '', port: 465, imap_host: '', imap_port: 993 },
-}
-
 const emptyForm: AccountInput = {
-  email: '', password: '', smtp_host: 'smtp.qq.com', smtp_port: 465,
-  sender_name: '', provider: 'qq', enabled: true,
-  imap_host: 'imap.qq.com', imap_port: 993, check_replies: true,
-}
-
-const detectProvider = (email: string) => {
-  const domain = email.trim().toLowerCase().split('@')[1] ?? ''
-  if (domain === 'qq.com') return 'qq'
-  if (['163.com', '126.com', 'yeah.net'].includes(domain)) return '163'
-  return 'other'
-}
-
-const normalizeForm = (form: AccountInput, original: Account | null = null): AccountInput => {
-  if (original && original.email.toLowerCase() === form.email.trim().toLowerCase()) return { ...form, email: form.email.trim(), sender_name: form.sender_name.trim() }
-  const provider = detectProvider(form.email)
-  const preset = presets[provider]
-  const domain = form.email.trim().toLowerCase().split('@')[1] ?? ''
-  const customHost = domain ? `smtp.${domain}` : ''
-  const customImap = domain ? `imap.${domain}` : ''
-  return {
-    ...form,
-    email: form.email.trim(),
-    sender_name: form.sender_name.trim(),
-    provider,
-    smtp_host: preset.host || customHost,
-    smtp_port: preset.port,
-    imap_host: preset.imap_host || customImap,
-    imap_port: preset.imap_port,
-    // Preserve these flags while editing; only the add form uses the defaults.
-    enabled: form.enabled,
-    check_replies: form.check_replies,
-  }
+  email: '', password: '', ...serverPreset(''),
+  sender_name: '', enabled: true, check_replies: true,
 }
 
 export function AccountsView() {
@@ -60,6 +25,7 @@ export function AccountsView() {
   const [editing, setEditing] = useState<Account | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [forms, setForms] = useState<AccountInput[]>([{ ...emptyForm }])
+  const [autoServers, setAutoServers] = useState<boolean[]>([true])
   const [showPasswords, setShowPasswords] = useState<boolean[]>([false])
   const [testing, setTesting] = useState<Set<number>>(new Set())
   const testingIds = useRef(new Set<number>())
@@ -87,6 +53,7 @@ export function AccountsView() {
 
   const openAdd = () => {
     setEditing(null)
+    setAutoServers([true])
     baseline.current = JSON.stringify([{ ...emptyForm }])
     setForms([{ ...emptyForm }])
     setShowPasswords([false])
@@ -95,6 +62,7 @@ export function AccountsView() {
 
   const openEdit = (a: Account) => {
     setEditing(a)
+    setAutoServers([false])
     const next = [{
       email: a.email, password: '', smtp_host: a.smtp_host, smtp_port: a.smtp_port,
       sender_name: a.sender_name, provider: a.provider, enabled: a.enabled,
@@ -113,12 +81,14 @@ export function AccountsView() {
   const addForm = () => {
     setForms((current) => [...current, { ...emptyForm }])
     setShowPasswords((current) => [...current, false])
+    setAutoServers((current) => [...current, true])
   }
 
   const removeForm = (index: number) => {
     if (forms.length === 1) return
     setForms((current) => current.filter((_, i) => i !== index))
     setShowPasswords((current) => current.filter((_, i) => i !== index))
+    setAutoServers((current) => current.filter((_, i) => i !== index))
   }
 
   const save = async () => {
@@ -127,18 +97,24 @@ export function AccountsView() {
     if (invalidEmail) { toast('请输入有效的邮箱地址', 'warning'); return }
     if (!editing && forms.some((form) => !form.password.trim())) { toast('请填写邮箱授权码，不是登录密码', 'warning'); return }
 
+    if (forms.some(form => !form.smtp_host.trim() || (form.check_replies && !form.imap_host.trim()) ||
+      !Number.isInteger(form.smtp_port) || form.smtp_port < 1 || form.smtp_port > 65535 ||
+      !Number.isInteger(form.imap_port) || form.imap_port < 1 || form.imap_port > 65535)) {
+      toast('请检查服务器地址和端口，端口应为 1–65535 的整数', 'warning'); return
+    }
     const emails = forms.map(form => form.email.trim().toLowerCase())
     if (new Set(emails).size !== emails.length) { toast('填写了重复的邮箱地址', 'warning'); return }
     busy.current = true; setSaving(true)
     let completed = 0
     try {
-      if (editing) await api.updateAccount(editing.id, normalizeForm(forms[0], editing))
-      else for (const form of forms) { await api.addAccount(normalizeForm(form)); completed++ }
+      if (editing) await api.updateAccount(editing.id, normalizeAccountForm(forms[0]))
+      else for (const form of forms) { await api.addAccount(normalizeAccountForm(form)); completed++ }
       setShowForm(false)
       await load()
       toast(editing ? '邮箱配置已保存' : `已添加 ${forms.length} 个邮箱`, 'success')
     } catch (e) {
       if (completed) {
+        setAutoServers(autoServers.slice(completed))
         setForms(forms.slice(completed)); setShowPasswords(forms.slice(completed).map(() => false))
         await load()
       }
@@ -182,7 +158,7 @@ export function AccountsView() {
   return (
     <>
       <div className="toolbar">
-        <p className="hint">支持 QQ、163 邮箱，填写完整邮箱地址后自动识别。</p>
+        <p className="hint">支持 QQ、163、126、Yeah 邮箱，也可手动配置其他邮箱。</p>
         <div className="toolbar-actions">
           <IconButton title="刷新" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
           <Button variant="primary" onClick={() => openAdd()}><Plus size={16} />添加邮箱</Button>
@@ -292,7 +268,7 @@ export function AccountsView() {
           footer={<><Button variant="ghost" disabled={saving} onClick={() => void closeForm()}>取消</Button><Button variant="primary" disabled={saving} onClick={() => void save()}>保存配置</Button></>}>
           <fieldset className="mail-config" disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div className="mail-config-intro">
-              <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">支持 QQ、163 邮箱；输入完整地址和授权码即可添加。</p></div>
+              <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">输入完整地址和授权码即可添加，服务器参数支持手动调整。</p></div>
               {!editing && <Button variant="ghost" onClick={addForm}><Plus size={16} />添加邮箱</Button>}
             </div>
 
@@ -305,7 +281,7 @@ export function AccountsView() {
                   </div>
                   <div className="mail-card-fields">
                     <label className="field">邮箱地址
-                      <input type="email" value={form.email} onChange={(e) => updateForm(index, { email: e.target.value })} placeholder="例如：author@qq.com 或 author@163.com" autoFocus={index === 0} /></label>
+                      <input type="email" value={form.email} onChange={(e) => updateForm(index, { email: e.target.value, ...(autoServers[index] ? serverPreset(e.target.value) : {}) })} placeholder="例如：author@qq.com 或 author@163.com" autoFocus={index === 0} /></label>
                     <label className="field">授权码
                       <div className="input-with-action">
                         <input type={showPasswords[index] ? 'text' : 'password'} value={form.password} onChange={(e) => updateForm(index, { password: e.target.value })} placeholder={editing ? '留空保留原授权码' : '请输入邮箱授权码'} />
@@ -314,7 +290,23 @@ export function AccountsView() {
                     <label className="field">笔名（可选）
                       <input value={form.sender_name} onChange={(e) => updateForm(index, { sender_name: e.target.value })} placeholder="留空则使用邮箱名称" /></label>
                   </div>
-                  <p className="mail-auto-note">{form.email && isValidEmail(form.email.trim()) ? `已识别为 ${providerName[detectProvider(form.email)] ?? '其他邮箱'}，服务参数将自动配置` : '输入 @qq.com 或 @163.com 地址，将自动识别并配置对应邮箱服务。'}</p>
+                  <details className="mail-server-settings">
+                    <summary>服务器设置</summary>
+                    <label className="check-line"><input type="checkbox" checked={autoServers[index] ?? false}
+                      onChange={event => {
+                        const enabled = event.target.checked
+                        setAutoServers(current => current.map((value, i) => i === index ? enabled : value))
+                        if (enabled) updateForm(index, serverPreset(form.email))
+                      }} />根据邮箱地址自动配置</label>
+                    <div className="form-grid">
+                      <label className="field">SMTP 服务器<input value={form.smtp_host} disabled={autoServers[index]} onChange={e => updateForm(index, { smtp_host: e.target.value })} /></label>
+                      <label className="field">SMTP 端口<input type="number" min={1} max={65535} value={form.smtp_port} disabled={autoServers[index]} onChange={e => updateForm(index, { smtp_port: Number(e.target.value) })} /></label>
+                      <label className="field">IMAP 服务器<input value={form.imap_host} disabled={autoServers[index]} onChange={e => updateForm(index, { imap_host: e.target.value })} /></label>
+                      <label className="field">IMAP 端口<input type="number" min={1} max={65535} value={form.imap_port} disabled={autoServers[index]} onChange={e => updateForm(index, { imap_port: Number(e.target.value) })} /></label>
+                    </div>
+                    <p className="field-hint">使用 SSL/TLS 连接。其他邮箱或企业邮箱请核对服务商提供的服务器地址。</p>
+                  </details>
+                  <p className="mail-auto-note">{autoServers[index] ? '输入完整邮箱地址后自动配置，可展开服务器设置手动调整。' : '保留当前服务器设置；修改地址或笔名不会覆盖这些参数。'}</p>
                 </section>
               ))}
             </div>

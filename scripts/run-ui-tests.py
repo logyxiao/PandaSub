@@ -11,7 +11,7 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ['test-workflow-ui.py', 'test-panda-ui.py', 'test-inbox-ui.py', 'test-accepted-ui.py',
-         'test-optimization-ui.py', 'test-accepted-safety-ui.py', 'test-unread-ui.py', 'test-tray-inbox-ui.py', 'test-mail-sync-ui.py', 'test-mail-detail-ui.py', 'test-mail-performance-ui.py', 'test-mail-races-ui.py', 'test-plan-performance-ui.py', 'test-module-audit-ui.py', 'test-boundary-recovery-ui.py']
+         'test-optimization-ui.py', 'test-accepted-safety-ui.py', 'test-unread-ui.py', 'test-tray-inbox-ui.py', 'test-mail-sync-ui.py', 'test-mail-detail-ui.py', 'test-mail-performance-ui.py', 'test-mail-races-ui.py', 'test-plan-performance-ui.py', 'test-module-audit-ui.py', 'test-boundary-recovery-ui.py', 'test-mail-loading-and-dialog-ui.py', 'test-local-mail-and-confirm-ui.py']
 
 def main():
     with socket.socket() as listener:

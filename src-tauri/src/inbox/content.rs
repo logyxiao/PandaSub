@@ -247,19 +247,32 @@ fn fetch_detail_session<S: Read + Write>(
     // a slow server to acknowledge LOGOUT before allowing the reader to render.
     Ok(mail)
 }
+/// Read disk/local text only. This must not wait for a network slot or contact IMAP.
+pub fn load_local(db: &Arc<Mutex<Connection>>, id: i64) -> Result<MailContent, String> {
+    if let Some(content) = read_cached(db, id)? {
+        return Ok(content);
+    }
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    conn.query_row("SELECT from_email,body FROM replies WHERE id=?1", [id], |row| {
+        Ok(MailContent {
+            from: vec![MailAddress { name: String::new(), email: row.get(0)? }],
+            text: row.get(1)?,
+            ..Default::default()
+        })
+    }).optional().map_err(|e| e.to_string())?.ok_or_else(|| "邮件不存在或已删除".into())
+}
+
 pub fn load(db: &Arc<Mutex<Connection>>, id: i64) -> Result<MailContent, String> {
     match load_full(db, id) {
         Ok(content) => Ok(content),
         Err(error) => {
-            if let Some(mut partial) = read_cached(db, id)? {
-                partial.warning = Some(error);
-                Ok(partial)
-            } else {
-                Err(error)
-            }
+            let mut partial = load_local(db, id)?;
+            partial.warning = Some(error);
+            Ok(partial)
         }
     }
 }
+
 fn load_full(db: &Arc<Mutex<Connection>>, id: i64) -> Result<MailContent, String> {
     if let Some(content) = read_cached(db, id)?.filter(|c| c.complete) {
         return Ok(content);
@@ -482,5 +495,51 @@ mod tests {
         assert!(mail.body.contains("First section"));
         assert!(mail.body.contains("Second section"));
         assert!(mail.content.unwrap().detail.html.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+    #[test]
+    fn large_reply_lists_remain_small_and_legacy_text_stays_offline_readable() {
+        let conn = crate::db::test_database();
+        let text = "x".repeat(1024 * 1024) + "完整正文末尾";
+        for id in 1..=20 {
+            conn.execute("INSERT INTO replies(id,from_email,subject,body,snippet,kind) VALUES(?1,'friend@example.com','大邮件',?2,'','human')", params![id, text]).unwrap();
+        }
+        let page = store::query_replies(&conn, None, None, "", 20, 0, None).unwrap();
+        assert_eq!(page.items.len(), 20);
+        assert!(page.items.iter().all(|reply| reply.body.is_empty() && reply.snippet.len() == 180));
+        assert!(serde_json::to_vec(&page).unwrap().len() < 20_000);
+        let found = store::query_replies(&conn, None, None, "完整正文末尾", 20, 0, None).unwrap();
+        assert_eq!(found.total, 20, "summary projection must not change full-text search");
+        let db = Arc::new(Mutex::new(conn));
+        let detail = load(&db, 1).unwrap();
+        assert_eq!(detail.text, text);
+        assert!(!detail.complete);
+        assert!(detail.warning.is_some());
+        assert!(load(&db, 999).is_err());
+    }
+}
+
+#[cfg(test)]
+mod local_read_tests {
+    use super::*;
+    #[test]
+    fn local_reader_returns_full_cache_or_plain_text_without_imap_metadata() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO replies(id,from_email,body,kind) VALUES(1,'friend@example.com','旧版正文','human'),(2,'friend@example.com','摘要正文','human')", []).unwrap();
+        let full = MailContent { text: "完整缓存正文".into(), html: "<p>原始排版</p>".into(), complete: true, ..Default::default() };
+        conn.execute("INSERT INTO reply_contents(reply_id,json) VALUES(2,?1)", [serde_json::to_string(&full).unwrap()]).unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        let partial = load_local(&db, 1).unwrap();
+        assert_eq!(partial.text, "旧版正文");
+        assert!(!partial.complete);
+        assert!(partial.warning.is_none());
+        let cached = load_local(&db, 2).unwrap();
+        assert!(cached.complete);
+        assert_eq!(cached.html, full.html);
+        assert!(load_local(&db, 999).is_err());
     }
 }

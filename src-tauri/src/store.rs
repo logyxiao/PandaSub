@@ -1475,7 +1475,7 @@ pub fn query_replies(
     let limit_parameter = values.len() + 1;
     let offset_parameter = values.len() + 2;
     let sql = format!("SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject,
-        r.snippet, r.body, r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid,
+        substr(CASE WHEN r.snippet<>'' THEN r.snippet ELSE r.body END,1,180), '' AS body, r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid,
         r.received_at, r.created_at, d.recipient, COALESCE(t.name, m.title, ''), r.imap_uid_validity, r.imap_generation, r.is_read, r.read_synced
         {REPLY_FROM} {filter} ORDER BY r.received_at DESC, r.id DESC LIMIT ?{limit_parameter} OFFSET ?{offset_parameter}");
     values.push(limit.max(1).into());
@@ -2379,5 +2379,21 @@ mod inbox_filter_index_tests {
                 .total,
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod account_config_tests {
+    use super::*;
+    #[test]
+    fn enabled_configs_do_not_read_delivery_statistics() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO accounts(email,password,smtp_host,enabled) VALUES('on@example.com','fixture','localhost',1),('off@example.com','fixture','localhost',0)", []).unwrap();
+        conn.execute("DROP TABLE deliveries", []).unwrap();
+        let accounts = load_enabled_account_configs(&conn).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].email, "on@example.com");
+        assert_eq!(accounts[0].sent_today, 0);
+        assert!(load_accounts(&conn).is_err(), "UI account statistics still require deliveries");
     }
 }

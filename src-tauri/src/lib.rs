@@ -185,6 +185,7 @@ pub fn run() {
             commands::clean_storage,
             commands::show_main_window,
             commands::get_reply_content,
+            commands::get_local_reply_content,
             commands::save_reply_attachment,
             commands::open_mail_link,
             commands::list_replies,
