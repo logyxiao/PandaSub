@@ -2,7 +2,7 @@ import { useTrayInboxNavigation } from './hooks/useTrayInboxNavigation'
 import { useUnreadReplies } from './hooks/useUnreadReplies'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Award, BarChart3, ChevronLeft, ChevronRight, FileText, FolderOpen, Inbox, Info, LayoutDashboard, ListChecks, Mail, Plus, Settings, Users,
+  Award, BarChart3, ChevronDown, ChevronLeft, ChevronRight, FileText, FolderOpen, Inbox, Info, LayoutDashboard, ListChecks, Mail, Plus, Settings, Users,
 } from 'lucide-react'
 import type { Account, Reply } from './types'
 import logo from './assets/logo.png'
@@ -82,6 +82,7 @@ export default function App() {
   const [replyKind, setReplyKind] = useState<string | undefined>(undefined)
   const [inboxAccount, setInboxAccount] = useState<number | ''>('')
   const [inboxAccounts, setInboxAccounts] = useState<Account[]>([])
+  const [inboxExpanded, setInboxExpanded] = useState(false)
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('novelsub.sidebar') === '1')
   const [hideChrome, setHideChrome] = useState(false)
   const [running, setRunning] = useState(0)
@@ -90,8 +91,12 @@ export default function App() {
   const leaveGuard = useRef<LeaveGuard | null>(null)
   const navigating = useRef(false)
   const setLeaveGuard = useCallback((guard: LeaveGuard | null) => { leaveGuard.current = guard }, [])
-  const go = useCallback((id: ViewId, options?: NavOptions) => {
-    if (navigating.current || (id === active && !options && !(id === 'replies' && inboxAccount !== ''))) return
+  const go = useCallback((id: ViewId, options?: NavOptions, expandInbox = true) => {
+    if (navigating.current) return
+    if (id === active && !options && !(id === 'replies' && inboxAccount !== '')) {
+      if (id === 'replies' && expandInbox) setInboxExpanded(true)
+      return
+    }
     void (async () => {
       navigating.current = true
       try {
@@ -102,6 +107,7 @@ export default function App() {
         setReplyKind(id === 'replies' ? options?.replyKind : undefined)
         setInitialReply(id === 'replies' ? options?.reply : undefined)
         if (id === 'replies') {
+          if (expandInbox) setInboxExpanded(true)
           if (options?.replyKind === 'unread') setInboxEntry(value => value + 1)
           setInboxAccount(options?.accountId ?? '')
           if (collapsed && window.innerWidth > 880) setCollapsed(false)
@@ -124,13 +130,13 @@ export default function App() {
   const currentLabel = groups.flatMap(g => g.items).find(item => item.id === active)?.label ?? ''
 
   useEffect(() => {
-    if (active !== 'replies') return
+    if (!inboxExpanded && active !== 'replies') return
     let cancelled = false
     void api.listAccounts().then((accounts) => {
       if (!cancelled) setInboxAccounts(accounts)
     }).catch(() => { if (!cancelled) setInboxAccounts([]) })
     return () => { cancelled = true }
-  }, [active])
+  }, [active, inboxExpanded])
 
   useEffect(() => {
     let inFlight = false
@@ -198,7 +204,14 @@ export default function App() {
                     {g.items.map(({ id, label, icon: Icon }) => (
                       <div key={id} className="nav-entry">
                       <button className={`nav-item ${active === id ? 'active' : ''}`}
-                        onClick={() => go(id)}
+                        onClick={() => {
+                          if (id === 'replies') {
+                            setInboxExpanded(value => collapsed || !value)
+                            if (active !== 'replies' || collapsed) go(id, undefined, false)
+                          } else go(id)
+                        }}
+                        aria-expanded={id === 'replies' ? inboxExpanded && !collapsed : undefined}
+                        aria-controls={id === 'replies' ? 'inbox-nav-accounts' : undefined}
                         title={id === 'replies' && unreadReplies > 0 ? `收件箱 · ${unreadReplies} 封未读人工回复` : collapsed ? label : undefined} aria-label={label}
                         aria-describedby={id === 'replies' && unreadReplies > 0 ? 'inbox-unread-count' : undefined}
                         aria-current={active === id ? 'page' : undefined}>
@@ -206,17 +219,20 @@ export default function App() {
                         {!collapsed && <span>{label}</span>}
                         {id === 'replies' && unreadReplies > 0 && <b id="inbox-unread-count" className="nav-unread-badge" role="status"
                           aria-label={`${unreadReplies} 封未读人工回复`}>{unreadReplies > 99 ? '99+' : unreadReplies}</b>}
+                        {id === 'replies' && !collapsed && (inboxExpanded
+                          ? <ChevronDown size={14} className="inbox-nav-chevron" />
+                          : <ChevronRight size={14} className="inbox-nav-chevron" />)}
                       </button>
-                      {id === 'replies' && active === 'replies' && !collapsed && (
-                        <div className="inbox-nav-accounts" role="group" aria-label="收件箱账号">
-                          <button type="button" className={`inbox-nav-account ${inboxAccount === '' ? 'active' : ''}`}
-                            aria-pressed={inboxAccount === ''} onClick={() => go('replies', { accountId: '' })}>
+                      {id === 'replies' && inboxExpanded && !collapsed && (
+                        <div id="inbox-nav-accounts" className="inbox-nav-accounts" role="group" aria-label="收件箱账号">
+                          <button type="button" className={`inbox-nav-account ${active === 'replies' && inboxAccount === '' ? 'active' : ''}`}
+                            aria-pressed={active === 'replies' && inboxAccount === ''} onClick={() => go('replies', { accountId: '' })}>
                             <Inbox size={13} /><span>全部账号</span>
                           </button>
                           {inboxAccounts.map((account) => (
                             <button type="button" key={account.id} title={account.email}
-                              className={`inbox-nav-account ${inboxAccount === account.id ? 'active' : ''}`}
-                              aria-pressed={inboxAccount === account.id} onClick={() => go('replies', { accountId: account.id })}>
+                              className={`inbox-nav-account ${active === 'replies' && inboxAccount === account.id ? 'active' : ''}`}
+                              aria-pressed={active === 'replies' && inboxAccount === account.id} onClick={() => go('replies', { accountId: account.id })}>
                               <Mail size={13} /><span>{account.email}</span>
                             </button>
                           ))}
