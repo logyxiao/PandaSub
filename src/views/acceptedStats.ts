@@ -1,4 +1,4 @@
-import type { AcceptedWork } from '../types'
+import type { AcceptedWorkSummary } from '../types'
 
 export interface PlatformSaleRow {
   platform: string
@@ -47,7 +47,7 @@ function daysAgo(date: Date, days: number) {
   return localDay(result)
 }
 
-export function summarizeAcceptedSales(works: AcceptedWork[], now = new Date()): AcceptedSalesSummary {
+export function summarizeAcceptedSales(works: AcceptedWorkSummary[], now = new Date()): AcceptedSalesSummary {
   const platforms = new Map<string, PlatformSaleRow>()
   const platformMonths = new Map<string, Map<string, number>>()
   const today = localDay(now)

@@ -1,5 +1,4 @@
-use std::collections::BTreeMap;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::state::AppState;
 use crate::store;
@@ -50,12 +49,13 @@ pub fn list_replies(
 
 #[tauri::command]
 pub async fn set_reply_read(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: i64,
     is_read: bool,
 ) -> Result<(), String> {
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let (target, account) = {
             let conn = db.lock().map_err(|e| e.to_string())?;
             let target = store::reply_flag_target(&conn, id)?.ok_or("邮件不存在或已删除")?;
@@ -65,87 +65,37 @@ pub async fn set_reply_read(
         if account.imap_generation != target.generation || target.uid_validity <= 0 {
             return Err("邮件所属邮箱已重置，无法同步这封邮件的已读状态".into());
         }
+        let is_read = is_read || target.kind == "auto";
         crate::inbox::store_seen_flag(&account, target.uid_validity, target.uid, is_read)?;
         let conn = db.lock().map_err(|e| e.to_string())?;
         store::update_reply_server_read(&conn, &target, is_read)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    if result.is_ok() {
+        let _ = app.emit("reply-read-change", ());
+    }
+    result
 }
 
 #[tauri::command]
 pub async fn sync_reply_read_flags(
+    app: AppHandle,
     state: State<'_, AppState>,
     ids: Vec<i64>,
-) -> Result<Vec<crate::models::ReplyReadState>, String> {
+) -> Result<crate::models::ReplyFlagSyncResult, String> {
     if ids.len() > 100 {
         return Err("一次最多同步 100 封邮件".into());
     }
     let db = state.db.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut groups: BTreeMap<
-            (i64, i64),
-            (crate::models::Account, Vec<store::ReplyFlagTarget>),
-        > = BTreeMap::new();
-        {
-            let conn = db.lock().map_err(|e| e.to_string())?;
-            for id in ids {
-                let Some(target) = store::reply_flag_target(&conn, id)? else {
-                    continue;
-                };
-                let Some(account) = store::load_account(&conn, target.account_id)? else {
-                    continue;
-                };
-                if account.imap_generation != target.generation
-                    || target.uid_validity <= 0
-                    || account.imap_host.trim().is_empty()
-                {
-                    continue;
-                }
-                groups
-                    .entry((target.account_id, target.uid_validity))
-                    .or_insert_with(|| (account, Vec::new()))
-                    .1
-                    .push(target);
-            }
-        }
-        let mut results = Vec::new();
-        let mut first_error = None;
-        for ((_, validity), (account, targets)) in groups {
-            let uids = targets.iter().map(|target| target.uid).collect::<Vec<_>>();
-            match crate::inbox::fetch_seen_flags(&account, validity, &uids) {
-                Ok(states) => {
-                    let conn = db.lock().map_err(|e| e.to_string())?;
-                    for target in targets {
-                        if let Some(&is_read) = states.get(&target.uid) {
-                            if store::update_reply_read_from_sync(&conn, &target, is_read)
-                                .unwrap_or(false)
-                            {
-                                results.push(crate::models::ReplyReadState {
-                                    id: target.id,
-                                    is_read,
-                                    read_synced: true,
-                                });
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    if first_error.is_none() {
-                        first_error = Some(error)
-                    }
-                }
-            }
-        }
-        if results.is_empty() {
-            if let Some(error) = first_error {
-                return Err(format!("同步邮箱已读状态失败：{error}"));
-            }
-        }
-        Ok(results)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let result =
+        tauri::async_runtime::spawn_blocking(move || crate::inbox::sync_reply_flags(&db, ids))
+            .await
+            .map_err(|e| e.to_string())?;
+    if result.as_ref().is_ok_and(|result| !result.states.is_empty()) {
+        let _ = app.emit("reply-read-change", ());
+    }
+    result
 }
 
 #[tauri::command]
@@ -159,31 +109,236 @@ pub async fn scan_replies(app: AppHandle, state: State<'_, AppState>) -> Result<
     .map_err(|e| e.to_string())?
 }
 
-/// 按当前分类规则重新判定历史回复（不改动邮件内容，只重算 kind / reason / accepted），返回被改动的条数。
+/// Reclassify a bounded snapshot in small transactions, outside the UI thread.
 #[tauri::command]
-pub fn reclassify_replies(state: State<'_, AppState>) -> Result<usize, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let keywords = store::load_settings(&conn)?.auto_reply_subject_keywords;
-    let replies = store::load_replies(&conn, None, None, 100_000)?;
-    let mut changed = 0usize;
-    for reply in replies {
-        let result = crate::classify::classify_with_keywords(
-            &crate::classify::IncomingMail {
-                from: reply.from_email.clone(),
-                subject: reply.subject.clone(),
-                body: reply.body.clone(),
-                content_type: String::new(),
-                extra_headers: Vec::new(),
-            },
-            &keywords,
-        );
-        let new_kind = result.kind.as_str();
-        let accepted = result.kind == crate::classify::ReplyKind::Human
-            && crate::classify::body_suggests_accepted(&reply.body);
-        if new_kind != reply.kind || result.reason != reply.reason || accepted != reply.accepted {
-            store::update_reply_kind(&conn, reply.id, new_kind, &result.reason, accepted)?;
-            changed += 1;
+pub async fn reclassify_replies(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    let db = state.db.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || reclassify_history(&db))
+        .await
+        .map_err(|e| e.to_string())?;
+    // Even a later batch failure can follow committed batches; refresh consumers in either case.
+    let _ = app.emit("reply-read-change", ());
+    result
+}
+
+fn reclassify_history(
+    db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+) -> Result<usize, String> {
+    let (keywords, upper): (Vec<String>, i64) = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        (
+            store::load_settings(&conn)?.auto_reply_subject_keywords,
+            conn.query_row("SELECT COALESCE(MAX(id),0) FROM replies", [], |row| {
+                row.get(0)
+            })
+            .map_err(|e| e.to_string())?,
+        )
+    };
+    let mut cursor = 0;
+    let mut changed = 0;
+    loop {
+        let batch = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT id,kind,reason,accepted,delivery_id,from_email,subject,body FROM replies WHERE id>?1 AND id<=?2 ORDER BY id LIMIT 250").map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params![cursor, upper], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+        };
+        if batch.is_empty() {
+            break;
         }
+        cursor = batch.last().unwrap().0;
+        let mut updates = Vec::new();
+        for (id, kind, reason, accepted, delivery, from, subject, body) in batch {
+            // A prior bounce classification can rely solely on MIME/headers that older
+            // records did not persist. Subject keyword edits must not erase that evidence.
+            if kind == "bounce" {
+                continue;
+            }
+            let result = crate::classify::classify_with_keywords(
+                &crate::classify::IncomingMail {
+                    from,
+                    subject,
+                    body: body.clone(),
+                    ..Default::default()
+                },
+                &keywords,
+            );
+            let next_accepted = delivery.is_some()
+                && result.kind == crate::classify::ReplyKind::Human
+                && crate::classify::body_suggests_accepted(&body);
+            if result.kind.as_str() != kind || result.reason != reason || next_accepted != accepted
+            {
+                updates.push((
+                    id,
+                    kind,
+                    reason,
+                    accepted,
+                    result.kind.as_str(),
+                    result.reason,
+                    next_accepted,
+                ));
+            }
+        }
+        if updates.is_empty() {
+            continue;
+        }
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        {
+            let mut stmt = tx.prepare_cached("UPDATE replies SET read_revision=read_revision+1,kind=?1,reason=?2,accepted=?3,
+                is_read=CASE WHEN ?1='auto' THEN 1 ELSE is_read END,
+                read_synced=CASE WHEN ?1='auto' AND is_read=0 THEN 0 ELSE read_synced END
+                WHERE id=?4 AND kind=?5 AND reason=?6 AND accepted=?7").map_err(|e| e.to_string())?;
+            for (id, old_kind, old_reason, old_accepted, kind, reason, accepted) in updates {
+                changed += stmt
+                    .execute(rusqlite::params![
+                        kind,
+                        reason,
+                        accepted,
+                        id,
+                        old_kind,
+                        old_reason,
+                        old_accepted
+                    ])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
     }
     Ok(changed)
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+    #[test]
+    fn history_keeps_mime_bounces_and_processes_multiple_batches() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO replies(kind,reason,subject,body) VALUES('bounce','MIME report','Message report','Unable to deliver')", []).unwrap();
+        for _ in 0..503 {
+            conn.execute(
+                "INSERT INTO replies(kind,subject,body) VALUES('human','自动回复：收到','正文')",
+                [],
+            )
+            .unwrap();
+        }
+        let db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        assert_eq!(reclassify_history(&db).unwrap(), 503);
+        assert_eq!(reclassify_history(&db).unwrap(), 0);
+        let conn = db.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT kind FROM replies WHERE id=1", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "bounce"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM replies WHERE kind='auto' AND is_read=1",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            503
+        );
+    }
+}
+
+#[tauri::command]
+pub async fn unread_human_reply_count(state: State<'_, AppState>) -> Result<i64, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        store::unread_human_reply_count(&conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn get_inbox_status(state: State<'_, AppState>) -> Vec<crate::inbox::InboxStatus> {
+    state.reply_scan.statuses()
+}
+
+#[tauri::command]
+pub async fn get_reply_content(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<crate::inbox::content::MailContent, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::inbox::content::load(&db, id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn save_reply_attachment(
+    state: State<'_, AppState>,
+    id: i64,
+    index: usize,
+    path: String,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let data: Vec<u8> = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            conn.query_row(
+                "SELECT data FROM reply_files WHERE reply_id=?1 AND part_index=?2",
+                rusqlite::params![id, index as i64],
+                |r| r.get(0),
+            )
+            .map_err(|_| "附件尚未加载，请重新打开邮件".to_string())?
+        };
+        std::fs::write(path, data).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn open_mail_link(url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(&url).map_err(|_| "链接格式无效".to_string())?;
+    if !matches!(parsed.scheme(), "https" | "http" | "mailto") {
+        return Err("不支持这种链接类型".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "macos")]
+        let result = std::process::Command::new("open")
+            .arg(parsed.as_str())
+            .status();
+        #[cfg(target_os = "linux")]
+        let result = std::process::Command::new("xdg-open")
+            .arg(parsed.as_str())
+            .status();
+        #[cfg(target_os = "windows")]
+        let result = std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(parsed.as_str())
+            .status();
+        let status = result.map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("无法打开链接，请复制链接到浏览器".into())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

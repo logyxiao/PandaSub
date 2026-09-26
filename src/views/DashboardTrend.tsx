@@ -1,18 +1,15 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useAsyncResource } from '../hooks/useAsyncResource'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { api } from '../api'
 import { Button } from '../components/ui'
-import type { StatsGroup } from '../types'
 
 const localDate = (value: Date) =>
   `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
 
-export function DashboardTrend({ revision }: { revision: number }) {
+export function DashboardTrend() {
+  const [revision, setRevision] = useState(0)
+  useEffect(() => { const timer = window.setInterval(() => setRevision(value => value + 1), 60_000); return () => window.clearInterval(timer) }, [])
   const [days, setDays] = useState<7 | 30>(7)
-  const [rows, setRows] = useState<StatsGroup[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [retry, setRetry] = useState(0)
-  const request = useRef(0)
   const gradient = useId()
   const dates = useMemo(() => {
     const today = new Date()
@@ -26,26 +23,9 @@ export function DashboardTrend({ revision }: { revision: number }) {
     })
   }, [days, revision]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    const sequence = ++request.current
-    let cancelled = false
-    setLoading(true)
-    setError('')
-    api
-      .getStats(dates[0], dates[dates.length - 1], 'day')
-      .then((report) => {
-        if (!cancelled && sequence === request.current) setRows(report.groups)
-      })
-      .catch((error) => {
-        if (!cancelled && sequence === request.current) setError(String(error))
-      })
-      .finally(() => {
-        if (!cancelled && sequence === request.current) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [dates, retry])
+  const fetchTrend = useCallback((refresh = false) => api.getStats(dates[0], dates[dates.length - 1], 'day', refresh), [dates])
+  const { data, loading, error, reload } = useAsyncResource(fetchTrend)
+  const rows = data?.groups ?? []
 
   const series = dates.map(
     (period) =>
@@ -100,7 +80,7 @@ export function DashboardTrend({ revision }: { revision: number }) {
         <div className="dashboard-chart-error" role="alert">
           <p>趋势暂时无法读取</p>
           <small>{error}</small>
-          <Button size="sm" onClick={() => setRetry((value) => value + 1)}>
+          <Button size="sm" onClick={() => void reload()}>
             重试趋势
           </Button>
         </div>
@@ -108,7 +88,7 @@ export function DashboardTrend({ revision }: { revision: number }) {
         <>
           <div className="dashboard-chart-summary">
             <strong>
-              {loading ? '—' : total}
+              {loading && !data ? '—' : total}
               <small>封投递</small>
             </strong>
             <div className="dashboard-chart-legend">
@@ -122,7 +102,7 @@ export function DashboardTrend({ revision }: { revision: number }) {
               </span>
             </div>
           </div>
-          {loading ? (
+          {loading && !data ? (
             <p className="dashboard-empty">正在读取趋势…</p>
           ) : (
             <svg
@@ -177,7 +157,7 @@ export function DashboardTrend({ revision }: { revision: number }) {
               <path
                 d={path('human_replies')}
                 fill="none"
-                stroke="#B9D3C5"
+                stroke="var(--chart-secondary)"
                 strokeWidth="2"
               />
               {ticks.map((index) => (

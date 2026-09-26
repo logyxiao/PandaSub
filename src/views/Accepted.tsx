@@ -1,3 +1,6 @@
+import { useRequestGuard } from '../hooks/useRequestGuard'
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
+import { useAttachmentImport } from '../hooks/useAttachmentImport'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileCheck2, FileText, FolderOpen, Plus, RefreshCw, Search, Share2, Trash2 } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
@@ -7,7 +10,7 @@ import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton } from '../components/ui'
 import { Table } from '../components/Table'
-import type { AcceptedCandidate, AcceptedDealMode, AcceptedReviewStatus, AcceptedWork, AcceptedWorkInput, Manuscript } from '../types'
+import type { AcceptedCandidate, AcceptedDealMode, AcceptedReviewStatus, AcceptedWork, AcceptedWorkSummary, AcceptedWorkInput, ManuscriptSummary } from '../types'
 import { summarizeAcceptedSales } from './acceptedStats'
 import { drawAcceptedShareCard } from './acceptedShareCard'
 
@@ -44,7 +47,7 @@ function emptyWork(source: 'plan' | 'external' = 'external'): AcceptedWorkInput 
   }
 }
 
-function saleLabel(work: AcceptedWork) {
+function saleLabel(work: AcceptedWorkSummary) {
   if (work.review_status === 'not_accepted') return <span className="hint">不计入卖出</span>
   if (work.review_status === 'preliminary') return <span className="hint">等待终审</span>
   if (work.review_status === 'final_rejected') return <span className="hint">终审未通过</span>
@@ -68,9 +71,9 @@ function toCents(value: string): number | null {
 }
 
 export function AcceptedView() {
-  const [works, setWorks] = useState<AcceptedWork[]>([])
+  const [works, setWorks] = useState<AcceptedWorkSummary[]>([])
   const [candidates, setCandidates] = useState<AcceptedCandidate[]>([])
-  const [manuscripts, setManuscripts] = useState<Manuscript[]>([])
+  const [manuscripts, setManuscripts] = useState<ManuscriptSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('')
   const [query, setQuery] = useState('')
@@ -78,6 +81,7 @@ export function AcceptedView() {
   const [originFilter, setOriginFilter] = useState<'all' | 'manual' | 'historical_import'>('all')
   const [editing, setEditing] = useState<AcceptedWork | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const attachmentImport = useAttachmentImport(showForm)
   const [draft, setDraft] = useState<AcceptedWorkInput>(() => emptyWork())
   const [priceText, setPriceText] = useState('')
   const [guaranteeText, setGuaranteeText] = useState('')
@@ -97,16 +101,35 @@ export function AcceptedView() {
   const toast = useToast()
   const confirm = useConfirm()
 
+  const listRequests = useRequestGuard()
+  const editRequests = useRequestGuard()
+  const previewRequests = useRequestGuard()
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const savingRef = useRef(false)
+  const draftMetadata = useMemo(() => { const { body, ...metadata } = draft; void body; return JSON.stringify(metadata) }, [draft])
+  const snapshot = useMemo(() => JSON.stringify([draftMetadata, priceText, guaranteeText, perThousandText, realizedShareText, settlementRows, shareText]),
+    [draftMetadata, priceText, guaranteeText, perThousandText, realizedShareText, settlementRows, shareText])
+  const baseline = useRef(snapshot)
+  const baselineBody = useRef(draft.body)
+  const allowLeave = useUnsavedChanges(showForm && (snapshot !== baseline.current || draft.body !== baselineBody.current), saving,
+    '当前过稿记录尚未保存，继续会丢弃作品内容和结算修改。')
+  const closeForm = async () => {
+    if (await allowLeave()) { editRequests.invalidate(); setShowForm(false) }
+  }
+  const closePreview = () => { previewRequests.invalidate(); setPreviewing(null); setPreview(null) }
+
   const load = useCallback(async () => {
+    const request = listRequests.begin()
     setLoading(true)
     try {
       const [nextWorks, nextCandidates, nextManuscripts] = await Promise.all([
-        api.listAcceptedWorks(), api.listAcceptedCandidates(), api.listManuscripts(),
+        api.listAcceptedWorks(true), api.listAcceptedCandidates(), api.listManuscripts(true),
       ])
+      if (!listRequests.isCurrent(request)) return
       setWorks(nextWorks); setCandidates(nextCandidates); setManuscripts(nextManuscripts); setNotice('')
-    } catch (error) { setNotice(String(error)) }
-    finally { setLoading(false) }
-  }, [])
+    } catch (error) { if (listRequests.isCurrent(request)) setNotice(String(error)) }
+    finally { if (listRequests.isCurrent(request)) setLoading(false) }
+  }, [listRequests])
   useEffect(() => { void load() }, [load])
 
   const availableManuscripts = useMemo(() => {
@@ -131,43 +154,65 @@ export function AcceptedView() {
     return () => { active = false }
   }, [shareOpen, summary, works, toast])
 
-  const openNew = (source: 'plan' | 'external', candidate?: AcceptedCandidate, reviewStatus: AcceptedReviewStatus = 'accepted') => {
+  const openNew = async (source: 'plan' | 'external', candidate?: AcceptedCandidate, reviewStatus: AcceptedReviewStatus = 'accepted') => {
+    if (!await allowLeave()) return
+    editRequests.invalidate(); setEditingId(null)
+    attachmentImport.release()
     setEditing(null)
-    setDraft({ ...emptyWork(source), review_status: reviewStatus, manuscript_id: candidate?.manuscript_id ?? null,
+    const nextDraft = { ...emptyWork(source), review_status: reviewStatus, manuscript_id: candidate?.manuscript_id ?? null,
       accepted_at: candidate?.received_at.slice(0, 10) || today(),
-      sale_platform: candidate?.sale_platform ?? '', buyer_editor: candidate?.buyer_editor ?? '' })
+      sale_platform: candidate?.sale_platform ?? '', buyer_editor: candidate?.buyer_editor ?? '' }
+    baselineBody.current = nextDraft.body
+    baseline.current = JSON.stringify([JSON.stringify({ ...nextDraft, body: undefined }), '', '', '', '', [], '50'])
+    setDraft(nextDraft)
     setPriceText(''); setGuaranteeText(''); setPerThousandText(''); setRealizedShareText(''); setSettlementRows([]); setShareText('50'); setShowForm(true)
   }
-  const openEdit = (work: AcceptedWork) => {
-    setEditing(work)
-    setDraft({
-      manuscript_id: work.manuscript_id, source: work.source, review_status: work.review_status,
-      title: work.title, body: work.body,
-      file_name: work.file_name, remove_file: false, accepted_at: work.accepted_at,
-      deal_mode: work.deal_mode, price_cents: work.price_cents, guarantee_cents: work.guarantee_cents, per_thousand_cents: work.per_thousand_cents || 0,
-      realized_share_cents: work.realized_share_cents,
-      monthly_settlements: work.monthly_settlements || [],
-      share_percent: work.share_percent, sale_platform: work.sale_platform, buyer_editor: work.buyer_editor,
-      listing_platform: work.listing_platform, article_url: work.article_url, notes: work.notes,
-    })
-    setPriceText(moneyText(work.price_cents)); setGuaranteeText(moneyText(work.guarantee_cents))
-    setPerThousandText(moneyText(work.per_thousand_cents || 0))
-    setRealizedShareText(moneyText(work.realized_share_cents))
-    setSettlementRows((work.monthly_settlements || []).map((entry) => ({ month: entry.month, amount: moneyText(entry.amount_cents) })))
-    setShareText(String(work.share_percent)); setShowForm(true)
+  const openEdit = async (summary: AcceptedWorkSummary) => {
+    if (!await allowLeave()) return
+    const request = editRequests.begin()
+    setEditingId(summary.id)
+    try {
+      const work = await api.getAcceptedWork(summary.id)
+      if (!editRequests.isCurrent(request)) return
+      attachmentImport.release()
+      setEditing(work)
+      const nextDraft = {
+        manuscript_id: work.manuscript_id, source: work.source, review_status: work.review_status,
+        title: work.title, body: work.body,
+        file_name: work.file_name, remove_file: false, accepted_at: work.accepted_at,
+        deal_mode: work.deal_mode, price_cents: work.price_cents, guarantee_cents: work.guarantee_cents, per_thousand_cents: work.per_thousand_cents || 0,
+        realized_share_cents: work.realized_share_cents,
+        monthly_settlements: work.monthly_settlements || [],
+        share_percent: work.share_percent, sale_platform: work.sale_platform, buyer_editor: work.buyer_editor,
+        listing_platform: work.listing_platform, article_url: work.article_url, notes: work.notes,
+      }
+      const settlements = (work.monthly_settlements || []).map((entry) => ({ month: entry.month, amount: moneyText(entry.amount_cents) }))
+      baselineBody.current = nextDraft.body
+    baseline.current = JSON.stringify([JSON.stringify({ ...nextDraft, body: undefined }), moneyText(work.price_cents), moneyText(work.guarantee_cents), moneyText(work.per_thousand_cents || 0), moneyText(work.realized_share_cents), settlements, String(work.share_percent)])
+      setDraft(nextDraft)
+      setPriceText(moneyText(work.price_cents)); setGuaranteeText(moneyText(work.guarantee_cents))
+      setPerThousandText(moneyText(work.per_thousand_cents || 0))
+      setRealizedShareText(moneyText(work.realized_share_cents))
+      setSettlementRows(settlements)
+      setShareText(String(work.share_percent)); setShowForm(true)
+    } catch (error) { if (editRequests.isCurrent(request)) toast(`记录读取失败：${String(error)}`, 'error') }
+    finally { if (editRequests.isCurrent(request)) setEditingId(null) }
   }
 
   const readFile = async (file: File | null) => {
     if (!file) return
     if (fileRef.current) fileRef.current.value = ''
-    if (!/\.(docx|txt)$/i.test(file.name)) { toast('请选择 .docx 或 .txt 文稿', 'warning'); return }
-    if (file.size > 25 * 1024 * 1024) { toast('文稿文件不能超过 25 MB', 'warning'); return }
-    const fileData = Array.from(new Uint8Array(await file.arrayBuffer()))
-    setDraft((current) => ({ ...current, file_name: file.name, file_data: fileData, remove_file: false,
-      title: current.title || file.name.replace(/\.[^.]+$/, '') }))
+    try {
+      const imported = await attachmentImport.stage(file, ['docx', 'txt'])
+      if (!imported) return
+      setDraft((current) => ({ ...current, file_name: file.name, file_data: null, file_token: imported.token, remove_file: false,
+        title: current.title || file.name.replace(/\.[^.]+$/, '') }))
+    } catch (error) { toast(String(error), 'error') }
   }
 
   const saveWork = async () => {
+    if (savingRef.current) return
+    if (attachmentImport.importing) { toast('请等待附件导入完成', 'warning'); return }
     if (draft.source === 'plan' && !draft.manuscript_id) { toast('请选择一份投稿计划', 'warning'); return }
     if (draft.source === 'external' && !draft.title.trim()) { toast('请填写作品名称', 'warning'); return }
     const price = draft.deal_mode === 'buyout' ? toCents(priceText) : 0
@@ -193,6 +238,7 @@ export function AcceptedView() {
     if (draft.deal_mode === 'guarantee_share' && (!Number.isFinite(share) || share < 0 || share > 100 || shareText.trim() === '')) {
       toast('分成比例应在 0–100% 之间', 'warning'); return
     }
+    savingRef.current = true
     setSaving(true)
     try {
       const input = { ...draft, price_cents: price, guarantee_cents: guarantee, per_thousand_cents: perThousand, realized_share_cents: realizedShare,
@@ -204,10 +250,10 @@ export function AcceptedView() {
       await load()
       toast(editing ? '核对记录已更新' : `已记录为${reviewLabel(draft.review_status)}`, 'success')
     } catch (error) { toast(String(error), 'error') }
-    finally { setSaving(false) }
+    finally { savingRef.current = false; setSaving(false) }
   }
 
-  const remove = async (work: AcceptedWork) => {
+  const remove = async (work: AcceptedWorkSummary) => {
     const ok = await confirm({ title: '移除过稿记录？',
       message: `将从过稿统计移除《${work.title}》及这里保存的文稿副本。原投稿计划不会删除。`,
       confirmLabel: '移除', tone: 'danger' })
@@ -216,23 +262,20 @@ export function AcceptedView() {
     catch (error) { toast(String(error), 'error') }
   }
 
-  const openDocument = async (work: AcceptedWork) => {
+  const openDocument = async (work: AcceptedWorkSummary) => {
+    const request = previewRequests.begin()
     setPreviewing(work.id)
     try {
       const doc = await api.getAcceptedWorkDocument(work.id)
-      let fileText = ''
-      if (doc.file_data?.length) {
-        fileText = /\.docx$/i.test(doc.file_name)
-          ? await api.extractDocx(doc.file_data)
-          : new TextDecoder('utf-8').decode(new Uint8Array(doc.file_data))
-      }
+      if (!previewRequests.isCurrent(request)) return
+      const fileText = doc.attachment_text
       const showBody = work.source === 'external' && Boolean(doc.body.trim())
       setPreview({ id: work.id, title: doc.title, fileName: doc.file_name,
         text: showBody ? doc.body : fileText || doc.body,
         attachmentText: showBody ? fileText : '',
-        hasFile: Boolean(doc.file_data?.length), articleUrl: work.article_url })
-    } catch (error) { toast(`文稿读取失败：${String(error)}`, 'error') }
-    finally { setPreviewing(null) }
+        hasFile: doc.has_file, articleUrl: work.article_url })
+    } catch (error) { if (previewRequests.isCurrent(request)) toast(`文稿读取失败：${String(error)}`, 'error') }
+    finally { if (previewRequests.isCurrent(request)) setPreviewing(null) }
   }
 
   const exportOriginal = async () => {
@@ -269,7 +312,7 @@ export function AcceptedView() {
       drawAcceptedShareCard(canvas, summary, works, new Date(), logo)
       const image = await new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) =>
         blob ? resolve(blob) : reject(new Error('图片生成失败')), 'image/png'))
-      const saved = await api.saveAcceptedShareImage(path, Array.from(new Uint8Array(await image.arrayBuffer())))
+      const saved = await api.saveAcceptedShareImage(path, new Uint8Array(await image.arrayBuffer()))
       toast(`成绩记录已保存到 ${saved}`, 'success')
     } catch (error) { toast(String(error), 'error') }
     finally { setShareSaving(false) }
@@ -366,16 +409,16 @@ export function AcceptedView() {
             { key: 'actions', title: '操作', width: 220, render: (_value, work) => <div className="accepted-actions">
               <Button size="sm" disabled={previewing === work.id} onClick={() => void openDocument(work)}><FileText size={14} />{previewing === work.id ? '读取中…' : '查看文稿'}</Button>
               <IconButton title="打开文稿所在文件夹" disabled={!work.has_file || openingSaved} onClick={() => void openSavedDocument(work.id, 'accepted', true)}><FolderOpen size={14} /></IconButton>
-              <Button size="sm" variant="subtle" onClick={() => openEdit(work)}>编辑</Button>
+              <Button size="sm" variant="subtle" disabled={editingId === work.id} onClick={() => void openEdit(work)}>编辑</Button>
               <IconButton title="移除过稿记录" className="danger" onClick={() => void remove(work)}><Trash2 size={14} /></IconButton>
             </div> },
           ]} />}
     </section>
 
     {showForm && <Modal title={editing ? `编辑核对记录 · ${editing.title}` : '核对作品结果'} width={760}
-      className="accepted-modal" onClose={() => { if (!saving) setShowForm(false) }}
-      footer={<><Button onClick={() => setShowForm(false)} disabled={saving}>取消</Button><Button variant="primary" disabled={saving} onClick={() => void saveWork()}>{saving ? '保存中…' : `保存${reviewLabel(draft.review_status)}记录`}</Button></>}>
-      <div className="accepted-form">
+      className="accepted-modal" onClose={() => void closeForm()}
+      footer={<><Button onClick={() => void closeForm()} disabled={saving}>取消</Button><Button variant="primary" disabled={saving} onClick={() => void saveWork()}>{saving ? '保存中…' : `保存${reviewLabel(draft.review_status)}记录`}</Button></>}>
+      <fieldset className="accepted-form" disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         {!editing && <div className="accepted-source-switch" role="group" aria-label="作品来源">
           <button type="button" className={draft.source === 'plan' ? 'on' : ''} onClick={() => openNew('plan')}>软件内投稿</button>
           <button type="button" className={draft.source === 'external' ? 'on' : ''} onClick={() => openNew('external')}>外部文章</button>
@@ -405,7 +448,7 @@ export function AcceptedView() {
               <input ref={fileRef} type="file" accept=".docx,.txt" hidden onChange={(event) => void readFile(event.target.files?.[0] ?? null)} />
               <Button type="button" onClick={() => fileRef.current?.click()}><FileText size={14} />{draft.file_name ? '替换文稿' : '上传 Word 文稿'}</Button>
               <span>{draft.file_name || '支持 .docx / .txt，最多 25 MB'}</span>
-              {draft.file_name && <button type="button" className="text-link" onClick={() => setDraft((current) => ({ ...current, file_name: '', file_data: null, remove_file: true }))}>移除附件</button>}
+              {draft.file_name && <button type="button" className="text-link" onClick={() => { attachmentImport.release(); setDraft((current) => ({ ...current, file_name: '', file_data: null, file_token: null, remove_file: true })) }}>移除附件</button>}
             </div>
           </>}
         </div>
@@ -452,7 +495,7 @@ export function AcceptedView() {
             <label className="field accepted-span-all">备注<textarea rows={2} value={draft.notes} onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))} placeholder="合同、结算时间或其他需要记住的信息" /></label>
           </div>
         </div>
-      </div>
+      </fieldset>
     </Modal>}
 
     {shareOpen && <Modal title="分享成交与上架记录" width={1040} className="accepted-share-modal" onClose={() => { if (!shareSaving) setShareOpen(false) }}
@@ -461,12 +504,12 @@ export function AcceptedView() {
         aria-label={`熊猫投稿成交与上架记录：近 7 天新增 ${summary.last7Days.count} 篇，近 30 天新增 ${summary.last30Days.count} 篇，累计已记录金额 ${yuan(summary.totalCents)}`} />
     </Modal>}
 
-    {preview && <Modal title={`文稿 · ${preview.title}`} width={860} className="accepted-preview-modal" onClose={() => setPreview(null)}
+    {preview && <Modal title={`文稿 · ${preview.title}`} width={860} className="accepted-preview-modal" onClose={closePreview}
       footer={<><span>{preview.fileName || '无原始附件'}</span>{preview.hasFile && <>
         <Button disabled={openingSaved} onClick={() => void openSavedDocument(preview.id, 'accepted', true)}><FolderOpen size={15} />打开文件夹</Button>
         <Button disabled={openingSaved} onClick={() => void openSavedDocument(preview.id, 'accepted', false)}><FileText size={15} />打开原稿</Button>
         <Button onClick={() => void exportOriginal()}><Download size={15} />另存原稿</Button>
-      </>}<Button variant="primary" onClick={() => setPreview(null)}>关闭</Button></>}>
+      </>}<Button variant="primary" onClick={closePreview}>关闭</Button></>}>
       {preview.hasFile && /\.docx$/i.test(preview.fileName) && <p className="accepted-preview-note">{preview.attachmentText ? '下方可展开 Word 文本；打开原稿可查看完整排版。' : '这里显示 Word 文本；打开原稿可查看完整排版。'}</p>}
       {!preview.hasFile && <p className="accepted-preview-note">这篇作品没有原始文稿附件，以下为保存的正文。</p>}
       {preview.articleUrl && <p className="accepted-preview-link">文章链接：<a href={preview.articleUrl} target="_blank" rel="noopener noreferrer">{preview.articleUrl}</a></p>}

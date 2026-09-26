@@ -55,7 +55,16 @@ with sync_playwright() as p:
     page.goto(os.environ.get('NOVELSUB_TEST_URL','http://127.0.0.1:5179'))
     page.wait_for_load_state('networkidle')
     expect(page.locator('.stat')).to_have_count(4)
-    expect(page.locator('.nav-item.active')).to_have_css('background-color','rgb(48, 57, 54)')
+    expect(page.locator('.nav-item.active')).to_have_css('background-color','rgb(39, 39, 39)')
+    theme_nav=page.get_by_role('navigation',name='主导航')
+    theme_nav.get_by_role('button',name='设置',exact=True).click()
+    page.get_by_role('navigation',name='设置分组').get_by_role('button',name='主题',exact=True).click()
+    page.get_by_role('button',name='竹叶青',exact=True).click()
+    expect(page.locator('.nav-item.active')).to_have_css('background-color','rgb(57, 114, 78)')
+    assert page.evaluate("localStorage.getItem('novelsub.theme')")=='sage'
+    page.get_by_role('button',name='熊猫黑白',exact=True).click()
+    expect(page.locator('.nav-item.active')).to_have_css('background-color','rgb(39, 39, 39)')
+    theme_nav.get_by_role('button',name='工作台',exact=True).click()
     expect(page.get_by_role('img',name='近 7 天成功投递 10 封，人工回复 3 封')).to_be_visible()
     page.get_by_role('button',name='近 30 天',exact=True).click()
     expect(page.get_by_role('img',name='近 30 天成功投递 20 封，人工回复 3 封')).to_be_visible()
@@ -307,9 +316,11 @@ with sync_playwright() as p:
     expect(chosen.locator('.group-member-row')).to_have_count(len(original_members))
     for width,height in [(1280,900),(720,560)]:
         page.set_viewport_size({'width':width,'height':height})
+        # Dynamic viewport units settle on a rendering frame after the viewport changes.
+        page.wait_for_function("()=>{const r=document.querySelector('.group-member-modal').getBoundingClientRect();return r.y>=0&&r.bottom<=innerHeight+1}")
         box=members.bounding_box()
         assert box['x']>=0 and box['x']+box['width']<=width+1
-        assert box['y']>=0 and box['y']+box['height']<=height+1
+        assert box['y']>=0 and box['y']+box['height']<=height+1, {'width':width,'height':height,'box':box,'css':members.evaluate('e=>({maxHeight:getComputedStyle(e).maxHeight,height:getComputedStyle(e).height,transform:getComputedStyle(e).transform})')}
         assert available.locator('.group-member-scroll').bounding_box()['height']>100
     page.set_viewport_size({'width':1280,'height':900})
     members.get_by_role('button',name='取消',exact=True).click()
@@ -384,14 +395,16 @@ with sync_playwright() as p:
             assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth'),label
             if width==720: assert page.locator('.sidebar').bounding_box()['width']<=76
             if width>=1180:
-                assert page.locator('.main').evaluate('e=>e.scrollHeight<=e.clientHeight && e.scrollWidth<=e.clientWidth'),label
+                if not page.locator('.main').evaluate('e=>e.scrollHeight<=e.clientHeight && e.scrollWidth<=e.clientWidth'):
+                    page.screenshot(path='/tmp/novelsub-layout-failure.png')
+                    raise AssertionError((label,width,height,page.locator('.main,.page-body,.stats-workspace,.stats-detail').evaluate_all('els=>els.map(e=>({class:e.className,client:[e.clientWidth,e.clientHeight],scroll:[e.scrollWidth,e.scrollHeight],overflow:getComputedStyle(e).overflow}))')))
                 assert page.locator('.nav').evaluate('e=>e.scrollHeight<=e.clientHeight'),label
                 if label in ['编辑库','发送记录','投稿统计','邮箱管理','投稿计划']:
                     for viewport in page.locator('.library-table-scroll,.ui-table-wrap').all():
                         assert viewport.evaluate('e=>e.scrollWidth<=e.clientWidth'),label
                         # Ten library rows fit the default window; shorter windows scroll inside the table.
                         if label!='编辑库' or height>=900:
-                            assert viewport.evaluate('e=>e.scrollHeight<=e.clientHeight'),label
+                            assert viewport.evaluate('e=>e.scrollHeight<=e.clientHeight'),(label,width,height,viewport.evaluate('e=>({height:e.clientHeight,scroll:e.scrollHeight})'))
                 if width==1280 and label=='工作台':
                     for viewport in page.locator('.dashboard-reply-list,.dashboard-recent-table-wrap,.dashboard-live,.stat').all():
                         assert viewport.evaluate('e=>e.scrollHeight<=e.clientHeight+1 && e.scrollWidth<=e.clientWidth+1'),viewport.get_attribute('class')

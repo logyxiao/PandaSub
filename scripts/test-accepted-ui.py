@@ -7,42 +7,7 @@ from playwright.sync_api import expect, sync_playwright
 from ui_fixtures import MOCK, UPDATE
 
 
-EXTRA = r'''
-const acceptedWorks=[];
-const manuscripts=[m,{...m,id:2,title:'初审通过的故事'},{...m,id:3,title:'误判的回复'}];
-const candidates=[
- {manuscript_id:1,title:'回归测试计划',received_at:'2026-09-25 12:00:00',sale_platform:'知乎盐选',buyer_editor:'编辑甲'},
- {manuscript_id:2,title:'初审通过的故事',received_at:'2026-09-24 10:00:00',sale_platform:'平台乙',buyer_editor:'编辑乙'},
- {manuscript_id:3,title:'误判的回复',received_at:'2026-09-23 10:00:00',sale_platform:'平台丙',buyer_editor:'编辑丙'}
-];
-window.__acceptedWorks=acceptedWorks;
-m.file_name='原稿.docx';m.has_file=true;
-Object.assign(functions,{
-  listManuscripts:()=>manuscripts.map(item=>({...item})),
-  listAcceptedWorks:()=>acceptedWorks.map(w=>({...w})),
-  listAcceptedCandidates:()=>candidates.filter(c=>!acceptedWorks.some(w=>w.manuscript_id===c.manuscript_id)),
-  addAcceptedWork:input=>{
-    const source=manuscripts.find(item=>item.id===input.manuscript_id);
-    const work={...input,id:acceptedWorks.length+1,title:input.source==='plan'?source.title:input.title,
-      body:input.source==='plan'?source.body:input.body,file_name:input.source==='plan'?'原稿.docx':input.file_name,
-      has_file:input.source==='plan'||!!input.file_data?.length,created_at:'2026-09-25',updated_at:'2026-09-25'};
-    acceptedWorks.push(work);return work.id;
-  },
-  updateAcceptedWork:(id,input)=>{
-    const work=acceptedWorks.find(w=>w.id===id);Object.assign(work,input,{has_file:input.remove_file?false:!!(input.file_data?.length||work.has_file)});
-  },
-  deleteAcceptedWork:id=>{acceptedWorks.splice(acceptedWorks.findIndex(w=>w.id===id),1)},
-  getAcceptedWorkDocument:id=>{
-    const work=acceptedWorks.find(w=>w.id===id);
-    return {title:work.title,body:work.body,file_name:work.file_name,
-      file_data:work.source==='plan'?[80,75,3,4]:work.file_data||null};
-  },
-  exportAcceptedWorkDocument:(id,path)=>{window.__exportedDocument={id,path};return path},
-  openSavedDocument:(id,source,reveal)=>{window.__openedSaved={id,source,reveal};return '/tmp/submitted/原稿.docx'},
-  saveAcceptedShareImage:(path,data)=>{window.__shareImage={path,data};return path},
-  extractDocx:()=> '这是发送的 Word 文稿。\n第二段。',
-});
-'''
+from accepted_ui_fixtures import ACCEPTED as EXTRA
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -156,7 +121,8 @@ with sync_playwright() as playwright:
     share.locator('canvas').screenshot(path='/tmp/novelsub-accepted-share-card.png')
     share.get_by_role('button', name='保存 PNG 图片').click()
     page.wait_for_function("window.__shareImage?.data?.length>1000")
-    assert page.evaluate('window.__shareImage.data.slice(0,8)') == [137,80,78,71,13,10,26,10]
+    assert page.evaluate('window.__shareImage.data instanceof Uint8Array')
+    assert page.evaluate('Array.from(window.__shareImage.data.slice(0,8))') == [137,80,78,71,13,10,26,10]
     share.get_by_role('button', name='关闭').last.click()
 
     periods = page.evaluate("""async () => {

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BarChart3, RefreshCw } from 'lucide-react'
+import { useAsyncResource } from '../hooks/useAsyncResource'
+import { useCallback, useMemo, useState } from 'react'
+import { Award, BarChart3, CalendarDays, CircleAlert, List, MessageSquare, RefreshCw, Send } from 'lucide-react'
 import { api } from '../api'
 import { EmptyState, IconButton, Select } from '../components/ui'
 import { Table } from '../components/Table'
-import type { StatsReport } from '../types'
+import { StatsTrend, type StatsMetric } from './StatsTrend'
 
 type GroupMode = 'day' | 'week' | 'month'
 
@@ -30,29 +31,13 @@ export function StatsView() {
   const [group, setGroup] = useState<GroupMode>('day')
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
-  const [report, setReport] = useState<StatsReport | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [notice, setNotice] = useState('')
-  const requestSeq = useRef(0)
-
-  const load = useCallback(async (s: string, e: string, g: GroupMode) => {
-    const seq = ++requestSeq.current
-    setLoading(true)
-    try {
-      const next = await api.getStats(s || undefined, e || undefined, g)
-      if (seq !== requestSeq.current) return
-      setReport(next); setNotice('')
-    } catch (err) { if (seq === requestSeq.current) { setNotice(String(err)); setReport(null) } }
-    finally { if (seq === requestSeq.current) setLoading(false) }
-  }, [])
-
-  useEffect(() => {
-    void load(start, end, group)
-    const sequence = requestSeq
-    return () => { sequence.current++ }
-  }, [load, start, end, group])
+  const [metric, setMetric] = useState<StatsMetric>('deliveries')
+  const [preset, setPreset] = useState<'7' | '30' | 'month' | 'all' | null>('all')
+  const fetchReport = useCallback((refresh = false) => api.getStats(start || undefined, end || undefined, group, refresh), [start, end, group])
+  const { data: report, loading, error: notice, reload } = useAsyncResource(fetchReport)
 
   const quick = (days: number | null) => {
+    setPreset(days === null ? 'all' : days === 7 ? '7' : '30')
     const today = new Date()
     if (days === null) {
       setStart(''); setEnd('')
@@ -65,6 +50,7 @@ export function StatsView() {
   }
 
   const quickMonth = () => {
+    setPreset('month')
     const today = new Date()
     setEnd(fmtDate(today))
     setStart(fmtDate(new Date(today.getFullYear(), today.getMonth(), 1)))
@@ -77,16 +63,19 @@ export function StatsView() {
 
   const totals = report?.totals
   const cards = [
-    { key: 'deliveries', label: '投递次数', value: totals?.deliveries ?? 0, cls: '' },
-    { key: 'human_replies', label: '人工回复', value: totals?.human_replies ?? 0, cls: 'is-brand' },
-    { key: 'failures', label: '失败', value: totals?.failures ?? 0, cls: 'is-danger' },
-    { key: 'accepted', label: '过稿回复', value: totals?.accepted ?? 0, cls: 'is-success' },
-  ]
+    { key: 'deliveries', label: '投递次数', value: totals?.deliveries ?? 0, icon: Send, unit: '封', note: '成功发出的投稿邮件' },
+    { key: 'human_replies', label: '人工回复', value: totals?.human_replies ?? 0, icon: MessageSquare, unit: '封', note: '识别为人工回复的来信' },
+    { key: 'accepted', label: '过稿回复', value: totals?.accepted ?? 0, icon: Award, unit: '封', note: '标记为过稿的来信' },
+    { key: 'failures', label: '发送失败', value: totals?.failures ?? 0, icon: CircleAlert, unit: '次', note: '与收稿人相关的发送错误' },
+  ] as const
+  const selectedMetric = cards.find((card) => card.key === metric)!
+  const rangeLabel = !start && !end ? '全部时间' : `${start || '最早记录'} — ${end || '至今'}`
 
   return (
-    <>
+    <div className="stats-workspace" aria-busy={loading}>
       <div className="toolbar stats-toolbar">
         <div className="filters">
+          <CalendarDays size={16} className="stats-filter-icon" aria-hidden="true" />
           <Select value={group} onChange={setGroup} ariaLabel="统计粒度" className="filter-select"
             options={[
               { value: 'day', label: '按日统计' },
@@ -95,39 +84,47 @@ export function StatsView() {
             ]} />
           <label className="stats-date">
             <span>开始</span>
-            <input type="date" aria-label="统计开始日期" value={start} onChange={(e) => setStart(e.target.value)} />
+            <input type="date" aria-label="统计开始日期" value={start} onChange={(e) => { setStart(e.target.value); setPreset(null) }} />
           </label>
           <label className="stats-date">
             <span>结束</span>
-            <input type="date" aria-label="统计结束日期" value={end} onChange={(e) => setEnd(e.target.value)} />
+            <input type="date" aria-label="统计结束日期" value={end} onChange={(e) => { setEnd(e.target.value); setPreset(null) }} />
           </label>
           <div className="stats-quick">
-            <button type="button" onClick={() => quick(7)}>近 7 天</button>
-            <button type="button" onClick={() => quick(30)}>近 30 天</button>
-            <button type="button" onClick={() => quickMonth()}>本月</button>
-            <button type="button" onClick={() => quick(null)}>全部</button>
+            <button type="button" aria-pressed={preset === '7'} onClick={() => quick(7)}>近 7 天</button>
+            <button type="button" aria-pressed={preset === '30'} onClick={() => quick(30)}>近 30 天</button>
+            <button type="button" aria-pressed={preset === 'month'} onClick={() => quickMonth()}>本月</button>
+            <button type="button" aria-pressed={preset === 'all'} onClick={() => quick(null)}>全部</button>
           </div>
         </div>
         <div className="toolbar-actions">
-          <IconButton title="刷新" onClick={() => void load(start, end, group)} disabled={loading}>
+          <IconButton title="刷新" onClick={() => void reload()} disabled={loading}>
             <RefreshCw size={17} className={loading ? 'spin' : ''} />
           </IconButton>
         </div>
       </div>
-      {notice && <div className="notice notice-error">{notice}</div>}
+      {notice && <div className="notice notice-error" role="alert">{notice}</div>}
 
-      {!report ? null : (
+      {loading ? <div className="panel stats-loading" role="status"><RefreshCw size={20} className="spin" />正在读取投稿统计…</div> : !report ? null : (
         <>
           <div className="stats-cards">
             {cards.map((c) => (
-              <div key={c.key} className={`stats-card ${c.cls}`}>
-                <div className="stats-card-label">{c.label}</div>
-                <div className="stats-card-value">{c.value.toLocaleString('zh-CN')}</div>
-              </div>
+              <button type="button" key={c.key} className={`stats-card stats-tone-${c.key}`} aria-pressed={metric === c.key}
+                aria-label={`${c.label} ${c.value} ${c.unit}，查看趋势`} onClick={() => setMetric(c.key)}>
+                <span className="stats-card-top"><span className="stats-card-label">{c.label}</span><c.icon size={16} strokeWidth={1.7} /></span>
+                <span className="stats-card-number"><span className="stats-card-value">{c.value.toLocaleString('zh-CN')}</span><small>{c.unit}</small></span>
+                <span className="stats-card-note">{c.note}</span>
+              </button>
             ))}
           </div>
 
-          <div className="panel">
+          {!!report.groups.length && <StatsTrend rows={report.groups} metric={metric} label={selectedMetric.label} unit={selectedMetric.unit} formatPeriod={(period) => periodLabel(period, group)} />}
+
+          <div className="panel stats-detail">
+            <div className="stats-section-heading">
+              <div><h2><List size={16} />统计明细</h2><span>{rangeLabel} · {group === 'day' ? '按日' : group === 'week' ? '按周' : '按月'}汇总</span></div>
+              <span className="stats-period-count">共 {report.groups.length} 个周期</span>
+            </div>
             {!report.groups.length ? (
               <EmptyState icon={BarChart3} title="该时间段内没有数据"
                 desc="换个日期范围或统计粒度试试。" />
@@ -138,7 +135,7 @@ export function StatsView() {
                 rowKey="period"
                 dataSource={report.groups}
                 resetKey={`${start}\0${end}\0${group}`}
-                pagination={{ pageSize: 10, pageSizeOptions: [10, 20, 50] }}
+                pagination={{ pageSize: 6, pageSizeOptions: [6, 10, 20, 50] }}
                 columns={[
                   {
                     key: 'period',
@@ -196,6 +193,7 @@ export function StatsView() {
           </div>
         </>
       )}
-    </>
+      {report && !loading && <p className="stats-footnote">投递按发送时间、回复按收信时间、失败按错误发生时间统计；过稿回复可能同时计入人工回复。</p>}
+    </div>
   )
 }

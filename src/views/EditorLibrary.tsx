@@ -1,3 +1,5 @@
+import { useEditorListModel } from '../hooks/useEditorListModel'
+import { changeEditorSelection } from '../lib/editorListModel'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
@@ -18,13 +20,11 @@ import { EditorNotePreview } from '../components/EditorNotePreview'
 import { EditorTagField } from '../components/EditorTags'
 import { useConfirm, useToast } from '../components/feedback'
 import {
-  compareEditorsByFavorite,
   normalizeEditorTags,
   SOURCES,
 } from './planShared'
 import {
   editorInput,
-  matchesEditorTags,
   splitEditorTags,
   validateEditorInput,
   type TagMatchMode,
@@ -84,7 +84,8 @@ export function EditorLibrary({
   const requestSeq = useRef(0)
   const confirm = useConfirm()
   const toast = useToast()
-  const original = draft ? items.find((e) => e.id === draft.id) : undefined
+  const editorsById = useMemo(() => new Map(items.map(editor => [editor.id, editor])), [items])
+  const original = draft ? editorsById.get(draft.id) : undefined
   const dirty = Boolean(
     draft &&
       original &&
@@ -99,18 +100,16 @@ export function EditorLibrary({
     onBusyChange(saving)
     return () => onBusyChange(false)
   }, [saving, onBusyChange])
-  const load = useCallback(async () => {
+  const load = useCallback(async (refresh = false) => {
     const seq = ++requestSeq.current
     setLoading(true)
     try {
-      const rows = (await api.listEditors()).map(normalizeEditorTags)
+      const rows = (await api.listEditors(refresh)).map(normalizeEditorTags)
       if (seq !== requestSeq.current) return
       setItems(rows)
       setError('')
-      setSelected(
-        (prev) =>
-          new Set([...prev].filter((id) => rows.some((e) => e.id === id))),
-      )
+      const liveIds = new Set(rows.map(editor => editor.id))
+      setSelected(prev => new Set([...prev].filter(id => liveIds.has(id))))
     } catch (e) {
       if (seq === requestSeq.current) setError(String(e))
     } finally {
@@ -118,22 +117,12 @@ export function EditorLibrary({
     }
   }, [])
   useEffect(() => {
-    void load()
+    void load(reloadSignal > 0)
     const sequence = requestSeq
     return () => {
       sequence.current++
     }
   }, [load, reloadSignal])
-  const platforms = useMemo(
-    () =>
-      [...new Set(items.map((e) => e.platform.trim()).filter(Boolean))].sort(
-        (a, b) => a.localeCompare(b, 'zh'),
-      ),
-    [items],
-  )
-  useEffect(() => {
-    onPlatformsChange(platforms)
-  }, [platforms, onPlatformsChange])
   const inView = useCallback(
     (e: Editor, candidate: View) =>
       candidate === 'all' ||
@@ -143,37 +132,20 @@ export function EditorLibrary({
       (candidate === 'changed' && changed.has(e.id)),
     [changed],
   )
-  const candidates = useMemo(
-    () =>
-      items.filter((editor) => {
-        if (
-          !inView(editor, view) ||
-          (platform && editor.platform !== platform) ||
-          (source && editor.source !== source)
-        )
-          return false
-        return [
-          editor.name,
-          editor.platform,
-          editor.email,
-          editor.notes,
-          ...editor.work_type,
-        ]
-          .join(' ')
-          .toLowerCase()
-          .includes(query.trim().toLowerCase())
-      }),
-    [items, view, platform, source, query, inView],
-  )
-  const filtered = useMemo(
-    () =>
-      candidates
-        .filter((editor) =>
-          matchesEditorTags(editor, workTypes, excluded, tagMode),
-        )
-        .sort(compareEditorsByFavorite),
-    [candidates, workTypes, excluded, tagMode],
-  )
+  const viewCounts = useMemo(() => {
+    const counts = { all: items.length, favorites: 0, incomplete: 0, changed: 0 }
+    for (const editor of items) {
+      if (editor.favorited) counts.favorites++
+      if (!editor.work_type.length || !editor.notes.trim()) counts.incomplete++
+      if (changed.has(editor.id)) counts.changed++
+    }
+    return counts
+  }, [items, changed])
+  const inCurrentView = useCallback((editor: Editor) => inView(editor, view), [inView, view])
+  const { platforms, candidates, matchingEditors } = useEditorListModel(items, { query, platform, source, predicate: inCurrentView })
+  useEffect(() => { onPlatformsChange(platforms) }, [platforms, onPlatformsChange])
+  const filtered = useMemo(() => matchingEditors({ included: workTypes, excluded, match: tagMode }),
+    [matchingEditors, workTypes, excluded, tagMode])
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const safePage = Math.min(page, pageCount)
   const rows = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
@@ -322,7 +294,7 @@ export function EditorLibrary({
     let created = false
     try {
       const fresh = await api.listEditorGroups()
-      const ids = [...selected].filter((id) => items.some((e) => e.id === id))
+      const ids = [...selected].filter((id) => editorsById.has(id))
       if (!ids.length) throw new Error('请选择要加入组的编辑')
       for (const id of groupTargets) {
         const group = fresh.find((g) => g.id === id)
@@ -385,7 +357,7 @@ export function EditorLibrary({
       {error && (
         <div className="notice notice-error">
           {error}
-          <Button size="sm" onClick={() => void load()}>
+          <Button size="sm" onClick={() => void load(true)}>
             重试
           </Button>
         </div>
@@ -409,7 +381,7 @@ export function EditorLibrary({
               onClick={() => void filterChange(() => setView(id))}
             >
               {label}
-              <small>{items.filter((e) => inView(e, id)).length}</small>
+              <small>{viewCounts[id]}</small>
             </button>
           ))}
         </div>
@@ -509,15 +481,7 @@ export function EditorLibrary({
                       disabled={Boolean(draft)}
                       aria-label="选择本页编辑"
                       onChange={(e) =>
-                        setSelected((prev) => {
-                          const next = new Set(prev)
-                          rows.forEach((row) =>
-                            e.target.checked
-                              ? next.add(row.id)
-                              : next.delete(row.id),
-                          )
-                          return next
-                        })
+                        setSelected((prev) => changeEditorSelection(prev, rows, e.target.checked))
                       }
                     />
                   </th>
@@ -558,12 +522,7 @@ export function EditorLibrary({
                           disabled={Boolean(draft)}
                           aria-label={`选择编辑${e.name || e.email}`}
                           onChange={(event) =>
-                            setSelected((prev) => {
-                              const next = new Set(prev)
-                              if (event.target.checked) next.add(e.id)
-                              else next.delete(e.id)
-                              return next
-                            })
+                            setSelected((prev) => changeEditorSelection(prev, [e], event.target.checked))
                           }
                         />
                       </td>

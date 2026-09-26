@@ -30,6 +30,7 @@ import {
   Select,
 } from '../components/ui'
 import { DashboardTrend } from './DashboardTrend'
+import { WritingPanda } from '../components/WritingPanda'
 import type { Dashboard } from '../types'
 
 const empty: Dashboard = {
@@ -50,8 +51,10 @@ export function DashboardView() {
   const [data, setData] = useState<Dashboard>(empty)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [replyKind, setReplyKind] = useState('')
-  const [revision, setRevision] = useState(0)
+  const [replyKind, setReplyKind] = useState('human')
+  const kindRef = useRef(replyKind)
+  kindRef.current = replyKind
+  const previousKind = useRef(replyKind)
   const [taskId, setTaskId] = useState<number | null>(null)
   const [controlling, setControlling] = useState(false)
   const controlBusy = useRef(false)
@@ -72,11 +75,10 @@ export function DashboardView() {
     const seq = ++requestSeq.current
     if (!silent) setLoading(true)
     try {
-      const snapshot = await api.dashboard()
+      const snapshot = await api.dashboard(kindRef.current)
       if (seq === requestSeq.current) {
         setData(snapshot)
         setError('')
-        setRevision((value) => value + 1)
       }
     } catch (e) {
       if (seq === requestSeq.current) setError(String(e))
@@ -124,6 +126,13 @@ export function DashboardView() {
       unlisteners.forEach((un) => un())
     }
   }, [load])
+
+  useEffect(() => {
+    if (previousKind.current === replyKind) return
+    previousKind.current = replyKind
+    requestSeq.current++
+    void load()
+  }, [replyKind, load])
 
   const control = async (id: number, action: 'pause' | 'resume' | 'stop') => {
     if (controlBusy.current) return
@@ -395,16 +404,25 @@ export function DashboardView() {
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : loading || error ? (
               <div className="dashboard-live-empty">
                 <Send size={23} />
                 <div>
-                  <b>{loading ? '正在读取计划…' : '当前没有正在投递的计划'}</b>
-                  <p>准备好作品后，即可开始下一次投稿。</p>
+                  <b>{loading ? '正在读取计划…' : '计划暂时无法读取'}</b>
                 </div>
-                <Button size="sm" onClick={() => go('plans')}>
-                  查看计划
-                </Button>
+                {!loading && <Button size="sm" onClick={() => void load()}>重试</Button>}
+              </div>
+            ) : (
+              <div className="dashboard-live-empty dashboard-writing-invitation">
+                <WritingPanda />
+                <div className="dashboard-writing-copy">
+                  <b>小熊猫动笔了，你的故事呢？</b>
+                  <p>暂时没有投递任务，写一点，再投一篇。</p>
+                  <Button size="sm" onClick={() => go('plans', { createPlan: true })}>
+                    开始新投稿
+                    <ArrowRight size={12} />
+                  </Button>
+                </div>
               </div>
             )}
           </section>
@@ -448,10 +466,12 @@ export function DashboardView() {
           </section>
         </div>
         <div className="dashboard-reference-lower">
-          <DashboardTrend revision={revision} />
+          <DashboardTrend />
           <section className="panel dashboard-latest-panel">
             <div className="panel-heading">
-              <h2>最新回复</h2>
+              <div className="dashboard-latest-title">
+                <h2>最新回复</h2>
+              </div>
               <div className="heading-actions">
                 <Select
                   value={replyKind}
@@ -478,39 +498,41 @@ export function DashboardView() {
                 </Button>
               </div>
             </div>
-            <div className="dashboard-reply-list">
+            <div className="dashboard-reply-list" aria-label="最新回复列表" aria-busy={loading}>
               {recentReplies.slice(0, 3).map((reply) => (
                 <button
                   type="button"
                   key={reply.id}
-                  className={`dashboard-reply-item ${reply.is_read ? '' : 'is-unread'} ${reply.accepted ? 'is-accepted' : ''}`.trim()}
+                  className={`dashboard-reply-item ${reply.read_synced && !reply.is_read ? 'is-unread' : ''} ${reply.accepted ? 'is-accepted' : reply.kind === 'bounce' ? 'is-bounce' : ''}`.trim()}
                   onClick={() => go('replies', { replyKind, reply })}
                 >
                   <span className="dashboard-reply-copy">
-                    <span className="dashboard-reply-heading">
-                      <span className="dashboard-reply-heading-main">
+                    <span className="dashboard-reply-meta">
+                      <span className="dashboard-reply-status">
                         <Badge
-                          tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}
+                          tone={reply.accepted ? 'success' : reply.kind === 'human' ? 'brand' : (replyKindTone[reply.kind] ?? 'neutral')}
                         >
                           {reply.accepted ? '过稿回复' : (replyKindLabel[reply.kind] ?? reply.kind)}
                         </Badge>
-                        <b title={reply.subject || undefined}>{reply.subject || '未命名来信'}</b>
                       </span>
-                      <time dateTime={reply.received_at.replace(' ', 'T')}>{formatTime(reply.received_at)}</time>
-                    </span>
-                    <span className="dashboard-reply-context">
-                      <span>{reply.from_email || '未填写发件人'}</span>
-                      <i aria-hidden="true">·</i>
-                      <span>{reply.task_name || '未关联计划'}</span>
+                      <b className="dashboard-reply-subject" title={reply.subject || undefined}>{reply.subject || '未命名来信'}</b>
+                      {reply.read_synced && !reply.is_read && <span className="dashboard-reply-unread" title="未读"><span className="sr-only">未读</span></span>}
                     </span>
                     <span className="dashboard-reply-excerpt">{(reply.body || reply.snippet || '（无正文）').replace(/\s+/g, ' ').trim()}</span>
+                    <span className="dashboard-reply-context">
+                      <span className="dashboard-reply-plan" title={reply.task_name || undefined}><BookOpenText size={13} aria-hidden="true" /><span>{reply.task_name || '未关联计划'}</span></span>
+                      <span className="dashboard-reply-sender" title={reply.from_email || undefined}>{reply.from_email || '未填写发件人'}</span>
+                      <time dateTime={reply.received_at.replace(' ', 'T')}>{formatTime(reply.received_at)}</time>
+                    </span>
                   </span>
                 </button>
               ))}
               {!recentReplies.length && (
-                <p className="dashboard-empty">
-                  {loading ? '正在读取回复…' : '暂无符合条件的回复'}
-                </p>
+                <div className="dashboard-reply-empty">
+                  <Mail size={24} aria-hidden="true" />
+                  <b>{loading ? '正在读取回复…' : '暂无符合条件的回复'}</b>
+                  {!loading && <span>{replyKind ? '试试其他类型，或到收件箱查看历史回复。' : '收到投稿反馈后，会在这里展示。'}</span>}
+                </div>
               )}
             </div>
           </section>

@@ -124,8 +124,20 @@ CREATE TABLE IF NOT EXISTS replies (
   imap_uid INTEGER NOT NULL DEFAULT 0,
   is_read INTEGER NOT NULL DEFAULT 0,
   read_synced INTEGER NOT NULL DEFAULT 0,
+  read_revision INTEGER NOT NULL DEFAULT 0,
   received_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS reply_contents (
+  reply_id INTEGER PRIMARY KEY REFERENCES replies(id) ON DELETE CASCADE,
+  json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reply_files (
+  reply_id INTEGER NOT NULL REFERENCES replies(id) ON DELETE CASCADE,
+  part_index INTEGER NOT NULL,
+  data BLOB NOT NULL,
+  PRIMARY KEY(reply_id, part_index)
 );
 
 CREATE INDEX IF NOT EXISTS deliveries_task_manuscript ON deliveries(task_id, manuscript_id);
@@ -255,6 +267,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
         &[
             ("is_read", "is_read INTEGER NOT NULL DEFAULT 0"),
             ("read_synced", "read_synced INTEGER NOT NULL DEFAULT 0"),
+            ("read_revision", "read_revision INTEGER NOT NULL DEFAULT 0"),
         ],
     )?;
     migrate_delivery_reliability(&connection)?;
@@ -262,6 +275,8 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_runtime_query_indexes(&connection)?;
     repair_orphan_relations(&connection)?;
     reclassify_autoreply_history(&connection)?;
+    crate::store::normalize_auto_reply_reads(&connection)?;
+    connection.execute("CREATE INDEX IF NOT EXISTS replies_unread_human ON replies(id) WHERE kind='human' AND is_read=0 AND read_synced=1", []).map_err(|e| e.to_string())?;
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
@@ -390,6 +405,8 @@ fn add_runtime_query_indexes(conn: &Connection) -> Result<(), String> {
         "CREATE INDEX IF NOT EXISTS deliveries_message_id ON deliveries(message_id);
         CREATE INDEX IF NOT EXISTS tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS replies_received_at ON replies(received_at);
+        CREATE INDEX IF NOT EXISTS replies_account_received ON replies(account_id, received_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS replies_kind_received ON replies(kind, received_at DESC, id DESC);
         CREATE INDEX IF NOT EXISTS task_logs_level_id ON task_logs(level, id DESC);
         CREATE INDEX IF NOT EXISTS task_logs_level_created ON task_logs(level, created_at);",
     )
@@ -1596,6 +1613,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    }
+
+    #[test]
+    fn existing_inbox_gains_read_revision_without_losing_read_state() {
+        let path=std::env::temp_dir().join(format!("novelsub-read-revision-{:032x}.sqlite",rand::random::<u128>()));
+        let connection=open_database(path.clone()).unwrap();
+        connection.execute("INSERT INTO replies(id,kind,is_read,read_synced,body) VALUES(1,'human',1,1,'saved body')",[]).unwrap();
+        connection.execute("ALTER TABLE replies DROP COLUMN read_revision",[]).unwrap();
+        drop(connection);
+        let connection=open_database(path.clone()).unwrap();
+        let row:(i64,i64,i64,String)=connection.query_row("SELECT read_revision,is_read,read_synced,body FROM replies WHERE id=1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).unwrap();
+        assert_eq!(row,(0,1,1,"saved body".into()));
+        drop(connection);
+        let _=std::fs::remove_file(&path);let _=std::fs::remove_file(path.with_extension("sqlite-wal"));let _=std::fs::remove_file(path.with_extension("sqlite-shm"));
     }
 
     #[test]

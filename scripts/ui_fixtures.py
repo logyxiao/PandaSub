@@ -7,13 +7,18 @@ const replies = Array.from({length:305},(_,i)=>({id:305-i,delivery_id:1,account_
 const serverSeen=new Map(replies.map((reply,i)=>[reply.id,i%3===2]));
 const deliveries = [{id:1,task_id:1,account_id:1,manuscript_id:1,recipient:'a@example.com',subject:'主题',message_id:'m1',sent_at:'2026-09-06 10:00:00'}];
 const logs=Array.from({length:305},(_,i)=>({id:305-i,task_id:1,manuscript_id:1,account_id:1,level:i===304?'error':'success',category:'send',message:i===304?'最早的失败记录':'发送成功',recipient:i===304?'old_100%@example.com':'other@example.com',created_at:'2026-09-06 10:00:00'}));
-window.__manuscript=m; window.__calls=[]; const events={task: new Set(), log:new Set(), reply:new Set()};
+window.__manuscript=m; window.__calls=[]; const events={task: new Set(), log:new Set(), reply:new Set(),'reply-read-change':new Set(),'open-unread-inbox':new Set(),'inbox-status':new Set()};
 window.__emit=(name,payload)=>events[name].forEach(fn=>fn(payload)); window.__task=task;
 function on(name,fn){events[name].add(fn);return Promise.resolve(()=>events[name].delete(fn))}
+export const onInboxStatus=(fn)=>on('inbox-status',fn);
+export const onOpenUnreadInbox=(fn)=>on('open-unread-inbox',fn);
+export const onReplyReadChange=(fn)=>on('reply-read-change',fn);
 export const onTask=(fn)=>on('task',fn);export const onLog=(fn)=>on('log',fn);export const onReply=(fn)=>on('reply',fn);
 const stats=Array.from({length:405},(_,i)=>({period:new Date(Date.UTC(2025,0,i+1)).toISOString().slice(0,10),deliveries:1,human_replies:0,accepted:0,failures:0}));
 window.__sentToday=1;
 const functions={
+ getReplyContent:id=>{const r=replies.find(r=>r.id===id);return{from:[{name:'',email:r.from_email}],to:[{name:'',email:'fixture@example.com'}],cc:[],bcc:[],reply_to:[],sent_at:'',text:r.body,html:'',attachments:[],inline_images:{},complete:true}},
+ saveReplyAttachment:()=>null,openMailLink:()=>null,
  sendManualDelivery:()=>new Promise(resolve=>{window.__finishManual=resolve}),
  pauseTask:()=>{task.status='paused';window.__emit('task',{...task})},
  resumeTask:()=>{task.status='running';window.__emit('task',{...task})},
@@ -24,9 +29,15 @@ const functions={
    for(const row of selected){const period=group==='month'?row.period.slice(0,7):row.period;const old=map.get(period);map.set(period,old?{...old,deliveries:old.deliveries+row.deliveries}:{...row,period})}
    return{groups:[...map.values()],totals:{period:'',deliveries:selected.length,human_replies:0,accepted:0,failures:0}};
  },
+ storageSummary:()=>({database_bytes:1048576,cache_bytes:524288,cache_messages:700,protected_messages:2,backup_bytes:2097152,backup_count:12}),
+ cleanStorage:()=>0,
+ getInboxStatus:()=>[],
+ takeTrayInboxRequest:()=>{const pending=!!window.__trayRequest;window.__trayRequest=false;return pending},
+ unreadHumanReplyCount:()=>replies.filter(r=>r.kind==='human'&&r.read_synced&&!r.is_read).length,
  runningTaskCount:()=>1,
- dashboard:()=>({account_count:1,manuscript_count:1,editor_count:1,sent_today:window.__sentToday,failed_today:0,running_tasks:1,human_replies:305,auto_replies:0,accepted_replies:0,tasks:[task],recent_replies:replies.slice(0,30)}),
- listManuscripts:()=>[m],listTasks:()=>[task],listAccounts:()=>accounts,
+ dashboard:(replyKind)=>({account_count:1,manuscript_count:1,editor_count:1,sent_today:window.__sentToday,failed_today:0,running_tasks:1,human_replies:305,auto_replies:0,accepted_replies:0,tasks:[task],recent_replies:replies.filter(r=>!replyKind||(replyKind==='accepted'?r.accepted:r.kind===replyKind)).slice(0,3)}),
+ stageAttachment:(bytes)=>({token:"fixture-token",word_count:new TextDecoder().decode(bytes).replace(/\s/g, "").length}),releaseAttachment:()=>null,
+ listManuscripts:()=>[m],getManuscript:(id)=>id===m.id?m:null,listTasks:()=>[task],listAccounts:()=>accounts,
  listEditors:()=>[{id:1,email:'a@example.com',name:'编辑甲',platform:'平台',work_type:['短篇'],rejected_types:[],notes:'',enabled:true,favorited:false}],
  listEditorGroups:()=>[],getDefaultMailTemplates:()=>[{id:'t1',name:'模板',subject:'投稿+{{字数}}+{{类型}}',body:'编辑您好'}],saveDefaultMailTemplates:()=>null,
  updateSettings:(settings)=>{window.__settings=settings},
@@ -43,11 +54,12 @@ const functions={
  },
  listPendingSends:()=>window.__pending??[],
  resolvePendingSend:(id,sent)=>{if(sent)deliveries.push({id:2,task_id:1,account_id:1,manuscript_id:1,recipient:'b@example.com',subject:'主题',message_id:'pending',sent_at:'2026-09-06 10:00:00'});window.__pending=[]},
+ listLogOptions:()=>({tasks:[{id:task.id,name:task.name}],manuscripts:[{id:m.id,name:m.title}],accounts:accounts.map(a=>({id:a.id,name:a.email}))}),
  listLogsPage:(taskId,level,q,limit,offset)=>{q=q.trim().toLowerCase();const rows=logs.filter(l=>(!taskId||l.task_id===taskId)&&(!level||l.level===level)&&(!q||l.recipient.toLowerCase().includes(q)||accounts[0].email.includes(q)));return{total:rows.length,items:rows.slice(offset,offset+limit)}},
  exportLogs:(path)=>path,
- setReplyRead:(id,isRead)=>{if(window.__failSeenStore)throw new Error('fixture IMAP STORE rejected');const reply=replies.find(r=>r.id===id);if(!reply)throw new Error('邮件不存在');serverSeen.set(id,isRead);reply.is_read=isRead;reply.read_synced=true},
- syncReplyReadFlags:(ids)=>ids.map(id=>{const reply=replies.find(r=>r.id===id);if(!reply)return null;reply.is_read=serverSeen.get(id);reply.read_synced=true;return{id,is_read:reply.is_read,read_synced:true}}).filter(Boolean),
- listRepliesPage:(kind,taskId,q,limit,offset,accountId)=>{let rows=replies.filter(r=>(!accountId||r.account_id===accountId)&&(!kind||r.kind===kind)&&(!taskId||r.task_id===taskId)&&(!q||r.body.includes(q)));return{total:rows.length,items:rows.slice(offset,offset+limit)}},
+ setReplyRead:(id,isRead)=>{if(window.__failSeenStore)throw new Error('fixture IMAP STORE rejected');const reply=replies.find(r=>r.id===id);if(!reply)throw new Error('邮件不存在');serverSeen.set(id,isRead);reply.is_read=isRead;reply.read_synced=true;window.__emit('reply-read-change')},
+ syncReplyReadFlags:(ids)=>({states:ids.map(id=>{const reply=replies.find(r=>r.id===id);if(!reply)return null;reply.is_read=serverSeen.get(id);reply.read_synced=true;return{id,is_read:reply.is_read,read_synced:true}}).filter(Boolean).map(state=>{window.__emit('reply-read-change');return state}),errors:[]}),
+ listRepliesPage:(kind,taskId,q,limit,offset,accountId)=>{let rows=replies.filter(r=>(!accountId||r.account_id===accountId)&&(!kind||(kind==='unread'?r.kind==='human'&&r.read_synced&&!r.is_read:kind==='submission'?r.delivery_id!=null:kind==='unmatched'?r.delivery_id==null:r.kind===kind))&&(!taskId||r.task_id===taskId)&&(!q||r.body.includes(q)));return{total:rows.length,items:rows.slice(offset,offset+limit)}},
 };
 export const api=new Proxy({}, {get:(_,name)=>(...args)=>{window.__calls.push({name,args});if(!(name in functions))return Promise.reject(new Error('Unexpected API: '+name));return Promise.resolve(functions[name](...args))}});
 '''

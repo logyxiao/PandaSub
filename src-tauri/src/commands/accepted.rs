@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use rusqlite::{params, Connection, OptionalExtension};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, ipc::Request};
 
 use crate::models::{AcceptedCandidate, AcceptedWork, AcceptedWorkDocument, AcceptedWorkInput};
 use crate::state::AppState;
@@ -157,10 +157,16 @@ fn is_date(value: &str) -> bool {
     chrono::NaiveDate::from_ymd_opt(year, month, day).is_some()
 }
 
+#[cfg(test)]
 pub(crate) fn load_works(conn: &Connection) -> Result<Vec<AcceptedWork>, String> {
+    load_work_list(conn, false)
+}
+
+fn load_work_list(conn: &Connection, summary: bool) -> Result<Vec<AcceptedWork>, String> {
+    let columns = if summary { WORK_COLS.replace("title, body,", "title, '' AS body,") } else { WORK_COLS.to_string() };
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT {WORK_COLS} FROM accepted_works ORDER BY accepted_at DESC, id DESC"
+            "SELECT {columns} FROM accepted_works ORDER BY accepted_at DESC, id DESC"
         ))
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], map_work).map_err(|e| e.to_string())?;
@@ -395,36 +401,74 @@ pub(crate) fn load_document(conn: &Connection, id: i64) -> Result<AcceptedWorkDo
 }
 
 #[tauri::command]
-pub fn list_accepted_works(state: State<'_, AppState>) -> Result<Vec<AcceptedWork>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    load_works(&conn)
+pub async fn list_accepted_works(state: State<'_, AppState>, summary: Option<bool>) -> Result<Vec<AcceptedWork>, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        load_work_list(&conn, summary.unwrap_or(false))
+    }).await.map_err(|e| e.to_string())?
+}
+
+fn load_work(conn: &Connection, id: i64) -> Result<AcceptedWork, String> {
+    conn.query_row(&format!("SELECT {WORK_COLS} FROM accepted_works WHERE id=?1"), [id], map_work)
+        .optional().map_err(|e| e.to_string())?.ok_or_else(|| "过稿记录不存在".into())
 }
 
 #[tauri::command]
-pub fn list_accepted_candidates(
+pub async fn get_accepted_work(state: State<'_, AppState>, id: i64) -> Result<AcceptedWork, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        load_work(&conn, id)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn list_accepted_candidates(
     state: State<'_, AppState>,
 ) -> Result<Vec<AcceptedCandidate>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let db=state.db.clone();
+    tauri::async_runtime::spawn_blocking(move||{
+    let conn = db.lock().map_err(|e| e.to_string())?;
     load_candidates(&conn)
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[tauri::command]
-pub fn add_accepted_work(
+pub async fn add_accepted_work(
     state: State<'_, AppState>,
-    input: AcceptedWorkInput,
+    mut input: AcceptedWorkInput,
 ) -> Result<i64, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    create_work(&conn, input)
+    let db = state.db.clone();
+    let attachments = state.attachments.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(token) = &input.file_token {
+            input.file_data = Some(attachments.resolve(token)?);
+        }
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        create_work(&conn, input)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn update_accepted_work(
+pub async fn update_accepted_work(
     state: State<'_, AppState>,
     id: i64,
-    input: AcceptedWorkInput,
+    mut input: AcceptedWorkInput,
 ) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    update_work(&conn, id, input)
+    let db = state.db.clone();
+    let attachments = state.attachments.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(token) = &input.file_token {
+            input.file_data = Some(attachments.resolve(token)?);
+        }
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        update_work(&conn, id, input)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -439,28 +483,52 @@ pub fn delete_accepted_work(state: State<'_, AppState>, id: i64) -> Result<(), S
     Ok(())
 }
 
-#[tauri::command]
-pub fn get_accepted_work_document(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<AcceptedWorkDocument, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    load_document(&conn, id)
+#[derive(serde::Serialize)]
+pub struct AcceptedDocumentPreview {
+    title: String,
+    body: String,
+    file_name: String,
+    has_file: bool,
+    attachment_text: String,
+}
+
+fn document_preview(document: AcceptedWorkDocument) -> Result<AcceptedDocumentPreview, String> {
+    let bytes = document.file_data.as_deref().unwrap_or_default();
+    let has_file = !bytes.is_empty();
+    let attachment_text = if !has_file { String::new() }
+        else if document.file_name.to_ascii_lowercase().ends_with(".docx") { super::manuscripts::extract_docx_bytes(bytes)? }
+        else { String::from_utf8_lossy(bytes).trim_start_matches('\u{feff}').to_string() };
+    Ok(AcceptedDocumentPreview { title: document.title, body: document.body, file_name: document.file_name, has_file, attachment_text })
 }
 
 #[tauri::command]
-pub fn export_accepted_work_document(
+pub async fn get_accepted_work_document(state: State<'_, AppState>, id: i64) -> Result<AcceptedDocumentPreview, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let document = { let conn = db.lock().map_err(|e| e.to_string())?; load_document(&conn, id)? };
+        // Release the database lock before decompressing and parsing the attachment.
+        document_preview(document)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn export_accepted_work_document(
     state: State<'_, AppState>,
     id: i64,
     path: String,
 ) -> Result<String, String> {
-    let document = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        load_document(&conn, id)?
-    };
-    let bytes = document.file_data.ok_or("这篇作品没有原始文稿附件")?;
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    Ok(path)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let document = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            load_document(&conn, id)?
+        };
+        let bytes = document.file_data.ok_or("这篇作品没有原始文稿附件")?;
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        Ok(path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn safe_document_name(raw: &str) -> Result<String, String> {
@@ -477,6 +545,27 @@ fn safe_document_name(raw: &str) -> Result<String, String> {
     Ok(safe.to_owned())
 }
 
+/// Compare incrementally instead of allocating another full manuscript for each existing version.
+fn document_matches(path: &Path, data: &[u8]) -> std::io::Result<bool> {
+    let mut file = fs::File::open(path)?;
+    if file.metadata()?.len() != data.len() as u64 {
+        return Ok(false);
+    }
+    let mut buffer = [0_u8; 64 * 1024];
+    for chunk in data.chunks(buffer.len()) {
+        match file.read_exact(&mut buffer[..chunk.len()]) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(error),
+        }
+        if &buffer[..chunk.len()] != chunk {
+            return Ok(false);
+        }
+    }
+    // Detect a file that grew while it was being compared.
+    Ok(file.read(&mut buffer[..1])? == 0)
+}
+
 /// Materialize a stored snapshot without overwriting a copy the user may have edited.
 fn managed_document_copy(root: &Path, folder: &str, original_name: &str, data: &[u8]) -> Result<PathBuf, String> {
     if data.is_empty() { return Err("这篇作品没有原始文稿附件".into()); }
@@ -490,7 +579,7 @@ fn managed_document_copy(root: &Path, folder: &str, original_name: &str, data: &
         let file_name = if version == 1 { name.clone() } else { format!("{stem} ({version}).{extension}") };
         let target = directory.join(file_name);
         if target.exists() {
-            if fs::read(&target).map_err(|error| error.to_string())? == data { return Ok(target); }
+            if document_matches(&target, data).map_err(|error| error.to_string())? { return Ok(target); }
             continue;
         }
         match OpenOptions::new().write(true).create_new(true).open(&target) {
@@ -529,58 +618,114 @@ fn launch_document(path: &Path, reveal: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_saved_document(
+pub async fn open_saved_document(
     app: AppHandle,
     state: State<'_, AppState>,
     id: i64,
     source: String,
     reveal: bool,
 ) -> Result<String, String> {
-    let (folder, file_name, data) = {
-        let conn = state.db.lock().map_err(|error| error.to_string())?;
-        match source.as_str() {
-            "accepted" => {
-                let document = load_document(&conn, id)?;
-                (format!("accepted-{id}"), document.file_name,
-                    document.file_data.ok_or("这篇作品没有原始文稿附件")?)
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (folder, file_name, data) = {
+            let conn = db.lock().map_err(|error| error.to_string())?;
+            match source.as_str() {
+                "accepted" => {
+                    let document = load_document(&conn, id)?;
+                    (
+                        format!("accepted-{id}"),
+                        document.file_name,
+                        document.file_data.ok_or("这篇作品没有原始文稿附件")?,
+                    )
+                }
+                "manuscript" => {
+                    let sent: i64 = conn
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM deliveries WHERE manuscript_id=?1)",
+                            [id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if sent == 0 {
+                        return Err("这篇作品尚无投递记录".into());
+                    }
+                    let (name, bytes) = store::load_manuscript_attachment(&conn, id)?
+                        .ok_or("这篇投稿计划没有保存 Word 文稿")?;
+                    (format!("manuscript-{id}"), name, bytes)
+                }
+                _ => return Err("文稿来源无效".into()),
             }
-            "manuscript" => {
-                let sent: i64 = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM deliveries WHERE manuscript_id=?1)", [id],
-                    |row| row.get(0),
-                ).map_err(|error| error.to_string())?;
-                if sent == 0 { return Err("这篇作品尚无投递记录".into()); }
-                let (name, bytes) = store::load_manuscript_attachment(&conn, id)?
-                    .ok_or("这篇投稿计划没有保存 Word 文稿")?;
-                (format!("manuscript-{id}"), name, bytes)
-            }
-            _ => return Err("文稿来源无效".into()),
-        }
-    };
-    let root = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    let path = managed_document_copy(&root, &folder, &file_name, &data)?;
-    launch_document(&path, reveal)?;
-    Ok(path.to_string_lossy().into_owned())
+        };
+        let path = managed_document_copy(&root, &folder, &file_name, &data)?;
+        launch_document(&path, reveal)?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn save_accepted_share_image(path: String, data: Vec<u8>) -> Result<String, String> {
+pub async fn save_accepted_share_image(request: Request<'_>) -> Result<String, String> {
+    let (data, metadata) = super::binary::read_binary(
+        request.body(),
+        request
+            .headers()
+            .get("x-file-metadata")
+            .and_then(|h| h.to_str().ok()),
+        12 * 1024 * 1024,
+        "分享图片",
+    )?;
     const PNG_HEADER: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-    if path.trim().is_empty()
-        || data.len() < PNG_HEADER.len()
-        || data.len() > 12 * 1024 * 1024
-        || !data.starts_with(&PNG_HEADER)
-    {
+    if metadata.path.trim().is_empty() || !data.starts_with(&PNG_HEADER) {
         return Err("分享图片无效".into());
     }
-    std::fs::write(&path, data).map_err(|e| e.to_string())?;
-    Ok(path)
+    let path = metadata.path;
+    let data = data.to_vec();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        Ok(path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Cursor, Write};
+
+    #[test]
+    fn summary_does_not_read_body_and_detail_preserves_it() {
+        let conn = crate::db::test_database();
+        let mut draft = input("external", None, "大稿件");
+        draft.body = "正文".repeat(100_000);
+        let id = create_work(&conn, draft.clone()).unwrap();
+        let rows = load_work_list(&conn, true).unwrap();
+        assert!(rows[0].body.is_empty()); assert_eq!(rows[0].id, id);
+        let detail = load_work(&conn, id).unwrap();
+        assert_eq!(detail.body, draft.body); assert_eq!(detail.title, rows[0].title);
+        assert!(load_work(&conn, id + 1).is_err());
+    }
+
+    #[test]
+    fn preview_returns_text_without_raw_attachment_and_keeps_original_bytes() {
+        let conn = crate::db::test_database();
+        let mut draft = input("external", None, "文稿");
+        draft.file_name = "文稿.DOCX".into(); draft.file_data = Some(word_file());
+        let id = create_work(&conn, draft.clone()).unwrap();
+        let preview = document_preview(load_document(&conn, id).unwrap()).unwrap();
+        assert!(preview.has_file); assert!(preview.attachment_text.contains("Sent manuscript"));
+        let json = serde_json::to_value(preview).unwrap();
+        assert!(json.get("file_data").is_none());
+        assert_eq!(load_document(&conn, id).unwrap().file_data, draft.file_data);
+        let text = document_preview(AcceptedWorkDocument { title: "文稿".into(), body: "正文".into(), file_name: "文稿.txt".into(), file_data: Some("\u{feff}原始文本".as_bytes().to_vec()) }).unwrap();
+        assert_eq!(text.attachment_text, "原始文本");
+        assert!(document_preview(AcceptedWorkDocument { title: "".into(), body: "".into(), file_name: "bad.docx".into(), file_data: Some(vec![0,1,2]) }).is_err());
+    }
 
     fn word_file() -> Vec<u8> {
         let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -605,6 +750,7 @@ mod tests {
             body: "外部正文".into(),
             file_name: String::new(),
             file_data: None,
+            file_token: None,
             remove_file: false,
             accepted_at: "2026-09-25".into(),
             deal_mode: "guarantee_share".into(),
@@ -774,6 +920,19 @@ mod tests {
         assert_eq!(std::fs::read(&first).unwrap(), b"first");
         assert_eq!(std::fs::read(&second).unwrap(), b"revised");
         assert!(safe_document_name("../../bad.exe").is_err());
+        let data = vec![42; 128 * 1024 + 17];
+        let large = managed_document_copy(&root, "accepted-8", "长文.txt", &data).unwrap();
+        assert!(document_matches(&large, &data).unwrap());
+        let mut changed = data.clone();
+        changed[64 * 1024] = 43;
+        assert!(!document_matches(&large, &changed).unwrap());
+        assert!(!document_matches(&large, &data[..data.len()-1]).unwrap());
+        changed = data.clone();
+        *changed.last_mut().unwrap() = 43;
+        assert!(!document_matches(&large, &changed).unwrap());
+        assert_eq!(managed_document_copy(&root, "accepted-8", "长文.txt", &data).unwrap(), large);
+        assert_ne!(managed_document_copy(&root, "accepted-8", "长文.txt", &changed).unwrap(), large);
+        assert_eq!(fs::read(large).unwrap(), data);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,0 +1,44 @@
+From: =?UTF-8?B?5byg57yW6L6R?= <editor@example.com>
+To: Author <author@example.com>, Reader <reader@example.com>
+Cc: Review Team: One <one@example.com>, Two <two@example.com>;
+Reply-To: Desk <desk@example.com>
+Date: Sat, 26 Sep 2026 12:30:00 +0800
+Subject: =?UTF-8?B?56i/5Lu25Y+N6aaI?=
+Message-ID: <full-message@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mixed"
+
+--mixed
+Content-Type: multipart/related; boundary="related"
+
+--related
+Content-Type: multipart/alternative; boundary="alternative"
+
+--alternative
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+=E7=BC=96=E8=BE=91=E6=82=A8=E5=A5=BD=EF=BC=9A
+First paragraph.
+
+Second paragraph & details.
+--alternative
+Content-Type: text/html; charset=utf-8
+
+<html><head><style>td { padding: 8px; }</style></head><body><h2>编辑您好：</h2><p>第一段 &amp; 详情</p><table><tr><td>建议</td><td>补充人物关系</td></tr></table><a href="https://example.com/review">查看建议</a><img src="cid:signature"><blockquote>完整引用内容</blockquote></body></html>
+--alternative--
+--related
+Content-Type: image/png
+Content-Disposition: inline; filename="signature.png"
+Content-ID: <signature>
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jw1sAAAAASUVORK5CYII=
+--related--
+--mixed
+Content-Type: text/plain; charset=utf-8
+Content-Disposition: attachment; filename*=utf-8''%E4%BF%AE%E6%94%B9%E6%84%8F%E8%A7%81.txt
+Content-Transfer-Encoding: base64
+
+aGVsbG8gYXR0YWNobWVudA==
+--mixed--

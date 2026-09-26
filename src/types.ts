@@ -1,7 +1,6 @@
 export interface Account {
   id: number
   email: string
-  password: string
   smtp_host: string
   smtp_port: number
   sender_name: string
@@ -12,6 +11,8 @@ export interface Account {
   imap_port: number
   check_replies: boolean
   imap_uid: number
+  imap_uid_validity?: number
+  imap_generation?: number
   created_at: string
   sent_today?: number
 }
@@ -111,6 +112,8 @@ export interface Manuscript {
   updated_at: string
 }
 
+export type ManuscriptSummary = Omit<Manuscript, 'body' | 'mail_templates'>
+
 export interface ManuscriptInput {
   title: string
   body: string
@@ -132,6 +135,7 @@ export interface ManuscriptInput {
   fixed_mail_template_id: string
   file_name: string
   file_data?: number[] | null
+  file_token?: string | null
   has_file?: boolean
 }
 
@@ -167,6 +171,8 @@ export interface AcceptedWork {
   updated_at: string
 }
 
+export type AcceptedWorkSummary = Omit<AcceptedWork, 'body'>
+
 export interface AcceptedWorkInput {
   manuscript_id: number | null
   source: 'plan' | 'external'
@@ -175,6 +181,7 @@ export interface AcceptedWorkInput {
   body: string
   file_name: string
   file_data?: number[] | null
+  file_token?: string | null
   remove_file: boolean
   accepted_at: string
   deal_mode: AcceptedDealMode
@@ -203,7 +210,8 @@ export interface AcceptedWorkDocument {
   title: string
   body: string
   file_name: string
-  file_data: number[] | null
+  attachment_text: string
+  has_file: boolean
 }
 
 export type TaskStatus = 'stopped' | 'scheduled' | 'running' | 'paused' | 'completed'
@@ -303,6 +311,8 @@ export interface Reply {
   message_id: string
   in_reply_to: string
   imap_uid: number
+  imap_uid_validity?: number
+  imap_generation?: number
   received_at: string
   created_at: string
   recipient: string
@@ -330,4 +340,28 @@ export interface DeliverySummaryPage {
 export interface PendingSend {
   id: number; task_id: number | null; account_id: number; manuscript_id: number
   recipient: string; subject: string; message_id: string; created_at: string; account_email: string
+}
+
+export interface InboxStatus {
+  account_id: number
+  mode: 'syncing' | 'connecting' | 'idle' | 'polling' | 'ready' | 'retrying'
+  detail: string
+  last_sync: string | null
+}
+
+export interface MailAddress { name: string; email: string }
+export interface MailAttachment { index: number; name: string; mime: string; size: number; content_id: string }
+export interface MailContent {
+  from: MailAddress[]; to: MailAddress[]; cc: MailAddress[]; bcc: MailAddress[]; reply_to: MailAddress[];
+  sent_at: string; text: string; html: string; attachments: MailAttachment[];
+  inline_images: Record<string,string>; complete: boolean; warning?: string | null;
+}
+
+export interface StorageSummary {
+  database_bytes: number
+  cache_bytes: number
+  cache_messages: number
+  protected_messages: number
+  backup_bytes: number
+  backup_count: number
 }

@@ -1,4 +1,4 @@
-import type { AcceptedWork } from '../types'
+import type { AcceptedWorkSummary } from '../types'
 import type { AcceptedSalesSummary } from './acceptedStats'
 
 const c = {
@@ -11,7 +11,7 @@ const dataFont = '"Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif'
 const money = (cents: number) => '¥' + (cents / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 const amount = (cents: number) => (cents / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 })
 
-export function recentSaleRows(works: AcceptedWork[]) {
+export function recentSaleRows(works: AcceptedWorkSummary[]) {
   return works.filter((work) => work.review_status === 'accepted'
     && (work.deal_mode === 'buyout' ? work.price_cents > 0
       : work.deal_mode === 'guarantee_share' ? (work.guarantee_cents > 0 || work.per_thousand_cents > 0)
@@ -48,7 +48,7 @@ function rule(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number,
 export function drawAcceptedShareCard(
   canvas: HTMLCanvasElement,
   summary: AcceptedSalesSummary,
-  works: AcceptedWork[],
+  works: AcceptedWorkSummary[],
   date: Date,
   logo: HTMLImageElement,
 ) {

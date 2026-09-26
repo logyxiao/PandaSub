@@ -1,20 +1,25 @@
+import { useBusyAction } from '../hooks/useBusyAction'
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
+import { MAX_ATTACHMENT_BYTES, MAX_EDITOR_GROUP_BYTES, readFileBytes } from '../lib/binaryIpc'
+import { useEditorListModel } from '../hooks/useEditorListModel'
+import { useRequestGuard } from '../hooks/useRequestGuard'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Download, FolderOpen, Heart, Pencil, Plus, RotateCcw, Search, Trash2, Upload, Users, X } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { api } from '../api'
-import { EditorTagField, type EditorTagSelection } from '../components/EditorTags'
+import { EditorFormFields } from '../components/EditorFormFields'
 import { EditorTagFilter } from '../components/EditorTagFilter'
 import { EditorLibrary } from './EditorLibrary'
 import { Modal } from '../components/Modal'
 import { GroupMemberPicker } from '../components/GroupMemberPicker'
 import { useConfirm, useToast } from '../components/feedback'
-import { Button, EmptyState, IconButton, Select } from '../components/ui'
+import { Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
 import { Table, type TableColumn } from '../components/Table'
-import { isValidEmail } from '../format'
+import { validateEditorInput } from './editorLibraryShared'
 import { useNav } from '../nav'
 import type { Editor, EditorGroup, EditorInput } from '../types'
-import { GENRES, SOURCES, compareEditorsByFavorite, editorMatchesPlan, editorPlatformKey, editorRowTags, isEditorFavorited, normalizeEditorTags, summarizeEditorGroup } from './planShared'
+import { SOURCES, compareEditorsByFavorite, editorRowTags, isEditorFavorited, normalizeEditorTags, summarizeEditorGroup } from './planShared'
 
 const UNASSIGNED = '未填平台'
 
@@ -97,54 +102,26 @@ export function EditorsList({
 
   const list = useMemo(() => (externalItems ?? items).map(normalizeEditorTags), [externalItems, items])
 
-  const load = async () => {
+  const listRequests = useRequestGuard()
+  const load = useCallback(async (refresh = false) => {
+    const request = listRequests.begin()
     setLoading(true)
-    try { setItems((await api.listEditors()).map(normalizeEditorTags)); setNotice('') }
-    catch (e) { setNotice(String(e)) }
-    finally { setLoading(false) }
-  }
-  useEffect(() => { if (!externalItems) void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (!externalItems && reloadSignal > 0) void load() }, [externalItems, reloadSignal])
+    try {
+      const rows = await api.listEditors(refresh)
+      if (listRequests.isCurrent(request)) { setItems(rows.map(normalizeEditorTags)); setNotice('') }
+    } catch (e) { if (listRequests.isCurrent(request)) setNotice(String(e)) }
+    finally { if (listRequests.isCurrent(request)) setLoading(false) }
+  }, [listRequests])
+  useEffect(() => {
+    if (!externalItems) void load(reloadSignal > 0)
+    return () => listRequests.invalidate()
+  }, [externalItems, reloadSignal, load, listRequests])
 
-  const platforms = useMemo(
-    () => [...new Set(list.map((e) => e.platform.trim()).filter(Boolean))].sort(),
-    [list],
-  )
+  const { platforms, basePool, candidates: tagCandidates, matchingEditors } = useEditorListModel(list, {
+    query, platform, source, favoritedOnly, plan: true, onePerPlatform, selectedIds,
+  })
   useEffect(() => { onPlatformsChange?.(platforms) }, [platforms, onPlatformsChange])
-
-  const basePool = useMemo(() => list.filter((e) => {
-    if (platform && e.platform !== platform) return false
-    const q = query.trim().toLowerCase()
-    if (!q) return true
-    return [e.name, e.email, e.platform, e.source, e.notes, ...(e.work_type ?? []), ...(e.rejected_types ?? [])].join(' ').toLowerCase().includes(q)
-  }), [list, platform, query])
-
   const allWorkTypes = useMemo(() => [...new Set(list.flatMap((editor) => editor.work_type))], [list])
-  const tagCandidates = useMemo(() => basePool.filter((editor) =>
-    (!favoritedOnly || isEditorFavorited(editor)) && (!source || editor.source === source)),
-  [basePool, favoritedOnly, source])
-
-  const matchingEditors = useCallback((selection: EditorTagSelection) => {
-    const filtered = tagCandidates.filter((editor) =>
-      editorMatchesPlan(editor, selection.included, selection.excluded)).sort(compareEditorsByFavorite)
-    // 搜索时列出库里所有命中的人，方便从编辑库找人；平时每个平台只留一位。
-    if (!onePerPlatform || query.trim()) return filtered
-    const groups = new Map<string, Editor[]>()
-    const order: string[] = []
-    for (const editor of filtered) {
-      const key = editorPlatformKey(editor)
-      const list = groups.get(key)
-      if (list) list.push(editor)
-      else {
-        groups.set(key, [editor])
-        order.push(key)
-      }
-    }
-    return order.map((key) => {
-      const list = groups.get(key) ?? []
-      return list.find((item) => selectedIds?.has(item.id)) ?? list[0]
-    })
-  }, [tagCandidates, onePerPlatform, query, selectedIds])
   const visible = useMemo(() => matchingEditors({
     included: workTypes, excluded: excludedWorkTypes, match: 'any',
   }), [matchingEditors, workTypes, excludedWorkTypes])
@@ -560,6 +537,10 @@ function PlatformPeersPop({ top, left, width, current, peers, onPick, onClose }:
 }
 
 export function EditorGroupsLibrary() {
+  const mutation = useBusyAction()
+  const requests = useRequestGuard()
+  const [memberPage, setMemberPage] = useState(1)
+  const formBaseline = useRef('')
   const [groups, setGroups] = useState<EditorGroup[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
   const [activeGroupId, setActiveGroupId] = useState<number | null>(null)
@@ -583,9 +564,11 @@ export function EditorGroupsLibrary() {
   const { go } = useNav()
 
   const load = useCallback(async (preferredGroupId?: number) => {
+    const request = requests.begin()
     setLoading(true)
     try {
       const [nextGroups, nextEditors] = await Promise.all([api.listEditorGroups(), api.listEditors()])
+      if (!requests.isCurrent(request)) return
       setGroups(nextGroups)
       setEditors(nextEditors)
       setActiveGroupId((current) => {
@@ -595,11 +578,11 @@ export function EditorGroupsLibrary() {
       })
       setNotice('')
     } catch (error) {
-      setNotice(String(error))
+      if (requests.isCurrent(request)) setNotice(String(error))
     } finally {
-      setLoading(false)
+      if (requests.isCurrent(request)) setLoading(false)
     }
-  }, [])
+  }, [requests])
 
   useEffect(() => { void load() }, [load])
 
@@ -617,7 +600,13 @@ export function EditorGroupsLibrary() {
       return [editor]
     }).sort(compareEditorsByFavorite)
   }, [activeGroup, editorMap])
-  const activeSummary = summarizeEditorGroup(activeMembers)
+  const activeSummary = useMemo(() => summarizeEditorGroup(activeMembers), [activeMembers])
+  const groupSummaries = useMemo(() => new Map(groups.map(group => [group.id,
+    summarizeEditorGroup(group.editor_ids.flatMap(id => { const editor = editorMap.get(id); return editor ? [editor] : [] }))])), [groups, editorMap])
+  const formSnapshot = JSON.stringify([name, [...selectedIds].sort((a, b) => a - b)])
+  const allowLeave = useUnsavedChanges((showForm && formSnapshot !== formBaseline.current) || (renaming && draftName.trim() !== activeGroup?.name),
+    mutation.busy || saving || importing, '编辑组尚未保存，继续会丢弃名称和成员修改。')
+  const closeForm = async () => { if (await allowLeave()) setShowForm(false) }
   const visibleGroups = useMemo(() => {
     const q = groupQuery.trim().toLowerCase()
     return groups.filter((group) => !q || group.name.toLowerCase().includes(q))
@@ -629,8 +618,12 @@ export function EditorGroupsLibrary() {
       `${editor.name} ${editor.platform} ${editor.email}`.toLowerCase().includes(q))
   }, [activeMembers, memberQuery])
 
+  const memberPageCount = Math.max(1, Math.ceil(visibleMembers.length / 50))
+  const safeMemberPage = Math.min(memberPage, memberPageCount)
+  const memberRows = visibleMembers.slice((safeMemberPage - 1) * 50, safeMemberPage * 50)
+
   useEffect(() => {
-    setMemberQuery('')
+    setMemberQuery(''); setMemberPage(1)
     setRenaming(false)
   }, [activeGroupId])
 
@@ -640,13 +633,16 @@ export function EditorGroupsLibrary() {
 
   const persistGroup = async (group: EditorGroup, next: { name?: string; editor_ids?: number[] }) => {
     const editor_ids = [...new Set((next.editor_ids ?? group.editor_ids).filter((id) => editorMap.has(id)))]
-    await api.updateEditorGroup(group.id, { name: next.name ?? group.name, editor_ids })
+    const saved = { ...group, name: next.name ?? group.name, editor_ids }
+    await api.updateEditorGroup(group.id, { name: saved.name, editor_ids })
+    setGroups(items => items.map(item => item.id === group.id ? saved : item))
     await load(group.id)
   }
 
-  const selectGroup = (id: number) => setActiveGroupId(id)
+  const selectGroup = (id: number) => { if (!mutation.busy) setActiveGroupId(id) }
 
   const openNew = () => {
+    formBaseline.current = JSON.stringify(['', []])
     setEditing(null)
     setName('')
     setSelectedIds(new Set())
@@ -654,13 +650,14 @@ export function EditorGroupsLibrary() {
   }
 
   const openEdit = (group: EditorGroup) => {
+    formBaseline.current = JSON.stringify([group.name, group.editor_ids.filter(id => editorMap.has(id)).sort((a, b) => a - b)])
     setEditing(group)
     setName(group.name)
     setSelectedIds(new Set(group.editor_ids.filter((id) => editorMap.has(id))))
     setShowForm(true)
   }
 
-  const commitRename = async () => {
+  const commitRename = async () => mutation.run(async () => {
     if (!activeGroup) return
     const next = draftName.trim()
     setRenaming(false)
@@ -671,9 +668,9 @@ export function EditorGroupsLibrary() {
     } catch (error) {
       toast(String(error), 'error')
     }
-  }
+  })
 
-  const removeMember = async (editor: Editor) => {
+  const removeMember = async (editor: Editor) => mutation.run(async () => {
     if (!activeGroup) return
     const editor_ids = activeGroup.editor_ids.filter((id) => id !== editor.id && editorMap.has(id))
     if (!editor_ids.length) {
@@ -685,7 +682,7 @@ export function EditorGroupsLibrary() {
     } catch (error) {
       toast(String(error), 'error')
     }
-  }
+  })
 
   const toggleFavorite = async (editor: Editor) => {
     try {
@@ -696,7 +693,7 @@ export function EditorGroupsLibrary() {
     }
   }
 
-  const save = async () => {
+  const save = async () => mutation.run(async () => {
     const trimmedName = name.trim()
     if (!trimmedName) { toast('请填写编辑组名称', 'warning'); return }
     if (!selectedIds.size) { toast('请至少选择一位编辑', 'warning'); return }
@@ -714,9 +711,9 @@ export function EditorGroupsLibrary() {
     } finally {
       setSaving(false)
     }
-  }
+  })
 
-  const remove = async (group: EditorGroup) => {
+  const remove = async (group: EditorGroup) => mutation.run(async () => {
     const ok = await confirm({
       title: `删除“${group.name}”？`,
       message: '只会删除这个分组，不会删除组里的编辑资料，也不会影响已经保存的投稿计划。',
@@ -731,7 +728,7 @@ export function EditorGroupsLibrary() {
     } catch (error) {
       toast(String(error), 'error')
     }
-  }
+  })
 
   const exportGroups = async (groupIds: number[], fileLabel: string) => {
     const safeLabel = fileLabel.replace(/[\\/:*?"<>|]/g, '_')
@@ -752,11 +749,11 @@ export function EditorGroupsLibrary() {
     }
   }
 
-  const importGroups = async (file: File | null) => {
+  const importGroups = async (file: File | null) => mutation.run(async () => {
     if (!file) return
     setImporting(true)
     try {
-      const data = Array.from(new Uint8Array(await file.arrayBuffer()))
+      const data = await readFileBytes(file, MAX_EDITOR_GROUP_BYTES, '编辑组文件')
       const result = await api.importEditorGroups(data, file.name)
       await load()
       const changes = [
@@ -770,7 +767,7 @@ export function EditorGroupsLibrary() {
     } finally {
       setImporting(false)
     }
-  }
+  })
 
   return (
     <>
@@ -799,11 +796,7 @@ export function EditorGroupsLibrary() {
             )}
             <div className="editor-group-rail-list" role="tablist" aria-label="编辑组">
               {visibleGroups.map((group) => {
-                const members = group.editor_ids.flatMap((id) => {
-                  const editor = editorMap.get(id)
-                  return editor ? [editor] : []
-                })
-                const summary = summarizeEditorGroup(members)
+                const summary = groupSummaries.get(group.id)!
                 const active = group.id === activeGroupId
                 return (
                   <button type="button" role="tab" aria-selected={active} key={group.id}
@@ -847,7 +840,7 @@ export function EditorGroupsLibrary() {
                       }} />
                   </label>
                 ) : (
-                  <button type="button" className="editor-group-detail-title" title="点击改名"
+                  <button type="button" disabled={mutation.busy} className="editor-group-detail-title" title="点击改名"
                     onClick={() => { setDraftName(activeGroup.name); setRenaming(true) }}>
                     <span className="editor-group-icon"><FolderOpen size={16} /></span>
                     <span>
@@ -867,11 +860,11 @@ export function EditorGroupsLibrary() {
               <label className="group-member-search editor-group-member-search">
                 <Search size={14} />
                 <input aria-label="搜索组内成员" placeholder="在这组里找人" value={memberQuery}
-                  onChange={(event) => setMemberQuery(event.target.value)} />
+                  onChange={(event) => { setMemberQuery(event.target.value); setMemberPage(1) }} />
               </label>
               {visibleMembers.length ? (
                 <ul className="editor-group-roster">
-                  {visibleMembers.map((editor) => {
+                  {memberRows.map((editor) => {
                     const favored = isEditorFavorited(editor)
                     return (
                       <li key={editor.id} className="editor-group-roster-row">
@@ -890,7 +883,7 @@ export function EditorGroupsLibrary() {
                           onClick={() => void toggleFavorite(editor)}>
                           <Heart size={13} fill={favored ? 'currentColor' : 'none'} />
                         </IconButton>
-                        <IconButton title={`移出 ${editor.name.trim() || editor.email}`}
+                        <IconButton disabled={mutation.busy} title={`移出 ${editor.name.trim() || editor.email}`}
                           onClick={() => void removeMember(editor)}>
                           <X size={14} />
                         </IconButton>
@@ -903,6 +896,7 @@ export function EditorGroupsLibrary() {
                   desc={activeMembers.length ? '换个关键词试试' : '把常用编辑加进来，写计划时就能一键选入。'}
                   action={<Button size="sm" variant="primary" onClick={() => openEdit(activeGroup)}><Plus size={13} />添加成员</Button>} />
               )}
+              {visibleMembers.length > 50 && <Pager page={safeMemberPage} pageCount={memberPageCount} pageSize={50} total={visibleMembers.length} onPage={setMemberPage} />}
               <p className="after-table-hint">
                 写 <button type="button" className="text-link" onClick={() => go('plans')}>投稿计划</button> 时点「{activeGroup.name}」即可整组选入。点组名可改名，点 × 可移出成员。
               </p>
@@ -913,11 +907,11 @@ export function EditorGroupsLibrary() {
 
       {showForm && (
         <Modal title={editing ? '管理成员' : '新建编辑组'} width={960} className="group-member-modal"
-          onClose={() => setShowForm(false)}
+          onClose={() => void closeForm()}
           footer={
             <>
               <span className="editor-group-selected-count">已选 {selectedIds.size} 位</span>
-              <Button variant="ghost" onClick={() => setShowForm(false)}>取消</Button>
+              <Button variant="ghost" disabled={saving} onClick={() => void closeForm()}>取消</Button>
               <Button variant="primary" disabled={saving || !name.trim() || !selectedIds.size} onClick={() => void save()}>
                 {saving ? '保存中…' : '保存'}
               </Button>
@@ -938,6 +932,7 @@ export function EditorGroupsLibrary() {
 }
 
 export function EditorsView() {
+  const dataMutation = useBusyAction()
   const [updatedEditorId, setUpdatedEditorId] = useState<number | null>(null)
   const [reloadSignal, setReloadSignal] = useState(0)
   const [platformOptions, setPlatformOptions] = useState<string[]>([])
@@ -957,10 +952,10 @@ export function EditorsView() {
   const baseline = useRef('')
   const formDirty = showForm && JSON.stringify(form) !== baseline.current
   const allowLeave = useCallback(async () => {
-    if (rowBusy || savingRef.current) { toast('正在保存，请稍候', 'info'); return false }
+    if (rowBusy || savingRef.current || dataMutation.busy) { toast('正在保存，请稍候', 'info'); return false }
     if (!(rowDirty || formDirty)) return true
     return confirm({ title: '放弃未保存的修改？', message: '当前编辑资料尚未保存。继续会丢弃这次修改。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' })
-  }, [rowBusy, rowDirty, formDirty, confirm, toast])
+  }, [rowBusy, rowDirty, formDirty, confirm, toast, dataMutation.busy])
   useEffect(() => { setLeaveGuard(allowLeave); return () => setLeaveGuard(null) }, [allowLeave, setLeaveGuard])
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (rowDirty || formDirty || rowBusy || formSaving) { event.preventDefault(); event.returnValue = '' } }
@@ -988,8 +983,9 @@ export function EditorsView() {
 
   const save = async () => {
     if (savingRef.current) return
-    if (!isValidEmail(form.email.trim())) { toast('请填写有效的收稿邮箱', 'warning'); return }
-    const payload = normalizeEditorTags({ ...form, email: form.email.trim() })
+    const error = validateEditorInput(form, [], editing?.id)
+    if (error) { toast(error, 'warning'); return }
+    const payload = normalizeEditorTags({ ...form, email: form.email.trim().toLowerCase() })
     savingRef.current = true; setFormSaving(true)
     try {
       if (editing) { await api.updateEditor(editing.id, payload); setUpdatedEditorId(editing.id) }
@@ -1014,10 +1010,10 @@ export function EditorsView() {
     } catch (e) { toast(String(e), 'error') }
   }
 
-  const importList = async (file: File | null) => {
+  const importList = async (file: File | null) => dataMutation.run(async () => {
     if (!file) return
     try {
-      const data = Array.from(new Uint8Array(await file.arrayBuffer()))
+      const data = await readFileBytes(file, MAX_ATTACHMENT_BYTES, '编辑库文件')
       const result = await api.importEditors(data, file.name)
       refresh()
       const parts = [
@@ -1032,9 +1028,9 @@ export function EditorsView() {
         toast('文件里没有可导入的编辑', 'info')
       }
     } catch (e) { toast(String(e), 'error') }
-  }
+  })
 
-  const importDefaults = async () => {
+  const importDefaults = async () => dataMutation.run(async () => {
     const ok = await confirm({
       title: '载入默认编辑库',
       message: '将写入内置的投稿邮箱。相同邮箱会更新资料，不会删除你自己添加的编辑。',
@@ -1050,7 +1046,7 @@ export function EditorsView() {
       ].filter(Boolean)
       toast(parts.join('，') || '默认编辑库已是最新', parts.length ? 'success' : 'info')
     } catch (e) { toast(String(e), 'error') }
-  }
+  })
 
   const remove = async (id: number) => {
     const ok = await confirm({ title: '删除编辑', message: '从编辑库里去掉，已经写进计划的收件人不会自动删除。', confirmLabel: '删除', tone: 'danger' })
@@ -1058,7 +1054,7 @@ export function EditorsView() {
     try { await api.deleteEditor(id); refresh(); toast('编辑已删除', 'success') } catch (e) { toast(String(e), 'error') }
   }
 
-  const clearAll = async () => {
+  const clearAll = async () => dataMutation.run(async () => {
     const ok = await confirm({
       title: '清空编辑库',
       message: '将删除编辑库里的全部编辑。已经写进计划的收件人不会自动删除。此操作不可撤销。',
@@ -1072,7 +1068,7 @@ export function EditorsView() {
       setShowData(false)
       toast(deleted ? `已清空 ${deleted} 位编辑` : '编辑库已是空的', deleted ? 'success' : 'info')
     } catch (e) { toast(String(e), 'error') }
-  }
+  })
 
   return (
     <>
@@ -1083,8 +1079,8 @@ export function EditorsView() {
         onDirtyChange={setRowDirty} onBusyChange={setRowBusy} />
 
       {showData && (
-        <Modal title="数据管理" width={440} onClose={() => setShowData(false)}>
-          <div className="editor-data-list">
+        <Modal title="数据管理" width={440} onClose={() => { if (!dataMutation.busy) setShowData(false) }}>
+          <fieldset className="editor-data-list" disabled={dataMutation.busy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div className="editor-data-row">
               <div>
                 <b>导入</b>
@@ -1113,7 +1109,7 @@ export function EditorsView() {
               </div>
               <Button size="sm" variant="ghost" className="danger" onClick={() => void clearAll()}>清空</Button>
             </div>
-          </div>
+          </fieldset>
         </Modal>
       )}
 
@@ -1121,38 +1117,8 @@ export function EditorsView() {
         <Modal title={editing ? '编辑资料' : '添加编辑'} width={560} className="editor-drawer"
           onClose={() => void closeForm()}
           footer={<><Button variant="ghost" disabled={formSaving} onClick={() => void closeForm()}>取消</Button><Button variant="primary" disabled={formSaving} onClick={() => void save()}>{formSaving ? '保存中…' : '保存'}</Button></>}>
-          <fieldset className="form-grid editor-form-fields" disabled={formSaving}>
-            <label className="field">平台
-              <input value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })} placeholder="选填，例如：起点、晋江" list="editor-platforms" />
-            </label>
-            <label className="field">名称
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="选填，编辑或栏目名" /></label>
-            <label className="field span2">收稿邮箱（必填）
-              <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="editor@example.com" /></label>
-            <div className="field span2">收稿类型
-              <EditorTagField label="收稿类型" values={form.work_type} options={[...new Set([...tagOptions, ...GENRES, ...form.work_type, ...(form.rejected_types ?? [])])]} disabled={formSaving}
-                onChange={work_type => setForm(value => ({...value, work_type, rejected_types: (value.rejected_types ?? []).filter(tag => !work_type.includes(tag))}))}/>
-              <span className="field-hint">支持多选，选择标签后再保存编辑资料。</span>
-            </div>
-            <div className="field span2">拒收类型
-              <EditorTagField label="拒收类型" values={form.rejected_types ?? []} options={[...new Set([...tagOptions, ...GENRES, ...form.work_type, ...(form.rejected_types ?? [])])]} disabled={formSaving} excluded
-                onChange={rejected_types => setForm(value => ({...value, rejected_types, work_type: value.work_type.filter(tag => !rejected_types.includes(tag))}))}/>
-              <span className="field-hint">同一类型不会同时收稿和拒收；修改一侧会从另一侧移除。</span>
-            </div>
-            <label className="field span2">收稿说明
-              <textarea className="editor-notes" rows={4} value={form.notes}
-                onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                placeholder="审稿、结算、收稿方向、不收题材等，选填" />
-            </label>
-            {editing && (
-              <p className="field-hint span2">
-                当前来源：{editing.source || '手动数据'}。在这里保存后会记为手动数据。
-              </p>
-            )}
-          </fieldset>
-          <datalist id="editor-platforms">
-            {platformOptions.map((p) => <option key={p} value={p} />)}
-          </datalist>
+          <EditorFormFields value={form} onChange={setForm} platforms={platformOptions} tags={tagOptions}
+            disabled={formSaving} source={editing ? editing.source || '手动数据' : undefined} />
         </Modal>
       )}
     </>

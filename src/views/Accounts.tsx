@@ -1,4 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useRequestGuard } from '../hooks/useRequestGuard'
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Ban, Check, Eye, EyeOff, Mail, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
@@ -29,7 +31,8 @@ const detectProvider = (email: string) => {
   return 'other'
 }
 
-const normalizeForm = (form: AccountInput): AccountInput => {
+const normalizeForm = (form: AccountInput, original: Account | null = null): AccountInput => {
+  if (original && original.email.toLowerCase() === form.email.trim().toLowerCase()) return { ...form, email: form.email.trim(), sender_name: form.sender_name.trim() }
   const provider = detectProvider(form.email)
   const preset = presets[provider]
   const domain = form.email.trim().toLowerCase().split('@')[1] ?? ''
@@ -58,22 +61,33 @@ export function AccountsView() {
   const [showForm, setShowForm] = useState(false)
   const [forms, setForms] = useState<AccountInput[]>([{ ...emptyForm }])
   const [showPasswords, setShowPasswords] = useState<boolean[]>([false])
-  const [testing, setTesting] = useState<number | null>(null)
+  const [testing, setTesting] = useState<Set<number>>(new Set())
+  const testingIds = useRef(new Set<number>())
+  const requests = useRequestGuard()
   const [testResult, setTestResult] = useState<Record<number, string>>({})
+  const [saving, setSaving] = useState(false)
+  const busy = useRef(false)
+  const baseline = useRef('')
+  const allowLeave = useUnsavedChanges(showForm && JSON.stringify(forms) !== baseline.current, saving, '邮箱配置尚未保存，继续会丢弃修改。')
+  const closeForm = async () => { if (await allowLeave()) setShowForm(false) }
   const toast = useToast()
   const confirm = useConfirm()
   const { go } = useNav()
 
-  const load = async () => {
+  const load = useCallback(async () => {
+    const request = requests.begin()
     setLoading(true)
-    try { setAccounts(await api.listAccounts()); setNotice('') }
-    catch (e) { setNotice(String(e)) }
-    finally { setLoading(false) }
-  }
-  useEffect(() => { void load() }, [])
+    try {
+      const accounts = await api.listAccounts()
+      if (requests.isCurrent(request)) { setAccounts(accounts); setNotice('') }
+    } catch (error) { if (requests.isCurrent(request)) setNotice(String(error)) }
+    finally { if (requests.isCurrent(request)) setLoading(false) }
+  }, [requests])
+  useEffect(() => { void load() }, [load])
 
   const openAdd = () => {
     setEditing(null)
+    baseline.current = JSON.stringify([{ ...emptyForm }])
     setForms([{ ...emptyForm }])
     setShowPasswords([false])
     setShowForm(true)
@@ -81,11 +95,13 @@ export function AccountsView() {
 
   const openEdit = (a: Account) => {
     setEditing(a)
-    setForms([{
-      email: a.email, password: a.password, smtp_host: a.smtp_host, smtp_port: a.smtp_port,
+    const next = [{
+      email: a.email, password: '', smtp_host: a.smtp_host, smtp_port: a.smtp_port,
       sender_name: a.sender_name, provider: a.provider, enabled: a.enabled,
       imap_host: a.imap_host, imap_port: a.imap_port, check_replies: a.check_replies,
-    }])
+    }]
+    baseline.current = JSON.stringify(next)
+    setForms(next)
     setShowPasswords([false])
     setShowForm(true)
   }
@@ -106,17 +122,28 @@ export function AccountsView() {
   }
 
   const save = async () => {
+    if (busy.current) return
     const invalidEmail = forms.find((form) => !isValidEmail(form.email.trim()))
     if (invalidEmail) { toast('请输入有效的邮箱地址', 'warning'); return }
-    if (forms.some((form) => !form.password.trim())) { toast('请填写邮箱授权码，不是登录密码', 'warning'); return }
+    if (!editing && forms.some((form) => !form.password.trim())) { toast('请填写邮箱授权码，不是登录密码', 'warning'); return }
 
+    const emails = forms.map(form => form.email.trim().toLowerCase())
+    if (new Set(emails).size !== emails.length) { toast('填写了重复的邮箱地址', 'warning'); return }
+    busy.current = true; setSaving(true)
+    let completed = 0
     try {
-      if (editing) await api.updateAccount(editing.id, normalizeForm(forms[0]))
-      else for (const form of forms) await api.addAccount(normalizeForm(form))
+      if (editing) await api.updateAccount(editing.id, normalizeForm(forms[0], editing))
+      else for (const form of forms) { await api.addAccount(normalizeForm(form)); completed++ }
       setShowForm(false)
       await load()
       toast(editing ? '邮箱配置已保存' : `已添加 ${forms.length} 个邮箱`, 'success')
-    } catch (e) { toast(String(e), 'error') }
+    } catch (e) {
+      if (completed) {
+        setForms(forms.slice(completed)); setShowPasswords(forms.slice(completed).map(() => false))
+        await load()
+      }
+      toast(`${completed ? `已添加 ${completed} 个邮箱，剩余项目可继续保存：` : ''}${String(e)}`, 'error')
+    } finally { busy.current = false; setSaving(false) }
   }
 
   const remove = async (id: number) => {
@@ -130,13 +157,15 @@ export function AccountsView() {
   }
 
   const test = async (id: number) => {
-    setTesting(id); setTestResult((r) => ({ ...r, [id]: '' }))
+    if (testingIds.current.has(id)) return
+    testingIds.current.add(id)
+    setTesting(new Set(testingIds.current)); setTestResult((r) => ({ ...r, [id]: '' }))
     try {
       const result = await api.testAccount(id)
       setTestResult((r) => ({ ...r, [id]: result }))
       toast('测试邮件已发出，请检查该邮箱收件箱', 'success')
     } catch (e) { setTestResult((r) => ({ ...r, [id]: String(e) })); toast(String(e), 'error') }
-    finally { setTesting(null) }
+    finally { testingIds.current.delete(id); setTesting(new Set(testingIds.current)) }
   }
 
   const accountState = (a: Account): { tone: Tone; label: string } => {
@@ -241,7 +270,7 @@ export function AccountsView() {
                   render: (_value, a) => (
                     <>
                       <div className="row-actions">
-                        <Button size="sm" onClick={() => void test(a.id)} disabled={testing === a.id}>{testing === a.id ? '测试中…' : '测试'}</Button>
+                        <Button size="sm" onClick={() => void test(a.id)} disabled={testing.has(a.id)}>{testing.has(a.id) ? '测试中…' : '测试'}</Button>
                         <Button size="sm" onClick={() => openEdit(a)}>编辑</Button>
                         <IconButton title={a.enabled ? '停用' : '启用'} onClick={() => void toggle(a)}>{a.enabled ? <Ban size={15} /> : <Check size={15} />}</IconButton>
                         <IconButton title="删除" className="danger" onClick={() => void remove(a.id)}><Trash2 size={15} /></IconButton>
@@ -259,9 +288,9 @@ export function AccountsView() {
 
       {showForm && (
         <Modal title={editing ? '编辑投稿邮箱' : '配置投稿邮箱'} width={980}
-          onClose={() => setShowForm(false)}
-          footer={<><Button variant="ghost" onClick={() => setShowForm(false)}>取消</Button><Button variant="primary" onClick={() => void save()}>保存配置</Button></>}>
-          <div className="mail-config">
+          onClose={() => void closeForm()}
+          footer={<><Button variant="ghost" disabled={saving} onClick={() => void closeForm()}>取消</Button><Button variant="primary" disabled={saving} onClick={() => void save()}>保存配置</Button></>}>
+          <fieldset className="mail-config" disabled={saving} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <div className="mail-config-intro">
               <div><p className="mail-config-title">邮箱配置</p><p className="mail-config-sub">支持 QQ、163 邮箱；输入完整地址和授权码即可添加。</p></div>
               {!editing && <Button variant="ghost" onClick={addForm}><Plus size={16} />添加邮箱</Button>}
@@ -279,7 +308,7 @@ export function AccountsView() {
                       <input type="email" value={form.email} onChange={(e) => updateForm(index, { email: e.target.value })} placeholder="例如：author@qq.com 或 author@163.com" autoFocus={index === 0} /></label>
                     <label className="field">授权码
                       <div className="input-with-action">
-                        <input type={showPasswords[index] ? 'text' : 'password'} value={form.password} onChange={(e) => updateForm(index, { password: e.target.value })} placeholder="请输入邮箱授权码" />
+                        <input type={showPasswords[index] ? 'text' : 'password'} value={form.password} onChange={(e) => updateForm(index, { password: e.target.value })} placeholder={editing ? '留空保留原授权码' : '请输入邮箱授权码'} />
                         <button type="button" className="input-action" onClick={() => setShowPasswords((current) => current.map((v, i) => i === index ? !v : v))} title={showPasswords[index] ? '隐藏授权码' : '显示授权码'} aria-label={showPasswords[index] ? '隐藏授权码' : '显示授权码'}>{showPasswords[index] ? <EyeOff size={15} /> : <Eye size={15} />}</button>
                       </div></label>
                     <label className="field">笔名（可选）
@@ -294,7 +323,7 @@ export function AccountsView() {
               <div className="mail-help-icon"><Mail size={18} /></div>
               <div><strong>授权码</strong><p>QQ 邮箱：设置 → 账户 → POP3/IMAP/SMTP/Exchange 服务 → 开启服务并获取授权码。</p><p>163 邮箱：设置 → POP3/SMTP/IMAP → 开启服务并设置授权码。</p></div>
             </div>
-          </div>
+          </fieldset>
         </Modal>
       )}
     </>

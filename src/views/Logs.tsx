@@ -1,3 +1,6 @@
+import { useCoalescedRefresh } from '../hooks/useCoalescedRefresh'
+import { useEventSubscription } from '../hooks/useEventSubscription'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, FileText, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
@@ -27,21 +30,18 @@ function logTimeParts(value: string) {
 
 export function LogsView() {
   const [logs, setLogs] = useState<TaskLog[]>([])
-  const [tasks, setTasks] = useState<Task[]>([])
-  const [manuscripts, setManuscripts] = useState<Manuscript[]>([])
-  const [accounts, setAccounts] = useState<Account[]>([])
+  const [tasks, setTasks] = useState<Pick<Task, 'id' | 'name'>[]>([])
+  const [manuscripts, setManuscripts] = useState<Pick<Manuscript, 'id' | 'title'>[]>([])
+  const [accounts, setAccounts] = useState<Pick<Account, 'id' | 'email'>[]>([])
   const [taskFilter, setTaskFilter] = useState<number | ''>('')
   const [levelFilter, setLevelFilter] = useState<string>('')
   const [emailQuery, setEmailQuery] = useState('')
-  const [search, setSearch] = useState('')
+  const search = useDebouncedValue(emailQuery, 200, () => setPage(1))
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(8)
   const [total, setTotal] = useState(0)
   const [exporting, setExporting] = useState(false)
-  useEffect(() => {
-    const timer = window.setTimeout(() => { setSearch(emailQuery); setPage(1) }, 200)
-    return () => window.clearTimeout(timer)
-  }, [emailQuery])
+
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set())
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
@@ -50,7 +50,7 @@ export function LogsView() {
   const confirm = useConfirm()
   const { go } = useNav()
 
-  const load = useCallback(async () => {
+  const fetchLogs = useCallback(async () => {
     const seq = ++requestSeq.current
     setLoading(true)
     try {
@@ -58,34 +58,23 @@ export function LogsView() {
       if (seq !== requestSeq.current) return
       const lastPage = Math.max(1, Math.ceil(next.total / pageSize))
       if (page > lastPage) { setPage(lastPage); return }
-      setLogs(next.items); setTotal(next.total); setExpanded(new Set()); setNotice('')
+      setLogs(next.items); setTotal(next.total); setExpanded(current => new Set([...current].filter(id => next.items.some(log => log.id === id)))); setNotice('')
     } catch (e) { if (seq === requestSeq.current) setNotice(String(e)) }
     finally { if (seq === requestSeq.current) setLoading(false) }
   }, [taskFilter, levelFilter, search, page, pageSize])
+  const load = useCoalescedRefresh(fetchLogs)
   useEffect(() => { void load() }, [load])
   useEffect(() => {
     let cancelled = false
-    void Promise.all([api.listTasks(), api.listManuscripts(), api.listAccounts()])
-      .then(([t, m, a]) => { if (!cancelled) { setTasks(t); setManuscripts(m); setAccounts(a) } })
+    void api.listLogOptions()
+      .then(({ tasks, manuscripts, accounts }) => { if (!cancelled) { setTasks(tasks); setManuscripts(manuscripts.map(m => ({ id: m.id, title: m.name }))); setAccounts(accounts.map(a => ({ id: a.id, email: a.name }))) } })
       .catch((e) => { if (!cancelled) setNotice(String(e)) })
     return () => { cancelled = true }
   }, [])
 
-  useEffect(() => {
-    let cancelled = false
-    let timer: number | undefined
-    let un: (() => void) | undefined
-    const sequence = requestSeq
-    onLog((log) => {
-      if (cancelled || (taskFilter && log.task_id !== taskFilter)) return
-      // Throttle rather than continuously postpone under a stream of log events.
-      if (timer === undefined) timer = window.setTimeout(() => {
-        timer = undefined
-        if (!cancelled) void load()
-      }, 200)
-    }).then((u) => { if (cancelled) u(); else un = u })
-    return () => { cancelled = true; window.clearTimeout(timer); un?.(); sequence.current++ }
-  }, [taskFilter, load])
+  useEventSubscription(onLog, () => { void load() }, 200, log => !taskFilter || log.task_id === taskFilter)
+  useEffect(() => { const sequence = requestSeq; return () => { sequence.current++ } }, [load])
+
 
   const accountNames = useMemo(() => new Map(accounts.map((a) => [a.id, a.email])), [accounts])
   const taskNames = useMemo(() => new Map(tasks.map((t) => [t.id, t.name])), [tasks])

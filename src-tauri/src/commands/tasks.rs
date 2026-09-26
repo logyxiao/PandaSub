@@ -11,9 +11,12 @@ use crate::{scheduler, store};
 // ---------- Tasks ----------
 
 #[tauri::command]
-pub fn list_tasks(state: State<'_, AppState>) -> Result<Vec<crate::models::Task>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+pub async fn list_tasks(state: State<'_, AppState>) -> Result<Vec<crate::models::Task>, String> {
+    let db=state.db.clone();
+    tauri::async_runtime::spawn_blocking(move||{
+    let conn = db.lock().map_err(|e| e.to_string())?;
     store::load_tasks(&conn)
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[tauri::command]
@@ -56,21 +59,35 @@ fn validate_task_input(conn: &Connection, input: &TaskInput) -> Result<(), Strin
     if input.manuscript_ids.is_empty() {
         return Err("请选择至少一篇稿件".into());
     }
+    if !matches!(
+        input.schedule_type.as_str(),
+        "immediate" | "scheduled" | "loop"
+    ) {
+        return Err("发送方式无效".into());
+    }
+    if input.retry_max < 1 {
+        return Err("发送重试次数至少为 1".into());
+    }
+    let unique: std::collections::HashSet<_> = input.manuscript_ids.iter().collect();
+    if unique.len() != input.manuscript_ids.len() {
+        return Err("同一任务不能重复选择稿件".into());
+    }
     if input.schedule_type == "scheduled" {
-        let Some(at) = input
+        let at = input
             .scheduled_at
             .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
-            return Err("请选择定时发送的时间".into());
-        };
+            .ok_or("请选择定时发送的时间")?;
+        let parsed = chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M:%S")
+            .map_err(|_| "定时发送时间格式无效")?;
+        if parsed.format("%Y-%m-%d %H:%M:%S").to_string() != at {
+            return Err("定时发送时间格式无效".into());
+        }
         if at <= store::now_str(conn)?.as_str() {
             return Err("定时发送时间必须晚于现在".into());
         }
     }
 
-    let accounts = store::load_accounts(conn)?;
+    let accounts = store::load_enabled_account_configs(conn)?;
     let selected: Vec<&crate::models::Account> = if input.account_ids.is_empty() {
         accounts.iter().filter(|a| a.enabled).collect()
     } else {
@@ -89,19 +106,27 @@ fn validate_task_input(conn: &Connection, input: &TaskInput) -> Result<(), Strin
     for id in &input.manuscript_ids {
         store::ensure_manuscript_resolved(conn, *id)?;
     }
-    let manuscripts = store::load_manuscripts(conn, &input.manuscript_ids)?;
-    if manuscripts.len() != input.manuscript_ids.len() {
+    let (found, recipients): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(json_array_length(recipients)),0) FROM manuscripts
+         WHERE id IN (SELECT value FROM json_each(?1))",
+            [json!(input.manuscript_ids).to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    if found != input.manuscript_ids.len() as i64 {
         return Err("部分稿件不存在，请刷新后重试".into());
     }
-    if manuscripts
-        .iter()
-        .map(|m| m.recipients.len())
-        .sum::<usize>()
-        == 0
-    {
+    if recipients == 0 {
         return Err("所选稿件都没有收件人，请先在稿件中填写编辑部邮箱".into());
     }
+
     Ok(())
+}
+#[derive(serde::Serialize)]
+pub struct CreatedTask {
+    id: i64,
+    start_error: Option<String>,
 }
 
 #[tauri::command]
@@ -109,7 +134,7 @@ pub fn create_task(
     app: AppHandle,
     state: State<'_, AppState>,
     input: TaskInput,
-) -> Result<i64, String> {
+) -> Result<CreatedTask, String> {
     let status = if input.schedule_type == "scheduled" {
         "scheduled"
     } else {
@@ -136,10 +161,14 @@ pub fn create_task(
         .map_err(|e| e.to_string())?;
         conn.last_insert_rowid()
     };
-    if input.schedule_type != "scheduled" {
-        start_task(app, state, id)?;
-    }
-    Ok(id)
+    // The insert has committed. Always return its ID, even if starting fails,
+    // so a retry can update this task without depending on a list refresh.
+    let start_error = if input.schedule_type != "scheduled" {
+        start_task(app, state, id).err()
+    } else {
+        None
+    };
+    Ok(CreatedTask { id, start_error })
 }
 
 #[tauri::command]
@@ -275,7 +304,7 @@ pub fn create_waste_draft_task(
         } else {
             manuscript.account_ids.clone()
         };
-        let has_account = store::load_accounts(&conn)?.into_iter().any(|account| {
+        let has_account = store::load_enabled_account_configs(&conn)?.into_iter().any(|account| {
             account.enabled && (account_ids.is_empty() || account_ids.contains(&account.id))
         });
         if !has_account {
@@ -402,7 +431,7 @@ fn start_reserved_task(
         if task.status == "paused" {
             return Err("任务已暂停，请点击「继续」".into());
         }
-        if !store::load_accounts(&conn)?.iter().any(|account| {
+        if !store::load_enabled_account_configs(&conn)?.iter().any(|account| {
             account.enabled
                 && (task.account_ids.is_empty() || task.account_ids.contains(&account.id))
         }) {
@@ -531,5 +560,62 @@ mod control_tests {
             store::load_task(&conn, 1).unwrap().unwrap().status,
             "completed"
         );
+    }
+}
+
+#[cfg(test)]
+mod task_input_tests {
+    use super::*;
+    fn input() -> TaskInput {
+        TaskInput {
+            name: "计划".into(),
+            manuscript_ids: vec![1],
+            account_ids: vec![1],
+            schedule_type: "scheduled".into(),
+            scheduled_at: Some("2096-02-29 12:30:00".into()),
+            retry_max: 3,
+        }
+    }
+    #[test]
+    fn scheduling_rejects_invalid_dates_modes_and_duplicate_manuscripts() {
+        let conn = crate::db::test_database();
+        conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'fixture@example.com','fixture','localhost');
+            INSERT INTO manuscripts(id,title,body,recipients) VALUES(1,'稿件','正文','[\"editor@example.com\"]');").unwrap();
+        assert!(validate_task_input(&conn, &input()).is_ok());
+        for date in [
+            "2096-02-30 12:30:00",
+            "2096-13-01 12:30:00",
+            "2096-02-29 25:00:00",
+            "2096-2-29 12:30:00",
+            "2096-02-29T12:30:00",
+            "2096-02-29 12:30:00 ",
+            "2000-01-01 00:00:00",
+            "tomorrow",
+        ] {
+            let mut draft = input();
+            draft.scheduled_at = Some(date.into());
+            assert!(validate_task_input(&conn, &draft).is_err(), "{date}");
+        }
+        let mut draft = input();
+        draft.schedule_type = "invalid".into();
+        assert!(validate_task_input(&conn, &draft).is_err());
+        let mut draft = input();
+        draft.retry_max = 0;
+        assert!(validate_task_input(&conn, &draft).is_err());
+        let mut draft = input();
+        draft.manuscript_ids = vec![1, 1];
+        assert!(validate_task_input(&conn, &draft).is_err());
+        let mut draft = input();
+        draft.manuscript_ids = vec![999];
+        assert!(validate_task_input(&conn, &draft).is_err());
+        for mode in ["immediate", "loop"] {
+            let mut draft = input();
+            draft.schedule_type = mode.into();
+            draft.scheduled_at = None;
+            assert!(validate_task_input(&conn, &draft).is_ok());
+        }
+        conn.execute("UPDATE manuscripts SET recipients='[]' WHERE id=1", [])
+            .unwrap();
+        assert!(validate_task_input(&conn, &input()).is_err());
     }
 }

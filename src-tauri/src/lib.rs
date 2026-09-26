@@ -7,46 +7,15 @@ mod scheduler;
 mod smtp;
 mod state;
 mod store;
+mod tray;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
 
 use state::{AppState, TaskHandle};
-
-fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-    let icon = app.default_window_icon().cloned();
-    if let Some(icon) = icon {
-        let tray = TrayIconBuilder::new()
-            .icon(icon)
-            .menu(&menu)
-            .tooltip("熊猫投稿")
-            .on_menu_event(|app, event| match event.id().as_ref() {
-                "show" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-                "quit" => {
-                    let st = app.state::<AppState>();
-                    st.quitting.store(true, Ordering::SeqCst);
-                    app.exit(0);
-                }
-                _ => {}
-            })
-            .build(app)?;
-        app.state::<AppState>().tray.lock().unwrap().replace(tray);
-    }
-    Ok(())
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -73,12 +42,14 @@ pub fn run() {
             let quitting = Arc::new(AtomicBool::new(false));
 
             app.manage(AppState {
+                attachments: Default::default(),
                 db: db.clone(),
                 tasks: tasks.clone(),
                 quitting: quitting.clone(),
-                reply_scan: Arc::new(Mutex::new(())),
+                reply_scan: Arc::new(inbox::InboxSync::default()),
                 manual_sends: Arc::new(Mutex::new(HashMap::new())),
                 tray: Mutex::new(None),
+                unread_inbox_request: AtomicBool::new(false),
             });
 
             let auto_backup = {
@@ -88,12 +59,13 @@ pub fn run() {
                     .unwrap_or(false)
             };
             if auto_backup {
-                if let Err(error) = commands::backup_database(&data_dir) {
-                    log::warn!("自动备份失败：{error}");
-                }
+                let backup_dir = data_dir.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(error) = commands::backup_database(&backup_dir) { log::warn!("自动备份失败：{error}"); }
+                });
             }
 
-            build_tray(app)?;
+            tray::build(app)?;
 
             // 任务 worker 不跨进程存活：重启后数据库里还标着 running / paused 的任务
             // 其实已不在运行，直接标记为 stopped，避免界面出现可点「暂停」却没有 worker 的假任务。
@@ -160,6 +132,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard,
+            tray::take_tray_inbox_request,
             commands::running_task_count,
             commands::get_stats,
             commands::list_accounts,
@@ -177,6 +150,7 @@ pub fn run() {
             commands::update_manuscript,
             commands::delete_manuscript,
             commands::list_accepted_works,
+            commands::get_accepted_work,
             commands::list_accepted_candidates,
             commands::add_accepted_work,
             commands::update_accepted_work,
@@ -196,6 +170,7 @@ pub fn run() {
             commands::pause_task,
             commands::resume_task,
             commands::stop_task,
+            commands::list_log_options,
             commands::list_logs,
             commands::list_logs_page,
             commands::clear_logs,
@@ -206,14 +181,23 @@ pub fn run() {
             commands::save_default_mail_templates,
             commands::set_autostart,
             commands::backup_data,
+            commands::get_storage_summary,
+            commands::clean_storage,
             commands::show_main_window,
+            commands::get_reply_content,
+            commands::save_reply_attachment,
+            commands::open_mail_link,
             commands::list_replies,
+            commands::unread_human_reply_count,
             commands::list_replies_page,
             commands::set_reply_read,
             commands::sync_reply_read_flags,
             commands::scan_replies,
+            commands::get_inbox_status,
             commands::reclassify_replies,
             commands::extract_docx_text,
+            commands::stage_attachment,
+            commands::release_attachment,
             commands::list_deliveries,
             commands::delivery_summary_page,
             commands::list_pending_sends,

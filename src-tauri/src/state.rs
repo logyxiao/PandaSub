@@ -2,7 +2,6 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::tray::TrayIcon;
 
 const STATE_STOPPED: u8 = 0;
 const STATE_PAUSED: u8 = 1;
@@ -140,12 +139,14 @@ pub fn ensure_no_manual_task(pending: &ManualSendMap, task_id: i64) -> Result<()
 }
 
 pub struct AppState {
+    pub attachments: crate::commands::attachments::AttachmentStore,
     pub db: Arc<Mutex<Connection>>,
     pub tasks: Arc<Mutex<HashMap<i64, Arc<TaskHandle>>>>,
     pub quitting: Arc<AtomicBool>,
-    pub reply_scan: Arc<Mutex<()>>,
+    pub reply_scan: Arc<crate::inbox::InboxSync>,
     pub manual_sends: ManualSends,
-    pub tray: Mutex<Option<TrayIcon>>,
+    pub tray: Mutex<Option<crate::tray::InboxTray>>,
+    pub unread_inbox_request: AtomicBool,
 }
 
 #[cfg(test)]

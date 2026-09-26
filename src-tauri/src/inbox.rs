@@ -13,6 +13,7 @@ use crate::store;
 
 #[derive(Debug, Clone)]
 pub struct FetchedMail {
+    pub content: Option<content::ParsedContent>,
     pub uid: u32,
     pub is_read: bool,
     pub from: String,
@@ -27,95 +28,17 @@ pub struct FetchedMail {
     pub received_at: String,
 }
 
+pub mod content;
+mod flags;
+mod runtime;
+pub use runtime::{scan_all_accounts, start_reply_watcher, InboxStatus, InboxSync};
+
 const AUTO_REPLY_BACKFILL_DAYS: i64 = 14;
-const AUTO_REPLY_BACKFILL_VERSION: &str = "v1";
 
-pub fn start_reply_watcher(app: AppHandle, db: Arc<Mutex<Connection>>, scan_lock: Arc<Mutex<()>>) {
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(25)).await;
-        loop {
-            let minutes = {
-                let conn = db.lock().unwrap();
-                store::load_settings(&conn)
-                    .map(|s| s.reply_poll_minutes.max(1) as u64)
-                    .unwrap_or(2)
-            };
-            let app2 = app.clone();
-            let db2 = db.clone();
-            let scan_lock = scan_lock.clone();
-            let _ = tokio::task::spawn_blocking(move || scan_all_accounts(&app2, &db2, &scan_lock))
-                .await;
-            tokio::time::sleep(Duration::from_secs(minutes.saturating_mul(60))).await;
-        }
-    });
-}
-
-fn acquire_scan(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, String> {
-    lock.try_lock()
-        .map_err(|_| "收件箱检查正在进行，请稍后刷新".into())
-}
-
-pub fn scan_all_accounts(
-    app: &AppHandle,
-    db: &Arc<Mutex<Connection>>,
-    scan_lock: &Arc<Mutex<()>>,
-) -> Result<usize, String> {
-    let _guard = acquire_scan(scan_lock)?;
-    let (mut accounts, auto_keywords) = {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        (
-            store::load_accounts(&conn)?,
-            store::load_settings(&conn)?.auto_reply_subject_keywords,
-        )
-    };
-    static NEXT_ACCOUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    accounts.retain(|account| {
-        account.enabled && account.check_replies && !account.imap_host.trim().is_empty()
-    });
-    if !accounts.is_empty() {
-        let offset =
-            NEXT_ACCOUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % accounts.len();
-        accounts.rotate_left(offset);
-    }
-    let round_deadline = Instant::now() + Duration::from_secs(120);
-    let mut total = 0usize;
-    let mut failures = Vec::new();
-    for account in accounts {
-        if !account.enabled || !account.check_replies || account.imap_host.trim().is_empty() {
-            continue;
-        }
-        if Instant::now() >= round_deadline {
-            failures.push("本轮收件扫描已达 120 秒，将在后续扫描继续".into());
-            break;
-        }
-        match scan_one_account(app, db, &account, round_deadline, &auto_keywords) {
-            Ok(n) => total += n,
-            Err(e) => {
-                failures.push(format!("{}：{e}", account.email));
-                let log = {
-                    let conn = db.lock().map_err(|e| e.to_string())?;
-                    store::insert_log(
-                        &conn,
-                        None,
-                        Some(account.id),
-                        "warning",
-                        "reply",
-                        &format!("检查回复失败（{}）：{}", account.email, e),
-                    )
-                };
-                if let Ok(log) = log {
-                    let _ = app.emit("log", &log);
-                }
-            }
-        }
-    }
-    if !failures.is_empty() {
-        return Err(format!(
-            "已保存 {total} 封新回复；部分邮箱检查失败：{}",
-            failures.join("；")
-        ));
-    }
-    Ok(total)
+#[derive(Default)]
+struct ScanReport {
+    saved: usize,
+    more: bool,
 }
 
 fn scan_one_account(
@@ -124,26 +47,44 @@ fn scan_one_account(
     account: &Account,
     round_deadline: Instant,
     auto_keywords: &[String],
-) -> Result<usize, String> {
+) -> Result<ScanReport, String> {
     let backfill_key = format!(
-        "replies.autoreply_match_backfill.{AUTO_REPLY_BACKFILL_VERSION}.{}",
-        account.id
+        "replies.inbox_backfill.v2.{}.{}",
+        account.id, account.imap_generation
     );
-    let needs_backfill = {
+    let progress: Option<BackfillProgress> = {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        !store::setting_exists(&conn, &backfill_key)?
+        use rusqlite::OptionalExtension;
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key=?1",
+                [&backfill_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        value.and_then(|value| serde_json::from_str(&value).ok())
     };
-    // 此版本首次运行时回看近 14 天，补回旧匹配规则已经推进 UID、却未保存的自动回复。
-    let fetched = fetch_mail(account, needs_backfill, round_deadline)?;
+    let fetched = fetch_mail_prioritized(account, progress, round_deadline)?;
     if let Some(warning) = &fetched.warning {
         let conn = db.lock().map_err(|e| e.to_string())?;
         let log = store::insert_log(&conn, None, Some(account.id), "warning", "reply", warning)?;
         let _ = app.emit("log", &log);
     }
-    if !fetched.skipped.is_empty() {
+    if !fetched.headers_only.is_empty() {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let log = store::insert_log(&conn, None, Some(account.id), "warning", "reply",
-            &format!("收件扫描跳过 {} 封超过 2 MiB 的邮件（UID: {:?}），请在邮箱客户端查看；其余邮件继续扫描", fetched.skipped.len(), fetched.skipped))?;
+        let log = store::insert_log(
+            &conn,
+            None,
+            Some(account.id),
+            "warning",
+            "reply",
+            &format!(
+                "已接收 {} 封大邮件的邮件头（UID: {:?}），完整正文和附件请在原邮箱查看",
+                fetched.headers_only.len(),
+                fetched.headers_only
+            ),
+        )?;
         let _ = app.emit("log", &log);
     }
     let validity = fetched.validity;
@@ -153,7 +94,9 @@ fn scan_one_account(
         conn.execute("UPDATE replies SET imap_uid_validity = ?1 WHERE account_id = ?2 AND imap_generation = ?3 AND imap_uid_validity = 0",
             rusqlite::params![validity, account.id, account.imap_generation]).map_err(|e| e.to_string())?;
     }
-    let deliveries = {
+    let deliveries = if fetched.mails.is_empty() {
+        Vec::new()
+    } else {
         let conn = db.lock().map_err(|e| e.to_string())?;
         store::load_account_deliveries(&conn, account.id)?
     };
@@ -162,55 +105,17 @@ fn scan_one_account(
     let mut max_uid = fetched.scanned_through;
     for mail in fetched.mails {
         max_uid = max_uid.max(mail.uid as i64);
-        let exists = {
-            let conn = db.lock().map_err(|e| e.to_string())?;
-            store::reply_exists(&conn, account, mail.uid as i64, validity, &mail.message_id)?
-        };
-        if exists {
-            continue;
-        }
-        let Some(delivery) = delivery_index.find(&mail) else {
-            continue;
-        };
-        let classification = classify::classify_with_keywords(
-            &IncomingMail {
-                from: mail.from.clone(),
-                subject: mail.subject.clone(),
-                body: mail.body.clone(),
-                content_type: mail.content_type.clone(),
-                extra_headers: mail.extra_headers.clone(),
-            },
-            auto_keywords,
-        );
-        let snippet: String = mail.body.chars().take(180).collect();
-        let accepted = classification.kind == classify::ReplyKind::Human
-            && classify::body_suggests_accepted(&mail.body);
+        let delivery = delivery_index.find(&mail);
         let reply = {
             let conn = db.lock().map_err(|e| e.to_string())?;
-            store::insert_reply(
-                &conn,
-                Some(delivery.id),
-                account.id,
-                delivery.task_id,
-                &mail.from,
-                &mail.subject,
-                &snippet,
-                &mail.body,
-                classification.kind.as_str(),
-                &classification.reason,
-                accepted,
-                &mail.message_id,
-                &mail.in_reply_to,
-                mail.uid as i64,
-                validity,
-                account.imap_generation,
-                &mail.received_at,
-                mail.is_read,
-            )?
+            persist_incoming(&conn, account, &mail, delivery, validity, auto_keywords)?
+        };
+        let Some(reply) = reply else {
+            continue;
         };
         saved += 1;
         let _ = app.emit("reply", &reply);
-        let kind_label = match classification.kind.as_str() {
+        let kind_label = match reply.kind.as_str() {
             "human" => "人工回复",
             "bounce" => "退信",
             _ => "自动回复",
@@ -219,11 +124,11 @@ fn scan_one_account(
             let conn = db.lock().map_err(|e| e.to_string())?;
             store::insert_log(
                 &conn,
-                delivery.task_id,
+                delivery.and_then(|delivery| delivery.task_id),
                 Some(account.id),
-                if classification.kind.as_str() == "human" {
+                if reply.kind == "human" {
                     "success"
-                } else if classification.kind.as_str() == "bounce" {
+                } else if reply.kind == "bounce" {
                     "error"
                 } else {
                     "info"
@@ -238,12 +143,48 @@ fn scan_one_account(
     }
     {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        store::set_account_imap_cursor(&conn, account.id, max_uid, validity)?;
-        if needs_backfill {
-            store::mark_setting(&conn, &backfill_key)?;
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        store::set_account_imap_cursor(&tx, account.id, max_uid, validity)?;
+        if let Some(progress) = &fetched.backfill {
+            tx.execute(
+                "INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)",
+                rusqlite::params![
+                    backfill_key,
+                    serde_json::to_string(progress).map_err(|e| e.to_string())?
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    if round_deadline.saturating_duration_since(Instant::now()) >= Duration::from_secs(45) {
+        let pending = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT id FROM replies WHERE account_id=?1 AND imap_generation=?2 AND imap_uid_validity=?3 AND imap_uid>0 AND kind IN ('auto','human') AND read_synced=0 ORDER BY id LIMIT 100").map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(
+                    rusqlite::params![account.id, account.imap_generation, validity],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+        };
+        if !pending.is_empty() {
+            let synced = sync_reply_flags(db, pending)?;
+            if !synced.states.is_empty() {
+                let _ = app.emit("reply-read-change", ());
+            }
+            if let Some(error) = synced.errors.first() {
+                return Err(format!("同步邮箱已读状态失败：{}：{}", error.email, error.message));
+            }
         }
     }
-    Ok(saved)
+    let _ = app.emit("reply-read-change", ());
+    Ok(ScanReport {
+        saved,
+        more: fetched.has_more,
+    })
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -254,10 +195,13 @@ struct FetchedBatch {
     mails: Vec<FetchedMail>,
     validity: i64,
     scanned_through: i64,
-    skipped: Vec<u32>,
+    headers_only: Vec<u32>,
     warning: Option<String>,
+    has_more: bool,
+    backfill: Option<BackfillProgress>,
 }
 
+#[cfg(test)]
 fn mailbox_cursor(account: &Account, validity: i64, backfill: bool) -> (i64, bool) {
     let reset = account.imap_uid_validity != validity;
     let backfill = backfill || reset;
@@ -337,6 +281,19 @@ fn connect_imap_bounded(
     io_timeout: Duration,
     deadline: Instant,
 ) -> Result<imap::Client<native_tls::TlsStream<BudgetStream>>, String> {
+    let stream = connect_tls_bounded(host, port, connect_timeout, io_timeout, deadline)?;
+    let mut client = imap::Client::new(stream);
+    client.read_greeting().map_err(|e| e.to_string())?;
+    Ok(client)
+}
+
+fn connect_tls_bounded(
+    host: &str,
+    port: u16,
+    connect_timeout: Duration,
+    io_timeout: Duration,
+    deadline: Instant,
+) -> Result<native_tls::TlsStream<BudgetStream>, String> {
     let address = (host.to_owned(), port);
     let (send, recv) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
@@ -369,33 +326,12 @@ fn connect_imap_bounded(
                     .build()
                     .map_err(|e| e.to_string())?;
                 let stream = tls.connect(host, stream).map_err(|e| e.to_string())?;
-                let mut client = imap::Client::new(stream);
-                client.read_greeting().map_err(|e| e.to_string())?;
-                return Ok(client);
+                return Ok(stream);
             }
             Err(error) => last_error = error.to_string(),
         }
     }
     Err(last_error)
-}
-
-fn fetch_mail(
-    account: &Account,
-    include_recent_backfill: bool,
-    round_deadline: Instant,
-) -> Result<FetchedBatch, String> {
-    let deadline = round_deadline.min(Instant::now() + Duration::from_secs(60));
-    let client = connect_imap_bounded(
-        &account.imap_host,
-        account.imap_port,
-        CONNECT_TIMEOUT,
-        IO_TIMEOUT,
-        deadline,
-    )?;
-    let session = client
-        .login(&account.email, &account.password)
-        .map_err(|e| e.0.to_string())?;
-    fetch_mail_session(session, account, include_recent_backfill, deadline)
 }
 
 fn open_read_state_session(
@@ -422,18 +358,46 @@ fn open_read_state_session(
 }
 
 /// Query only IMAP FLAGS; reading metadata must not set the server's Seen flag.
-pub fn fetch_seen_flags(
+fn fetch_seen_flags_with_auto_read(
     account: &Account,
     expected_validity: i64,
     uids: &[u32],
+    auto_uids: &[u32],
 ) -> Result<HashMap<u32, bool>, String> {
     if uids.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut session = open_read_state_session(account, expected_validity)?;
-    let states = fetch_seen_flags_session(&mut session, uids)?;
-    let _ = session.logout();
-    Ok(states)
+    flags::with_session(account, expected_validity, |session| {
+        let mut states = fetch_seen_flags_session(session, uids)?;
+        mark_auto_seen_session(session, &mut states, auto_uids);
+        Ok(states)
+    })
+}
+
+fn mark_auto_seen_session<S: Read + Write>(
+    session: &mut imap::Session<S>,
+    states: &mut HashMap<u32, bool>,
+    auto_uids: &[u32],
+) {
+    let pending: Vec<u32> = auto_uids
+        .iter()
+        .copied()
+        .filter(|uid| states.get(uid) == Some(&false))
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    let uid_set = pending
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    // Only automatic replies get Seen. A failed STORE stays pending for the next scan.
+    if session.uid_store(uid_set, "+FLAGS (\\Seen)").is_ok() {
+        if let Ok(confirmed) = fetch_seen_flags_session(session, &pending) {
+            states.extend(confirmed);
+        }
+    }
 }
 
 fn fetch_seen_flags_session<S: Read + Write>(
@@ -470,10 +434,7 @@ pub fn store_seen_flag(
     uid: u32,
     is_read: bool,
 ) -> Result<bool, String> {
-    let mut session = open_read_state_session(account, expected_validity)?;
-    let seen = store_seen_flag_session(&mut session, uid, is_read)?;
-    let _ = session.logout();
-    Ok(seen)
+    flags::with_session(account, expected_validity, |session| store_seen_flag_session(session, uid, is_read))
 }
 
 fn store_seen_flag_session<S: Read + Write>(
@@ -508,6 +469,7 @@ fn store_seen_flag_session<S: Read + Write>(
     Ok(seen)
 }
 
+#[cfg(test)]
 fn fetch_mail_session<S: Read + Write>(
     mut session: imap::Session<S>,
     account: &Account,
@@ -534,6 +496,11 @@ fn fetch_mail_session<S: Read + Write>(
         .filter(|u| include_recent_backfill || (*u as i64) > cursor_start)
         .collect();
     uid_list.sort_unstable();
+    let last_available = uid_list
+        .last()
+        .copied()
+        .map(i64::from)
+        .unwrap_or(cursor_start);
     uid_list.truncate(MAX_MAILS_PER_SCAN);
     if uid_list.is_empty() {
         let _ = session.logout();
@@ -541,12 +508,14 @@ fn fetch_mail_session<S: Read + Write>(
             mails: Vec::new(),
             validity,
             scanned_through: cursor_start,
-            skipped: Vec::new(),
+            headers_only: Vec::new(),
             warning: None,
+            has_more: false,
+            backfill: None,
         });
     }
     let mut out = Vec::new();
-    let mut skipped = Vec::new();
+    let mut headers_only = Vec::new();
     let mut scanned_through = cursor_start;
     let mut body_bytes = 0usize;
     let mut warning = None;
@@ -557,10 +526,12 @@ fn fetch_mail_session<S: Read + Write>(
         }
         let step = fetch_one_mail(&mut session, uid, body_bytes);
         match step {
-            Ok(MailStep::Skipped) => skipped.push(uid),
             Ok(MailStep::Missing) => {}
             Ok(MailStep::Deferred) => break,
-            Ok(MailStep::Mail(mail, bytes)) => {
+            Ok(MailStep::Mail(mail, bytes, header_only)) => {
+                if header_only {
+                    headers_only.push(uid);
+                }
                 out.push(*mail);
                 body_bytes += bytes;
             }
@@ -580,16 +551,17 @@ fn fetch_mail_session<S: Read + Write>(
         mails: out,
         validity,
         scanned_through,
-        skipped,
+        headers_only,
         warning,
+        has_more: scanned_through < last_available,
+        backfill: None,
     })
 }
 
 enum MailStep {
-    Skipped,
     Missing,
     Deferred,
-    Mail(Box<FetchedMail>, usize),
+    Mail(Box<FetchedMail>, usize, bool),
 }
 
 fn fetch_one_mail<S: Read + Write>(
@@ -609,14 +581,19 @@ fn fetch_one_mail<S: Read + Write>(
         };
     };
     let size = meta.size.ok_or("收件服务器未返回邮件大小")? as usize;
-    if size > MAX_MAIL_BYTES {
-        return Ok(MailStep::Skipped);
-    }
-    if body_bytes.saturating_add(size) > MAX_BODY_BYTES_PER_SCAN {
+    let header_only = size > MAX_MAIL_BYTES;
+    if body_bytes.saturating_add(size.min(MAX_MAIL_BYTES)) > MAX_BODY_BYTES_PER_SCAN {
         return Ok(MailStep::Deferred);
     }
     let fetches = session
-        .uid_fetch(uid.to_string(), "(INTERNALDATE FLAGS BODY.PEEK[])")
+        .uid_fetch(
+            uid.to_string(),
+            if header_only {
+                "(INTERNALDATE FLAGS BODY.PEEK[HEADER])"
+            } else {
+                "(INTERNALDATE FLAGS BODY.PEEK[])"
+            },
+        )
         .map_err(|e| e.to_string())?;
     let Some(fetch) = fetches.iter().find(|f| f.uid == Some(uid)) else {
         return if fetches.is_empty() {
@@ -625,7 +602,12 @@ fn fetch_one_mail<S: Read + Write>(
             Err("收件服务器返回的正文 UID 不匹配".into())
         };
     };
-    let bytes = fetch.body().ok_or("收件服务器未返回邮件正文")?;
+    let bytes = (if header_only {
+        fetch.header()
+    } else {
+        fetch.body()
+    })
+    .ok_or("收件服务器未返回邮件内容")?;
     if bytes.len() > MAX_MAIL_BYTES
         || body_bytes.saturating_add(bytes.len()) > MAX_BODY_BYTES_PER_SCAN
     {
@@ -641,11 +623,17 @@ fn fetch_one_mail<S: Read + Write>(
         })
         .unwrap_or_default();
     let mut mail = parse_message(uid, bytes, received_at);
+    if header_only {
+        if let Some(content) = &mut mail.content {
+            content.detail.complete = false;
+        }
+        mail.body = "这封邮件包含较大的正文或附件，已接收邮件头。请在原邮箱查看完整内容。".into();
+    }
     mail.is_read = fetch
         .flags()
         .iter()
         .any(|flag| matches!(flag, imap::types::Flag::Seen));
-    Ok(MailStep::Mail(Box::new(mail), bytes.len()))
+    Ok(MailStep::Mail(Box::new(mail), bytes.len(), header_only))
 }
 
 fn chrono_since_days(days: i64) -> String {
@@ -702,20 +690,15 @@ fn chrono_since_days(days: i64) -> String {
 fn parse_message(uid: u32, raw: &[u8], received_at: String) -> FetchedMail {
     if let Some(parsed) = mail_parser::MessageParser::default().parse(raw) {
         let extra = collect_auto_headers(&parsed);
+        let content = content::parse(&parsed);
+        let body = content.detail.text.clone();
         return FetchedMail {
+            content: Some(content),
             uid,
             is_read: false,
             from: first_address(parsed.from()),
             subject: parsed.subject().unwrap_or("").to_string(),
-            body: parsed
-                .body_text(0)
-                .map(|s| s.into_owned())
-                .unwrap_or_else(|| {
-                    parsed
-                        .body_html(0)
-                        .map(|s| strip_tags(s.into_owned()))
-                        .unwrap_or_default()
-                }),
+            body,
             message_id: parsed.message_id().unwrap_or("").to_string(),
             in_reply_to: header_ids(parsed.in_reply_to()),
             references: header_ids(parsed.references()),
@@ -725,6 +708,7 @@ fn parse_message(uid: u32, raw: &[u8], received_at: String) -> FetchedMail {
         };
     }
     FetchedMail {
+        content: None,
         uid,
         is_read: false,
         from: String::new(),
@@ -804,20 +788,6 @@ fn collect_auto_headers(msg: &mail_parser::Message<'_>) -> Vec<(String, String)>
             }
         })
         .collect()
-}
-
-fn strip_tags(html: String) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut skip = false;
-    for ch in html.chars() {
-        match ch {
-            '<' => skip = true,
-            '>' => skip = false,
-            _ if !skip => out.push(ch),
-            _ => {}
-        }
-    }
-    out
 }
 
 fn normalize_id(value: &str) -> String {
@@ -946,7 +916,7 @@ fn match_delivery<'a>(
 mod tests {
     use super::*;
 
-    fn delivery(id: i64, recipient: &str, subject: &str) -> Delivery {
+    pub(super) fn delivery(id: i64, recipient: &str, subject: &str) -> Delivery {
         Delivery {
             id,
             task_id: Some(id),
@@ -959,8 +929,9 @@ mod tests {
         }
     }
 
-    fn reply(from: &str, subject: &str) -> FetchedMail {
+    pub(super) fn reply(from: &str, subject: &str) -> FetchedMail {
         FetchedMail {
+            content: None,
             uid: 1,
             is_read: false,
             from: from.into(),
@@ -1107,10 +1078,10 @@ mod tests {
     #[test]
     fn automatic_and_manual_scans_share_one_gate() {
         let gate = Mutex::new(());
-        let guard = acquire_scan(&gate).unwrap();
-        assert!(acquire_scan(&gate).is_err());
+        let guard = runtime::acquire_scan(&gate).unwrap();
+        assert!(runtime::acquire_scan(&gate).is_err());
         drop(guard);
-        assert!(acquire_scan(&gate).is_ok());
+        assert!(runtime::acquire_scan(&gate).is_ok());
     }
 
     #[test]
@@ -1248,6 +1219,37 @@ mod budget_tests {
     }
 
     #[test]
+    fn auto_seen_batch_never_marks_human_uids_and_verifies_server_flags() {
+        for success in [true, false] {
+            let response = if success {
+                b"* OK fixture\r\na1 OK login\r\na2 OK store\r\n* 1 FETCH (UID 7 FLAGS (\\Seen))\r\na3 OK fetch\r\n".as_slice()
+            } else {
+                b"* OK fixture\r\na1 OK login\r\na2 NO rejected\r\n".as_slice()
+            };
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let mut client = imap::Client::new(Transcript {
+                input: std::io::Cursor::new(response.to_vec()),
+                commands: commands.clone(),
+            });
+            client.read_greeting().unwrap();
+            let mut session = client
+                .login("fixture", "")
+                .map_err(|e| e.0.to_string())
+                .unwrap();
+            let mut states = HashMap::from([(7, false), (8, false)]);
+            mark_auto_seen_session(&mut session, &mut states, &[7]);
+            assert_eq!(states[&7], success);
+            assert!(!states[&8]);
+            let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+            assert!(sent.contains("UID STORE 7 +FLAGS (\\Seen)"));
+            assert!(!sent.contains("UID STORE 8"));
+            if success {
+                assert!(sent.contains("UID FETCH 7 (UID FLAGS)"));
+            }
+        }
+    }
+
+    #[test]
     fn imap_read_action_uses_uid_store_and_verifies_seen_flag() {
         let response = b"* OK fixture\r\na1 OK login\r\n* 1 FETCH (UID 7 FLAGS (\\Seen))\r\na2 OK store\r\n* 1 FETCH (UID 7 FLAGS (\\Seen))\r\na3 OK fetch\r\n";
         let commands = Arc::new(Mutex::new(Vec::new()));
@@ -1267,14 +1269,16 @@ mod budget_tests {
     }
 
     #[test]
-    fn oversized_mail_is_skipped_before_body_fetch_without_blocking_following_mail() {
+    fn oversized_mail_keeps_headers_and_unread_without_blocking_following_mail() {
         let conn = crate::db::test_database();
         conn.execute("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'fixture@example.com','','localhost')",[]).unwrap();
         let account = store::load_account(&conn, 1).unwrap().unwrap();
         let mail =
             "From: editor@example.com\r\nSubject: reply\r\nMessage-ID: <fixture>\r\n\r\nhello";
-        let responses = format!("* OK fixture\r\na1 OK login\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 1 2\r\na3 OK search\r\n* 1 FETCH (UID 1 RFC822.SIZE {})\r\na4 OK size\r\n* 2 FETCH (UID 2 RFC822.SIZE {})\r\na5 OK size\r\n* 2 FETCH (UID 2 INTERNALDATE \"01-Jan-2026 12:00:00 +0000\" FLAGS (\\Seen) BODY[] {{{}}}\r\n{})\r\na6 OK body\r\n* BYE fixture\r\na7 OK logout\r\n",
-            MAX_MAIL_BYTES+1,mail.len(),mail.len(),mail);
+        let header =
+            "From: friend@example.com\r\nSubject: large mail\r\nMessage-ID: <large>\r\n\r\n";
+        let responses = format!("* OK fixture\r\na1 OK login\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 1 2\r\na3 OK search\r\n* 1 FETCH (UID 1 RFC822.SIZE {})\r\na4 OK size\r\n* 1 FETCH (UID 1 FLAGS () BODY[HEADER] {{{}}}\r\n{})\r\na5 OK header\r\n* 2 FETCH (UID 2 RFC822.SIZE {})\r\na6 OK size\r\n* 2 FETCH (UID 2 INTERNALDATE \"01-Jan-2026 12:00:00 +0000\" FLAGS (\\Seen) BODY[] {{{}}}\r\n{})\r\na7 OK body\r\n* BYE fixture\r\na8 OK logout\r\n",
+            MAX_MAIL_BYTES+1,header.len(),header,mail.len(),mail.len(),mail);
         let commands = Arc::new(Mutex::new(Vec::new()));
         let mut client = imap::Client::new(Transcript {
             input: std::io::Cursor::new(responses.into_bytes()),
@@ -1292,11 +1296,14 @@ mod budget_tests {
             Instant::now() + Duration::from_secs(1),
         )
         .unwrap();
-        assert_eq!(batch.skipped, vec![1]);
+        assert_eq!(batch.headers_only, vec![1]);
         assert_eq!(batch.scanned_through, 2);
-        assert_eq!(batch.mails.len(), 1);
-        assert_eq!(batch.mails[0].uid, 2);
-        assert!(batch.mails[0].is_read);
+        assert_eq!(batch.mails.len(), 2);
+        assert_eq!(batch.mails[0].uid, 1);
+        assert!(!batch.mails[0].is_read);
+        assert!(batch.mails[0].body.contains("请在原邮箱"));
+        assert_eq!(batch.mails[1].uid, 2);
+        assert!(batch.mails[1].is_read);
         let commands = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
         assert!(!commands.contains("UID FETCH 1 (INTERNALDATE FLAGS BODY.PEEK[])"));
         assert!(commands.contains("UID FETCH 2 (INTERNALDATE FLAGS BODY.PEEK[])"));
@@ -1327,7 +1334,8 @@ mod budget_tests {
         let conn = crate::db::test_database();
         conn.execute("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'fixture@example.com','','localhost')",[]).unwrap();
         let account = store::load_account(&conn, 1).unwrap().unwrap();
-        let responses = format!("* OK fixture\r\na1 OK login\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 1 2\r\na3 OK search\r\n* 1 FETCH (UID 1 RFC822.SIZE {})\r\na4 OK size\r\n",MAX_MAIL_BYTES+1);
+        let header = "From: friend@example.com\r\nSubject: large mail\r\n\r\n";
+        let responses = format!("* OK fixture\r\na1 OK login\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 1 2\r\na3 OK search\r\n* 1 FETCH (UID 1 RFC822.SIZE {})\r\na4 OK size\r\n* 1 FETCH (UID 1 FLAGS () BODY[HEADER] {{{}}}\r\n{})\r\na5 OK header\r\n",MAX_MAIL_BYTES+1,header.len(),header);
         let mut client = imap::Client::new(Transcript {
             input: std::io::Cursor::new(responses.into_bytes()),
             commands: Arc::new(Mutex::new(Vec::new())),
@@ -1345,7 +1353,622 @@ mod budget_tests {
         )
         .unwrap();
         assert_eq!(batch.scanned_through, 1);
-        assert_eq!(batch.skipped, vec![1]);
+        assert_eq!(batch.headers_only, vec![1]);
         assert!(batch.warning.unwrap().contains("UID 2"));
+    }
+    fn scan_fixture() -> (Connection, Account) {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO accounts(id,email,password,smtp_host,imap_uid,imap_uid_validity) VALUES(1,'fixture@example.com','','localhost',500,10)", []).unwrap();
+        let account = store::load_account(&conn, 1).unwrap().unwrap();
+        (conn, account)
+    }
+
+    #[test]
+    fn ordinary_mail_is_unread_but_only_submission_mail_can_be_accepted() {
+        let (conn, account) = scan_fixture();
+        let mut mail = super::tests::reply("friend@example.com", "测试邮件");
+        mail.body = "稿件审核通过".into();
+        mail.message_id = "test-mail".into();
+        let ordinary = persist_incoming(&conn, &account, &mail, None, 10, &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(ordinary.kind, "human");
+        assert!(
+            ordinary.delivery_id.is_none()
+                && !ordinary.accepted
+                && !ordinary.is_read
+                && ordinary.read_synced
+        );
+        assert_eq!(store::unread_human_reply_count(&conn).unwrap(), 1);
+        assert_eq!(store::count_replies(&conn, "human").unwrap(), 0);
+        assert!(persist_incoming(&conn, &account, &mail, None, 10, &[])
+            .unwrap()
+            .is_none());
+        mail.uid = 2;
+        mail.message_id = "submission".into();
+        let matched = persist_incoming(
+            &conn,
+            &account,
+            &mail,
+            Some(&super::tests::delivery(1, "friend@example.com", "测试邮件")),
+            10,
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matched.accepted);
+        assert_eq!(matched.delivery_id, Some(1));
+        assert_eq!(store::count_replies(&conn, "human").unwrap(), 1);
+        assert_eq!(store::count_accepted_replies(&conn).unwrap(), 1);
+        for (kind, id) in [("unmatched", ordinary.id), ("submission", matched.id)] {
+            let page = store::query_replies(&conn, Some(kind), None, "", 20, 0, None).unwrap();
+            assert_eq!(page.total, 1);
+            assert_eq!(page.items[0].id, id);
+        }
+        mail.uid = 3;
+        mail.message_id = "automatic".into();
+        mail.subject = "自动回复：测试".into();
+        let auto = persist_incoming(&conn, &account, &mail, None, 10, &["自动回复".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(auto.kind, "auto");
+        assert!(auto.is_read && !auto.read_synced && !auto.accepted);
+        assert_eq!(store::unread_human_reply_count(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn historical_backfill_does_not_push_newer_mail_off_the_first_page() {
+        let (conn, account) = scan_fixture();
+        let mut mail = super::tests::reply("friend@example.com", "new");
+        mail.received_at = "2026-09-26 12:00:00".into();
+        let newest = persist_incoming(&conn, &account, &mail, None, 10, &[])
+            .unwrap()
+            .unwrap();
+        mail.uid = 2;
+        mail.subject = "old".into();
+        mail.received_at = "2026-09-20 12:00:00".into();
+        persist_incoming(&conn, &account, &mail, None, 10, &[]).unwrap();
+        let page = store::query_replies(&conn, None, None, "", 1, 0, None).unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.items[0].id, newest.id);
+    }
+
+    #[test]
+    fn backfill_deduplicates_without_undoing_read_and_rebinds_new_uidvalidity() {
+        let (conn, account) = scan_fixture();
+        let mut mail = super::tests::reply("friend@example.com", "测试");
+        mail.message_id = "same-mail".into();
+        let saved = persist_incoming(&conn, &account, &mail, None, 10, &[])
+            .unwrap()
+            .unwrap();
+        store::set_reply_read(&conn, saved.id, true).unwrap();
+        assert!(persist_incoming(&conn, &account, &mail, None, 10, &[])
+            .unwrap()
+            .is_none());
+        assert_eq!(store::unread_human_reply_count(&conn).unwrap(), 0);
+        mail.uid = 77;
+        assert!(persist_incoming(&conn, &account, &mail, None, 11, &[])
+            .unwrap()
+            .is_none());
+        let rows = store::load_replies(&conn, None, None, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].imap_uid, 77);
+        assert_eq!(rows[0].imap_uid_validity, 11);
+        assert!(!rows[0].is_read);
+    }
+
+    fn transcript_session(responses: String) -> imap::Session<Transcript> {
+        let mut client = imap::Client::new(Transcript {
+            input: std::io::Cursor::new(responses.into_bytes()),
+            commands: Arc::new(Mutex::new(Vec::new())),
+        });
+        client.read_greeting().unwrap();
+        client
+            .login("fixture", "")
+            .map_err(|e| e.0.to_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn backfill_spans_batches_and_receives_new_mail_before_older_history() {
+        let (_conn, mut account) = scan_fixture();
+        let plan = prioritized_uids(
+            vec![502, 500, 501, 501],
+            vec![3, 299, 300, 299, 502],
+            500,
+            300,
+        );
+        assert_eq!(
+            plan,
+            vec![(501, false), (502, false), (299, true), (3, true)]
+        );
+        let history = (1..=300)
+            .map(|uid| uid.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut responses=format!("* OK fixture\r\na1 OK login\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 501\r\na3 OK search\r\n* SEARCH {history}\r\na4 OK search\r\n");
+        // Expunged messages still advance checkpoints, without needing a body download.
+        for tag in 5..205 {
+            responses.push_str(&format!("a{tag} OK missing\r\n"));
+        }
+        responses.push_str("* BYE fixture\r\na205 OK logout\r\n");
+        let first = fetch_prioritized_session(
+            transcript_session(responses),
+            &account,
+            None,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(first.scanned_through, 501);
+        assert!(first.has_more);
+        let progress = first.backfill.unwrap();
+        assert_eq!(progress.before, 102);
+        assert!(!progress.complete);
+        account.imap_uid = 501;
+        let history = (1..102)
+            .map(|uid| uid.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut responses=format!("* OK fixture\r\na1 OK login\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 502\r\na3 OK search\r\n* SEARCH {history}\r\na4 OK search\r\n");
+        for tag in 5..107 {
+            responses.push_str(&format!("a{tag} OK missing\r\n"));
+        }
+        responses.push_str("* BYE fixture\r\na107 OK logout\r\n");
+        let second = fetch_prioritized_session(
+            transcript_session(responses),
+            &account,
+            Some(progress),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(second.scanned_through, 502);
+        assert!(!second.has_more);
+        assert!(second.backfill.unwrap().complete);
+    }
+
+    #[test]
+    fn fresh_failure_does_not_skip_uid_or_advance_historical_checkpoint() {
+        let (_conn, account) = scan_fixture();
+        let responses="* OK fixture\r\na1 OK login\r\n* OK [UIDVALIDITY 10] valid\r\na2 OK select\r\n* SEARCH 501 502 503\r\na3 OK search\r\n* SEARCH 499\r\na4 OK search\r\na5 OK missing\r\na6 NO retry later\r\n* BYE fixture\r\na7 OK logout\r\n";
+        let batch = fetch_prioritized_session(
+            transcript_session(responses.into()),
+            &account,
+            None,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(batch.scanned_through, 501);
+        assert!(batch.has_more && batch.warning.is_some());
+        assert_eq!(batch.backfill.unwrap().before, 501);
+    }
+
+    #[test]
+    fn uidvalidity_reset_discards_old_progress_and_uses_current_server_head() {
+        let (_conn, account) = scan_fixture();
+        let responses="* OK fixture\r\na1 OK login\r\n* OK [UIDVALIDITY 11] valid\r\n* OK [UIDNEXT 13] next\r\na2 OK select\r\n* SEARCH 12\r\na3 OK search\r\n* SEARCH 11 12\r\na4 OK search\r\na5 OK missing\r\na6 OK missing\r\n* BYE fixture\r\na7 OK logout\r\n";
+        let progress = BackfillProgress {
+            validity: 10,
+            before: 2,
+            since: "01-Jan-2000".into(),
+            complete: true,
+        };
+        let batch = fetch_prioritized_session(
+            transcript_session(responses.into()),
+            &account,
+            Some(progress),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(batch.scanned_through, 12);
+        assert_eq!(batch.validity, 11);
+        let progress = batch.backfill.unwrap();
+        assert!(progress.complete);
+        assert_eq!(progress.before, 11);
+        assert_ne!(progress.since, "01-Jan-2000");
+    }
+    #[test]
+    fn first_message_after_empty_initial_sync_is_not_skipped() {
+        let (_conn, mut account) = scan_fixture();
+        account.imap_uid = 0;
+        let progress = BackfillProgress {
+            validity: 10,
+            before: 1,
+            since: "01-Sep-2026".into(),
+            complete: true,
+        };
+        let raw="From: friend@example.com\r\nSubject: first incoming\r\nMessage-ID: <first>\r\n\r\nhello";
+        let responses=format!("* OK fixture\r\na1 OK login\r\n* OK [UIDVALIDITY 10] valid\r\n* OK [UIDNEXT 2] next\r\na2 OK select\r\n* SEARCH 1\r\na3 OK search\r\n* 1 FETCH (UID 1 RFC822.SIZE {})\r\na4 OK size\r\n* 1 FETCH (UID 1 FLAGS () BODY[] {{{}}}\r\n{})\r\na5 OK body\r\n* BYE fixture\r\na6 OK logout\r\n",raw.len(),raw.len(),raw);
+        let batch = fetch_prioritized_session(
+            transcript_session(responses),
+            &account,
+            Some(progress),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(batch.mails.len(), 1);
+        assert_eq!(batch.mails[0].uid, 1);
+        assert_eq!(batch.scanned_through, 1);
+    }
+}
+
+pub(crate) fn sync_reply_flags(
+    db: &Arc<Mutex<Connection>>,
+    ids: Vec<i64>,
+) -> Result<crate::models::ReplyFlagSyncResult, String> {
+    sync_reply_flags_with(db, ids, &fetch_seen_flags_with_auto_read)
+}
+
+fn sync_reply_flags_with<F>(
+    db: &Arc<Mutex<Connection>>,
+    ids: Vec<i64>,
+    fetch: &F,
+) -> Result<crate::models::ReplyFlagSyncResult, String>
+where
+    F: Fn(&Account, i64, &[u32], &[u32]) -> Result<HashMap<u32, bool>, String> + Sync,
+{
+    let mut groups: std::collections::BTreeMap<
+        (i64, i64),
+        (crate::models::Account, Vec<store::ReplyFlagTarget>),
+    > = std::collections::BTreeMap::new();
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let mut accounts = HashMap::new();
+        for id in ids {
+            let Some(target) = store::reply_flag_target(&conn, id)? else {
+                continue;
+            };
+            if !accounts.contains_key(&target.account_id) {
+                accounts.insert(
+                    target.account_id,
+                    store::load_account(&conn, target.account_id)?,
+                );
+            }
+            let Some(account) = accounts.get(&target.account_id).and_then(Clone::clone) else {
+                continue;
+            };
+            if account.imap_generation != target.generation
+                || target.uid_validity <= 0
+                || account.imap_host.trim().is_empty()
+            {
+                continue;
+            }
+            groups
+                .entry((target.account_id, target.uid_validity))
+                .or_insert_with(|| (account, Vec::new()))
+                .1
+                .push(target);
+        }
+    }
+    let mut results = crate::models::ReplyFlagSyncResult::default();
+    let mut groups = groups.into_iter();
+    loop {
+        let batch: Vec<_> = groups.by_ref().take(4).collect();
+        if batch.is_empty() {
+            break;
+        }
+        let fetched = std::thread::scope(|scope| {
+            let jobs: Vec<_> = batch
+                .into_iter()
+                .map(|((_, validity), (account, targets))| {
+                    scope.spawn(move || {
+                        let uids = targets.iter().map(|target| target.uid).collect::<Vec<_>>();
+                        let automatic = targets
+                            .iter()
+                            .filter(|target| target.kind == "auto")
+                            .map(|target| target.uid)
+                            .collect::<Vec<_>>();
+                        let result = fetch(&account, validity, &uids, &automatic).map_err(|message| {
+                            crate::models::ReplyFlagSyncError {
+                                account_id: account.id,
+                                email: account.email.clone(),
+                                message: if account.password.is_empty() {
+                                    message
+                                } else {
+                                    message.replace(&account.password, "***")
+                                },
+                            }
+                        });
+                        (targets, result)
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| job.join().map_err(|_| "邮件同步线程异常".to_string()))
+                .collect::<Result<Vec<_>, _>>()
+        })?;
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for (targets, result) in fetched {
+            match result {
+                Ok(states) => {
+                    for target in targets {
+                        if let Some(&is_read) = states.get(&target.uid) {
+                            if store::update_reply_read_from_sync(&tx, &target, is_read)? {
+                                results.states.push(crate::models::ReplyReadState {
+                                    id: target.id,
+                                    is_read: is_read || target.kind == "auto",
+                                    read_synced: is_read || target.kind != "auto",
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(error) => results.errors.push(error),
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    Ok(results)
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct BackfillProgress {
+    validity: i64,
+    before: i64,
+    since: String,
+    complete: bool,
+}
+
+fn prioritized_uids(
+    mut fresh: Vec<u32>,
+    mut history: Vec<u32>,
+    cursor: i64,
+    before: i64,
+) -> Vec<(u32, bool)> {
+    fresh.retain(|uid| i64::from(*uid) > cursor);
+    fresh.sort_unstable();
+    fresh.dedup();
+    history.retain(|uid| i64::from(*uid) <= cursor && i64::from(*uid) < before);
+    history.sort_unstable_by(|a, b| b.cmp(a));
+    history.dedup();
+    fresh
+        .into_iter()
+        .map(|uid| (uid, false))
+        .chain(history.into_iter().map(|uid| (uid, true)))
+        .collect()
+}
+
+fn fetch_mail_prioritized(
+    account: &Account,
+    progress: Option<BackfillProgress>,
+    round_deadline: Instant,
+) -> Result<FetchedBatch, String> {
+    let deadline = round_deadline.min(Instant::now() + Duration::from_secs(60));
+    let client = connect_imap_bounded(
+        &account.imap_host,
+        account.imap_port,
+        CONNECT_TIMEOUT,
+        IO_TIMEOUT,
+        deadline,
+    )?;
+    let session = client
+        .login(&account.email, &account.password)
+        .map_err(|e| e.0.to_string())?;
+    fetch_prioritized_session(session, account, progress, deadline)
+}
+
+fn fetch_prioritized_session<S: Read + Write>(
+    mut session: imap::Session<S>,
+    account: &Account,
+    progress: Option<BackfillProgress>,
+    deadline: Instant,
+) -> Result<FetchedBatch, String> {
+    let mailbox = session.select("INBOX").map_err(|e| e.to_string())?;
+    let validity = mailbox.uid_validity.ok_or("服务器未返回 UIDVALIDITY")? as i64;
+    let since = chrono_since_days(AUTO_REPLY_BACKFILL_DAYS);
+    let reset = validity != account.imap_uid_validity;
+    // On first connection start at the server's current head, then backfill newest historical messages first.
+    let head = if reset {
+        mailbox.uid_next.map(|uid| i64::from(uid).saturating_sub(1))
+    } else {
+        Some(account.imap_uid)
+    };
+    let cursor = match head {
+        Some(head) => head,
+        None => session
+            .uid_search("ALL")
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .max()
+            .map(i64::from)
+            .unwrap_or(0),
+    };
+    let mut progress = progress
+        .filter(|p| p.validity == validity)
+        .unwrap_or(BackfillProgress {
+            validity,
+            before: cursor + 1,
+            since,
+            complete: false,
+        });
+    let fresh = session
+        .uid_search(format!("UID {}:*", cursor + 1))
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
+    let history = if progress.complete || progress.before <= 1 {
+        Vec::new()
+    } else {
+        session
+            .uid_search(format!(
+                "SINCE {} UID 1:{}",
+                progress.since,
+                progress.before - 1
+            ))
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect()
+    };
+    let planned = prioritized_uids(fresh, history, cursor, progress.before);
+    let remaining = planned.len();
+    let mut processed = 0;
+    let mut out = Vec::new();
+    let mut headers_only = Vec::new();
+    let mut scanned_through = cursor;
+    let mut body_bytes = 0;
+    let mut warning = None;
+    for (uid, historical) in planned.iter().copied().take(MAX_MAILS_PER_SCAN) {
+        if Instant::now() >= deadline {
+            warning = Some("本批检查已到时限，下次从断点继续".into());
+            break;
+        }
+        match fetch_one_mail(&mut session, uid, body_bytes) {
+            Ok(MailStep::Missing) => {}
+            Ok(MailStep::Deferred) => break,
+            Ok(MailStep::Mail(mail, bytes, header_only)) => {
+                if header_only {
+                    headers_only.push(uid);
+                }
+                out.push(*mail);
+                body_bytes += bytes;
+            }
+            Err(error) if processed > 0 => {
+                warning = Some(format!(
+                    "本批收件中断，将从断点继续：{}",
+                    error.chars().take(200).collect::<String>()
+                ));
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+        processed += 1;
+        if historical {
+            progress.before = i64::from(uid);
+        } else {
+            scanned_through = i64::from(uid);
+        }
+    }
+    if processed == remaining {
+        progress.complete = true;
+    }
+    let _ = session.logout();
+    Ok(FetchedBatch {
+        mails: out,
+        validity,
+        scanned_through,
+        headers_only,
+        warning,
+        has_more: processed < remaining,
+        backfill: Some(progress),
+    })
+}
+
+fn persist_incoming(
+    conn: &Connection,
+    account: &Account,
+    mail: &FetchedMail,
+    delivery: Option<&Delivery>,
+    validity: i64,
+    auto_keywords: &[String],
+) -> Result<Option<crate::models::Reply>, String> {
+    use rusqlite::OptionalExtension;
+    let existing:Option<(i64,i64,i64)>=conn.query_row("SELECT id,imap_uid_validity,imap_uid FROM replies WHERE account_id=?1 AND imap_generation=?2 AND ((imap_uid_validity=?3 AND imap_uid=?4) OR (?5<>'' AND message_id=?5)) ORDER BY id LIMIT 1",
+        rusqlite::params![account.id,account.imap_generation,validity,mail.uid,mail.message_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|e|e.to_string())?;
+    if let Some((id, old_validity, old_uid)) = existing {
+        // Rebind after server UIDVALIDITY resets. Ordinary backfill does not overwrite a newer read action.
+        if old_validity != validity || old_uid != i64::from(mail.uid) {
+            conn.execute("UPDATE replies SET imap_uid=?2,imap_uid_validity=?3,is_read=CASE WHEN kind='auto' THEN 1 ELSE ?4 END,read_synced=CASE WHEN kind='auto' THEN ?4 ELSE 1 END WHERE id=?1",
+                rusqlite::params![id,mail.uid,validity,mail.is_read]).map_err(|e|e.to_string())?;
+        }
+        if let Some(content) = &mail.content {
+            content::save(conn, id, content)?;
+        }
+        return Ok(None);
+    }
+    let classification = classify::classify_with_keywords(
+        &IncomingMail {
+            from: mail.from.clone(),
+            subject: mail.subject.clone(),
+            body: mail.body.clone(),
+            content_type: mail.content_type.clone(),
+            extra_headers: mail.extra_headers.clone(),
+        },
+        auto_keywords,
+    );
+    let accepted = delivery.is_some()
+        && classification.kind == classify::ReplyKind::Human
+        && classify::body_suggests_accepted(&mail.body);
+    let snippet: String = mail.body.chars().take(180).collect();
+    let reply = store::insert_reply(
+        conn,
+        delivery.map(|d| d.id),
+        account.id,
+        delivery.and_then(|d| d.task_id),
+        &mail.from,
+        &mail.subject,
+        &snippet,
+        &mail.body,
+        classification.kind.as_str(),
+        &classification.reason,
+        accepted,
+        &mail.message_id,
+        &mail.in_reply_to,
+        i64::from(mail.uid),
+        validity,
+        account.imap_generation,
+        &mail.received_at,
+        mail.is_read,
+    )?;
+    if let Some(content) = &mail.content {
+        content::save(conn, reply.id, content)?;
+    }
+    Ok(Some(reply))
+}
+
+#[cfg(test)]
+mod flag_sync_result_tests {
+    use super::*;
+
+    fn database() -> Arc<Mutex<Connection>> {
+        let conn = crate::db::test_database();
+        // More than one worker batch; failed accounts must not roll back successes.
+        for id in 1..=6 {
+            conn.execute(
+                "INSERT INTO accounts(id,email,password,smtp_host,imap_host) VALUES(?1,?2,'fixture-secret','localhost','localhost')",
+                rusqlite::params![id, format!("account{id}@example.com")],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO replies(id,account_id,imap_uid,imap_uid_validity,kind,is_read,read_synced) VALUES(?1,?1,1,10,'human',0,0)",
+                [id],
+            ).unwrap();
+        }
+        Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn partial_flag_failures_keep_successes_and_report_every_failed_account() {
+        let db = database();
+        let result = sync_reply_flags_with(&db, (1..=6).collect(), &|account, _, _, _| {
+            if account.id % 2 == 0 {
+                Err("fixture-secret connection rejected".into())
+            } else {
+                Ok(HashMap::from([(1, true)]))
+            }
+        }).unwrap();
+        assert_eq!(result.states.iter().map(|s| s.id).collect::<Vec<_>>(), [1, 3, 5]);
+        assert_eq!(result.errors.iter().map(|e| e.account_id).collect::<Vec<_>>(), [2, 4, 6]);
+        for error in &result.errors {
+            assert_eq!(error.email, format!("account{}@example.com", error.account_id));
+            assert_eq!(error.message, "*** connection rejected");
+        }
+        let conn = db.lock().unwrap();
+        for id in 1..=6 {
+            let (read, synced): (bool, bool) = conn.query_row(
+                "SELECT is_read,read_synced FROM replies WHERE id=?1", [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).unwrap();
+            assert_eq!((read, synced), (id % 2 != 0, id % 2 != 0));
+        }
+    }
+
+    #[test]
+    fn total_flag_failure_still_returns_all_account_errors_and_supports_retry() {
+        let db = database();
+        let result = sync_reply_flags_with(&db, vec![1, 2], &|_, _, _, _| Err("offline".into())).unwrap();
+        assert!(result.states.is_empty());
+        assert_eq!(result.errors.len(), 2);
+        let retry = sync_reply_flags_with(&db, vec![1, 2], &|_, _, _, _| Ok(HashMap::from([(1, false)]))).unwrap();
+        assert!(retry.errors.is_empty());
+        assert_eq!(retry.states.len(), 2);
+        assert!(retry.states.iter().all(|state| !state.is_read && state.read_synced));
     }
 }

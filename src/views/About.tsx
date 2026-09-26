@@ -8,9 +8,10 @@ const PROJECT_URL = 'https://github.com/logyxiao/NovelSub'
 
 export function AboutView() {
   const [version, setVersion] = useState('')
+  const [versionError, setVersionError] = useState(false)
 
   useEffect(() => {
-    currentVersion().then(setVersion).catch(() => {})
+    currentVersion().then(setVersion).catch(() => setVersionError(true))
   }, [])
 
   return (
@@ -22,7 +23,7 @@ export function AboutView() {
           <p>面向小说作者的本地桌面投稿工具。把发件邮箱、编辑资料、作品信息、投稿计划和回复检查放在一起，帮助你有节奏地完成投稿。</p>
           <p className="about-free">本项目<strong>完全开源免费</strong>，所有功能均可免费使用，不设付费墙。</p>
           <div className="about-meta">
-            <span>版本 {version ? `v${version}` : '读取中…'}</span>
+            <span>版本 {version ? `v${version}` : versionError ? '读取失败' : '读取中…'}</span>
             <span>标识 com.novelsub.desktop</span>
             <span>数据仅保存在本机</span>
           </div>

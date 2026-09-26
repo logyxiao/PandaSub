@@ -180,9 +180,11 @@ with sync_playwright() as p:
     page.get_by_role('button',name='统计粒度',exact=True).click()
     page.get_by_role('option',name='按月统计',exact=True).click()
     expect(page.locator('.pager-meta')).to_contain_text('共 14 条')
-    expect(page.locator('tbody tr')).to_have_count(10)
+    expect(page.locator('tbody tr')).to_have_count(6)
     page.get_by_role('button',name='下一页',exact=True).click()
-    expect(page.locator('tbody tr')).to_have_count(4)
+    expect(page.locator('tbody tr')).to_have_count(6)
+    page.get_by_role('button',name='下一页',exact=True).click()
+    expect(page.locator('tbody tr')).to_have_count(2)
     page.get_by_role('button',name='上一页',exact=True).click()
     page.screenshot(path=str(artifacts / 'stats.png'),full_page=True)
     assert not errors, errors

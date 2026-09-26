@@ -222,17 +222,16 @@ pub fn load_manuscript(conn: &Connection, id: i64) -> Result<Option<Manuscript>,
     Ok(row)
 }
 
-pub fn load_all_manuscripts(conn: &Connection) -> Result<Vec<Manuscript>, String> {
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT {MANUSCRIPT_COLS} FROM manuscripts ORDER BY id DESC"
-        ))
+pub fn load_manuscript_list(conn: &Connection, summary: bool) -> Result<Vec<Manuscript>, String> {
+    // Keep the metadata/attachment flag while avoiding large bodies and templates on list pages.
+    let columns = if summary {
+        MANUSCRIPT_COLS.replace("title, body,", "title, '' AS body,")
+            .replace("mail_templates,", "'[]' AS mail_templates,")
+    } else { MANUSCRIPT_COLS.to_string() };
+    let mut stmt = conn.prepare(&format!("SELECT {columns} FROM manuscripts ORDER BY id DESC"))
         .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], map_manuscript)
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    let rows = stmt.query_map([], map_manuscript).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 /// 加载稿件的附件（文件名 + 内容），没有附件时返回 None。列表查询不带附件，仅发送时按需读取。
@@ -298,17 +297,17 @@ pub fn upsert_editor(
     ))
     .to_string();
     let platform = crate::models::canonicalize_editor_platform(&input.platform);
-    let existing: Option<i64> = conn
-        .query_row("SELECT id FROM editors WHERE email = ?1", [&email], |r| {
+    let existing: Option<i64> = conn.prepare_cached("SELECT id FROM editors WHERE email = ?1").map_err(|e|e.to_string())?
+        .query_row([&email], |r| {
             r.get(0)
         })
         .optional()
         .map_err(|e| e.to_string())?;
     if let Some(id) = existing {
-        conn.execute(
+        conn.prepare_cached(
             "UPDATE editors SET platform = ?1, name = ?2, email = ?3, style = '[]', work_type = ?4,
                     rejected_types = ?8, notes = ?5, source = ?6, updated_at = datetime('now','localtime')
-             WHERE id = ?7",
+             WHERE id = ?7").map_err(|e|e.to_string())?.execute(
             rusqlite::params![
                 platform,
                 input.name.trim(),
@@ -323,9 +322,9 @@ pub fn upsert_editor(
         .map_err(|e| e.to_string())?;
         Ok("updated")
     } else {
-        conn.execute(
+        conn.prepare_cached(
             "INSERT INTO editors (platform, name, email, style, work_type, rejected_types, notes, source)
-             VALUES (?1, ?2, ?3, '[]', ?4, ?7, ?5, ?6)",
+             VALUES (?1, ?2, ?3, '[]', ?4, ?7, ?5, ?6)").map_err(|e|e.to_string())?.execute(
             rusqlite::params![
                 platform,
                 input.name.trim(),
@@ -375,23 +374,10 @@ pub fn load_editor_groups(conn: &Connection) -> Result<Vec<EditorGroup>, String>
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
 
-    let mut member_stmt = conn
-        .prepare(
-            "SELECT m.editor_id
-             FROM editor_group_members m
-             JOIN editors e ON e.id = m.editor_id
-             WHERE m.group_id = ?1
-             ORDER BY m.position ASC, m.editor_id ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    for group in &mut groups {
-        let members = member_stmt
-            .query_map([group.id], |row| row.get(0))
-            .map_err(|e| e.to_string())?;
-        group.editor_ids = members
-            .collect::<Result<Vec<i64>, _>>()
-            .map_err(|e| e.to_string())?;
-    }
+    let positions=groups.iter().enumerate().map(|(index,group)|(group.id,index)).collect::<std::collections::HashMap<_,_>>();
+    let mut member_stmt=conn.prepare("SELECT m.group_id,m.editor_id FROM editor_group_members m JOIN editors e ON e.id=m.editor_id ORDER BY m.group_id,m.position,m.editor_id").map_err(|e|e.to_string())?;
+    let members=member_stmt.query_map([],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))).map_err(|e|e.to_string())?;
+    for member in members {let (group_id,editor_id)=member.map_err(|e|e.to_string())?;if let Some(&index)=positions.get(&group_id){groups[index].editor_ids.push(editor_id);}}
     Ok(groups)
 }
 
@@ -430,13 +416,21 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
 }
 
 pub fn load_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
+    load_task_list(conn, "")
+}
+
+pub fn load_dashboard_tasks(conn: &Connection) -> Result<Vec<Task>, String> {
+    load_task_list(conn, "WHERE status IN ('running', 'paused') OR id IN (SELECT id FROM tasks ORDER BY id DESC LIMIT 3)")
+}
+
+fn load_task_list(conn: &Connection, filter: &str) -> Result<Vec<Task>, String> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
                     retry_max, sent, total,
                     created_at, started_at, finished_at
-             FROM tasks ORDER BY id DESC",
-        )
+             FROM tasks {filter} ORDER BY id DESC",
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -1300,9 +1294,11 @@ pub fn insert_reply(
     received_at: &str,
     is_read: bool,
 ) -> Result<Reply, String> {
+    let read_synced = kind != "auto" || is_read;
+    let is_read = is_read || kind == "auto";
     conn.execute(
         "INSERT INTO replies (delivery_id, account_id, task_id, from_email, subject, snippet, body, kind, reason, accepted, message_id, in_reply_to, imap_uid, imap_uid_validity, imap_generation, received_at, is_read, read_synced)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, COALESCE(NULLIF(?16, ''), datetime('now','localtime')), ?17, 1)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, COALESCE(NULLIF(?16, ''), datetime('now','localtime')), ?17, ?18)",
         params![
             delivery_id,
             account_id,
@@ -1321,6 +1317,7 @@ pub fn insert_reply(
             imap_generation,
             received_at,
             is_read,
+            read_synced,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -1361,7 +1358,7 @@ pub fn insert_reply(
         reason: reason.into(),
         accepted,
         is_read,
-        read_synced: true,
+        read_synced,
         message_id: message_id.into(),
         in_reply_to: in_reply_to.into(),
         imap_uid,
@@ -1409,15 +1406,48 @@ const REPLY_FROM: &str = "FROM replies r
     LEFT JOIN deliveries d ON d.id = r.delivery_id
     LEFT JOIN tasks t ON t.id = r.task_id
     LEFT JOIN manuscripts m ON m.id = d.manuscript_id";
-const REPLY_FILTER: &str = "WHERE
-    (?1 IS NULL OR (?1 = 'accepted' AND r.accepted = 1) OR (?1 <> 'accepted' AND r.kind = ?1))
-    AND (?2 IS NULL OR r.task_id = ?2)
-    AND (?4 IS NULL OR r.account_id = ?4)
-    AND (?3 = '' OR instr(lower(r.body || ' ' || r.snippet || ' ' || r.subject || ' ' || r.from_email
-        || ' ' || COALESCE(d.recipient, '') || ' ' || COALESCE(t.name, m.title, '')), ?3) > 0
-        OR EXISTS (SELECT 1 FROM editors e
-            WHERE (lower(e.email) = lower(d.recipient) OR lower(e.email) = lower(r.from_email))
-            AND instr(lower(e.name || ' ' || e.platform || ' ' || e.email), ?3) > 0))";
+fn reply_filter(
+    kind: Option<&str>,
+    task_id: Option<i64>,
+    query: &str,
+    account_id: Option<i64>,
+) -> (String, Vec<rusqlite::types::Value>) {
+    use rusqlite::types::Value;
+    let mut clauses = vec!["1=1".to_string()];
+    let mut values = Vec::<Value>::new();
+    if let Some(kind) = kind.filter(|kind| !kind.is_empty()) {
+        clauses.push(match kind {
+            "accepted" => "r.accepted=1".into(),
+            "unread" => "r.kind='human' AND r.is_read=0 AND r.read_synced=1".into(),
+            "submission" => "r.delivery_id IS NOT NULL".into(),
+            "unmatched" => "r.delivery_id IS NULL".into(),
+            _ => {
+                values.push(kind.to_string().into());
+                format!("r.kind=?{}", values.len())
+            }
+        });
+    }
+    if let Some(id) = task_id {
+        values.push(id.into());
+        clauses.push(format!("r.task_id=?{}", values.len()));
+    }
+    if let Some(id) = account_id {
+        values.push(id.into());
+        clauses.push(format!("r.account_id=?{}", values.len()));
+    }
+    if !query.is_empty() {
+        values.push(query.to_string().into());
+        let q = values.len();
+        clauses.push(format!(
+            "(instr(lower(r.body || ' ' || r.snippet || ' ' || r.subject || ' ' || r.from_email
+            || ' ' || COALESCE(d.recipient, '') || ' ' || COALESCE(t.name, m.title, '')), ?{q}) > 0
+            OR EXISTS (SELECT 1 FROM editors e
+                WHERE (lower(e.email)=lower(d.recipient) OR lower(e.email)=lower(r.from_email))
+                AND instr(lower(e.name || ' ' || e.platform || ' ' || e.email), ?{q}) > 0))"
+        ));
+    }
+    (format!("WHERE {}", clauses.join(" AND ")), values)
+}
 
 pub fn query_replies(
     conn: &Connection,
@@ -1429,30 +1459,30 @@ pub fn query_replies(
     account_id: Option<i64>,
 ) -> Result<crate::models::ReplyPage, String> {
     let query = query.trim().to_lowercase();
+    let (filter, mut values) = reply_filter(kind, task_id, &query, account_id);
+    let count_from = if query.is_empty() {
+        "FROM replies r"
+    } else {
+        REPLY_FROM
+    };
     let total = conn
         .query_row(
-            &format!("SELECT COUNT(*) {REPLY_FROM} {REPLY_FILTER}"),
-            params![kind, task_id, query, account_id],
+            &format!("SELECT COUNT(*) {count_from} {filter}"),
+            rusqlite::params_from_iter(&values),
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
+    let limit_parameter = values.len() + 1;
+    let offset_parameter = values.len() + 2;
     let sql = format!("SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject,
         r.snippet, r.body, r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid,
         r.received_at, r.created_at, d.recipient, COALESCE(t.name, m.title, ''), r.imap_uid_validity, r.imap_generation, r.is_read, r.read_synced
-        {REPLY_FROM} {REPLY_FILTER} ORDER BY r.id DESC LIMIT ?5 OFFSET ?6");
+        {REPLY_FROM} {filter} ORDER BY r.received_at DESC, r.id DESC LIMIT ?{limit_parameter} OFFSET ?{offset_parameter}");
+    values.push(limit.max(1).into());
+    values.push(offset.max(0).into());
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let items = stmt
-        .query_map(
-            params![
-                kind,
-                task_id,
-                query,
-                account_id,
-                limit.max(1),
-                offset.max(0)
-            ],
-            map_reply,
-        )
+        .query_map(rusqlite::params_from_iter(&values), map_reply)
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -1471,7 +1501,7 @@ pub fn load_replies(
 pub fn set_reply_read(conn: &Connection, id: i64, is_read: bool) -> Result<(), String> {
     let changed = conn
         .execute(
-            "UPDATE replies SET is_read = ?2, read_synced = 1 WHERE id = ?1",
+            "UPDATE replies SET read_revision = read_revision + 1, is_read = CASE WHEN kind = 'auto' THEN 1 ELSE ?2 END, read_synced = CASE WHEN kind = 'auto' THEN ?2 ELSE 1 END WHERE id = ?1",
             params![id, is_read],
         )
         .map_err(|e| e.to_string())?;
@@ -1483,20 +1513,22 @@ pub fn set_reply_read(conn: &Connection, id: i64, is_read: bool) -> Result<(), S
 
 #[derive(Clone)]
 pub struct ReplyFlagTarget {
+    pub read_revision: i64,
     pub id: i64,
     pub account_id: i64,
     pub uid: u32,
     pub uid_validity: i64,
     pub generation: i64,
+    pub kind: String,
     pub local_is_read: bool,
     pub local_read_synced: bool,
 }
 
 pub fn reply_flag_target(conn: &Connection, id: i64) -> Result<Option<ReplyFlagTarget>, String> {
     let row = conn.query_row(
-        "SELECT id, account_id, imap_uid, imap_uid_validity, imap_generation, is_read, read_synced FROM replies WHERE id = ?1",
+        "SELECT id, account_id, imap_uid, imap_uid_validity, imap_generation, is_read, read_synced, kind, read_revision FROM replies WHERE id = ?1",
         [id],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)? != 0, r.get::<_, i64>(6)? != 0)),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)? != 0, r.get::<_, i64>(6)? != 0, r.get::<_, String>(7)?, r.get::<_, i64>(8)?)),
     ).optional().map_err(|e| e.to_string())?;
     let Some((
         id,
@@ -1506,6 +1538,8 @@ pub fn reply_flag_target(conn: &Connection, id: i64) -> Result<Option<ReplyFlagT
         generation,
         local_is_read,
         local_read_synced,
+        kind,
+        read_revision,
     )) = row
     else {
         return Ok(None);
@@ -1517,6 +1551,7 @@ pub fn reply_flag_target(conn: &Connection, id: i64) -> Result<Option<ReplyFlagT
         return Ok(None);
     }
     Ok(Some(ReplyFlagTarget {
+        read_revision,
         id,
         account_id,
         uid,
@@ -1524,6 +1559,7 @@ pub fn reply_flag_target(conn: &Connection, id: i64) -> Result<Option<ReplyFlagT
         generation,
         local_is_read,
         local_read_synced,
+        kind,
     }))
 }
 
@@ -1534,7 +1570,7 @@ pub fn update_reply_server_read(
 ) -> Result<(), String> {
     let changed = conn
         .execute(
-            "UPDATE replies SET is_read = ?2, read_synced = 1
+            "UPDATE replies SET read_revision = read_revision + 1, is_read = CASE WHEN kind = 'auto' THEN 1 ELSE ?2 END, read_synced = CASE WHEN kind = 'auto' THEN ?2 ELSE 1 END
          WHERE id = ?1 AND account_id = ?3 AND imap_uid = ?4
            AND imap_uid_validity = ?5 AND imap_generation = ?6",
             params![
@@ -1561,10 +1597,10 @@ pub fn update_reply_read_from_sync(
 ) -> Result<bool, String> {
     let changed = conn
         .execute(
-            "UPDATE replies SET is_read = ?2, read_synced = 1
+            "UPDATE replies SET read_revision = read_revision + 1, is_read = CASE WHEN kind = 'auto' THEN 1 ELSE ?2 END, read_synced = CASE WHEN kind = 'auto' THEN ?2 ELSE 1 END
          WHERE id = ?1 AND account_id = ?3 AND imap_uid = ?4
            AND imap_uid_validity = ?5 AND imap_generation = ?6
-           AND is_read = ?7 AND read_synced = ?8",
+           AND is_read = ?7 AND read_synced = ?8 AND kind = ?9 AND read_revision = ?10",
             params![
                 target.id,
                 is_read,
@@ -1573,7 +1609,9 @@ pub fn update_reply_read_from_sync(
                 target.uid_validity,
                 target.generation,
                 target.local_is_read,
-                target.local_read_synced
+                target.local_read_synced,
+                target.kind,
+                target.read_revision
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -1582,7 +1620,7 @@ pub fn update_reply_read_from_sync(
 
 pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
     conn.query_row(
-        "SELECT COUNT(*) FROM replies WHERE kind = ?1",
+        "SELECT COUNT(*) FROM replies WHERE kind = ?1 AND delivery_id IS NOT NULL",
         [kind],
         |r| r.get(0),
     )
@@ -1590,7 +1628,7 @@ pub fn count_replies(conn: &Connection, kind: &str) -> Result<i64, String> {
 }
 
 pub fn count_accepted_replies(conn: &Connection) -> Result<i64, String> {
-    conn.query_row("SELECT COUNT(*) FROM replies WHERE accepted = 1", [], |r| {
+    conn.query_row("SELECT COUNT(*) FROM replies WHERE accepted = 1 AND delivery_id IS NOT NULL", [], |r| {
         r.get(0)
     })
     .map_err(|e| e.to_string())
@@ -1605,7 +1643,9 @@ pub fn update_reply_kind(
     accepted: bool,
 ) -> Result<(), String> {
     conn.execute(
-        "UPDATE replies SET kind = ?1, reason = ?2, accepted = ?3 WHERE id = ?4",
+        "UPDATE replies SET read_revision = read_revision + 1, kind = ?1, reason = ?2, accepted = ?3,
+         is_read = CASE WHEN ?1 = 'auto' THEN 1 ELSE is_read END,
+         read_synced = CASE WHEN ?1 = 'auto' AND is_read = 0 THEN 0 ELSE read_synced END WHERE id = ?4",
         params![kind, reason, accepted, id],
     )
     .map_err(|e| e.to_string())?;
@@ -1985,6 +2025,24 @@ pub fn delivery_summary_page(
 #[cfg(test)]
 mod outbox_tests {
     use super::*;
+    #[test]
+    fn summary_omits_large_content_but_detail_preserves_it() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO manuscripts(title, body, mail_templates, file_name, file_data) VALUES (?1, ?2, ?3, 'draft.txt', X'6162')",
+            rusqlite::params!["稿件", "正文".repeat(100_000), r#"[{"id":"one","name":"模板","subject":"主题","body":"邮件正文"}]"#]).unwrap();
+        let summary = load_manuscript_list(&conn, true).unwrap();
+        assert!(summary[0].body.is_empty()); assert!(summary[0].mail_templates.is_empty()); assert!(summary[0].has_file);
+        let detail = load_manuscript(&conn, summary[0].id).unwrap().unwrap();
+        assert_eq!(detail.body, "正文".repeat(100_000)); assert_eq!(detail.mail_templates.len(), 1);
+    }
+    #[test]
+    fn dashboard_loads_latest_three_and_older_active_tasks() {
+        let conn = crate::db::test_database();
+        for id in 1..=100 { conn.execute("INSERT INTO tasks(id, name, status) VALUES (?1, 'task', ?2)",
+            rusqlite::params![id, if id == 1 { "running" } else if id == 2 { "paused" } else { "completed" }]).unwrap(); }
+        let ids: Vec<_> = load_dashboard_tasks(&conn).unwrap().into_iter().map(|task| task.id).collect();
+        assert_eq!(ids, vec![100, 99, 98, 2, 1]);
+    }
     fn fixture() -> Connection {
         let conn = crate::db::test_database();
         conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'fixture@example.com','','localhost');
@@ -2197,4 +2255,129 @@ pub fn advance_loop_cycle(conn: &Connection, task_id: i64) -> Result<(), String>
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
+}
+
+/// Unknown legacy FLAGS are not guessed to be unread. The count covers all accounts and pages.
+pub fn unread_human_reply_count(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT COUNT(*) FROM replies WHERE kind='human' AND is_read=0 AND read_synced=1", [], |row| row.get(0)).map_err(|e| e.to_string())
+}
+
+pub fn normalize_auto_reply_reads(conn: &Connection) -> Result<(), String> {
+    conn.execute("UPDATE replies SET is_read=1, read_synced=0 WHERE kind='auto' AND is_read=0", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod unread_reply_tests {
+    use super::*;
+    fn fixture() -> Connection {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'one@example.com','','localhost'),(2,'two@example.com','','localhost')", []).unwrap();
+        conn
+    }
+    #[test]
+    fn human_unread_count_covers_all_accounts_and_pages_without_auto_or_unknown_flags() {
+        let conn = fixture();
+        for uid in 1..=350 {
+            conn.execute("INSERT INTO replies(account_id,imap_uid,kind,is_read,read_synced) VALUES (?1,?2,'human',0,1)", params![if uid % 2 == 0 { 1 } else { 2 }, uid]).unwrap();
+        }
+        for (uid, kind, read, synced) in [(351,"auto",0,1),(352,"bounce",0,1),(353,"human",1,1),(354,"human",0,0)] {
+            conn.execute("INSERT INTO replies(account_id,imap_uid,kind,is_read,read_synced) VALUES(1,?1,?2,?3,?4)",params![uid,kind,read,synced]).unwrap();
+        }
+        assert_eq!(unread_human_reply_count(&conn).unwrap(), 350);
+        let page = query_replies(&conn,Some("unread"),None,"",20,340,None).unwrap();
+        assert_eq!(page.total,350); assert_eq!(page.items.len(),10);
+        assert!(page.items.iter().all(|reply|reply.kind=="human" && reply.read_synced && !reply.is_read));
+        let account = query_replies(&conn,Some("unread"),None,"",20,0,Some(2)).unwrap();
+        assert_eq!(account.total,175);
+        conn.execute("UPDATE replies SET subject='筛选命中' WHERE imap_uid=350 AND account_id=1",[]).unwrap();
+        let searched = query_replies(&conn,Some("unread"),None,"筛选命中",20,0,None).unwrap();
+        assert_eq!(searched.total,1);
+
+        set_reply_read(&conn, 1, true).unwrap(); assert_eq!(unread_human_reply_count(&conn).unwrap(), 349);
+        set_reply_read(&conn, 1, false).unwrap(); assert_eq!(unread_human_reply_count(&conn).unwrap(), 350);
+    }
+    #[test]
+    fn auto_replies_are_locally_read_even_when_server_store_fails_and_retry_is_pending() {
+        let conn = fixture();
+        let reply = insert_reply(&conn,None,1,None,"editor@example.com","auto","","body","auto","",false,"m1","",1,10,0,"",false).unwrap();
+        assert!(reply.is_read); assert!(!reply.read_synced);
+        let target = reply_flag_target(&conn,reply.id).unwrap().unwrap();
+        update_reply_read_from_sync(&conn,&target,false).unwrap();
+        let read = load_replies(&conn,None,None,10).unwrap().remove(0);
+        assert!(read.is_read); assert!(!read.read_synced);
+        let target = reply_flag_target(&conn,reply.id).unwrap().unwrap();
+        update_reply_read_from_sync(&conn,&target,true).unwrap();
+        let read = load_replies(&conn,None,None,10).unwrap().remove(0);
+        assert!(read.is_read && read.read_synced);
+        assert_eq!(unread_human_reply_count(&conn).unwrap(),0);
+    }
+    #[test]
+    fn stale_flags_cannot_overwrite_read_unread_read_round_trip() {
+        let conn=fixture();
+        let reply=insert_reply(&conn,None,1,None,"friend@example.com","test","","body","human","",false,"m1","",1,10,0,"",true).unwrap();
+        let stale=reply_flag_target(&conn,reply.id).unwrap().unwrap();
+        set_reply_read(&conn,reply.id,false).unwrap();set_reply_read(&conn,reply.id,true).unwrap();
+        assert!(!update_reply_read_from_sync(&conn,&stale,false).unwrap());
+        assert_eq!(unread_human_reply_count(&conn).unwrap(),0);
+        let current=reply_flag_target(&conn,reply.id).unwrap().unwrap();
+        assert!(update_reply_read_from_sync(&conn,&current,false).unwrap());
+        assert_eq!(unread_human_reply_count(&conn).unwrap(),1);
+    }
+
+    #[test]
+    fn history_and_reclassification_keep_human_read_state_and_reject_stale_flags() {
+        let conn = fixture();
+        conn.execute("INSERT INTO replies(account_id,imap_uid,kind,is_read,read_synced) VALUES(1,1,'auto',0,1),(1,2,'human',0,1)",[]).unwrap();
+        normalize_auto_reply_reads(&conn).unwrap(); normalize_auto_reply_reads(&conn).unwrap();
+        let rows = load_replies(&conn,None,None,10).unwrap();
+        assert!(rows.iter().find(|r|r.kind=="auto").unwrap().is_read);
+        let human = rows.iter().find(|r|r.kind=="human").unwrap();
+        assert!(!human.is_read);
+        let target = reply_flag_target(&conn,human.id).unwrap().unwrap();
+        update_reply_kind(&conn,human.id,"auto","rule",false).unwrap();
+        assert!(!update_reply_read_from_sync(&conn,&target,false).unwrap());
+        assert_eq!(unread_human_reply_count(&conn).unwrap(),0);
+    }
+}
+
+#[cfg(test)]
+mod inbox_filter_index_tests {
+    use super::*;
+    #[test]
+    fn unread_and_account_filters_use_indexes_and_preserve_results() {
+        let conn = crate::db::test_database();
+        conn.execute_batch(
+            "INSERT INTO replies(account_id,imap_uid,kind,is_read,read_synced,subject) VALUES
+            (1,1,'human',0,1,'one'),(2,1,'human',0,1,'two'),(1,2,'auto',1,1,'automatic');",
+        )
+        .unwrap();
+        for (kind, account, index) in [
+            (Some("unread"), None, "replies_"),
+            (None, Some(1), "replies_account_received"),
+        ] {
+            let (filter, values) = reply_filter(kind, None, "", account);
+            let sql = format!("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM replies r {filter}");
+            let mut stmt = conn.prepare(&sql).unwrap();
+            let plans = stmt
+                .query_map(rusqlite::params_from_iter(&values), |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join(" ");
+            assert!(plans.contains(index), "{plans}");
+            assert!(!plans.contains("SCAN r "), "{plans}");
+        }
+        let page = query_replies(&conn, Some("unread"), None, "", 20, 0, Some(1)).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].subject, "one");
+        assert_eq!(
+            query_replies(&conn, None, None, "automatic", 20, 0, Some(1))
+                .unwrap()
+                .total,
+            1
+        );
+    }
 }

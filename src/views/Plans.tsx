@@ -1,21 +1,26 @@
+import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
+import { useAttachmentImport } from '../hooks/useAttachmentImport'
+import { useEventSubscription } from '../hooks/useEventSubscription'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Copy, FileX2, FileUp, Mail, MoreHorizontal, Pause, Pencil, Play, Plus, RefreshCw, Search, Square, Trash2 } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { api, onLog, onTask } from '../api'
+import { AccountPicker } from '../components/AccountPicker'
+import { SendIntervalField } from '../components/SendIntervalField'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton } from '../components/ui'
 import { Table } from '../components/Table'
 import { formatTime, fromDbTime, isValidEmail, statusLabel, taskTone, toDbTime } from '../format'
+import { useDebouncedSave } from '../hooks/useDebouncedSave'
 import { useNav } from '../nav'
-import type { Account, Editor, EditorGroup, MailTemplate, Manuscript, ManuscriptInput, Settings, Task, TaskInput } from '../types'
+import type { Account, Editor, EditorGroup, MailTemplate, Manuscript, ManuscriptSummary, ManuscriptInput, Task, TaskInput } from '../types'
 import { PlanEditor } from './PlanEditor'
 import { SendDetailModal } from './SendDetail'
 import {
   categoryFromWords, countChars, createEmptyManuscript, DEFAULT_SEND_INTERVAL_FROM_SEC,
   DEFAULT_SEND_INTERVAL_TO_SEC, isValidSendIntervalRange, latestTask, normalizeSendIntervalRange, taskSendProgress,
-  syncMailFromTemplates, toInput, accountTodayQuota, defaultMailTemplates, normalizeDefaultMailTemplates,
-  MAX_SEND_INTERVAL_SEC,
+  syncMailFromTemplates, toInput, normalizeDefaultMailTemplates,
 } from './planShared'
 
 const emptyTask: TaskInput = {
@@ -115,20 +120,19 @@ function PlanMoreMenu({ actions, planTitle }: { actions: PlanAction[]; planTitle
 
 export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   const consumedPlanRequest = useRef(0)
-  const [manuscripts, setManuscripts] = useState<Manuscript[]>([])
+  const [manuscripts, setManuscripts] = useState<ManuscriptSummary[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [detailRevision, setDetailRevision] = useState(0)
   const [editors, setEditors] = useState<Editor[]>([])
   const [editorGroups, setEditorGroups] = useState<EditorGroup[]>([])
-  const [defaultTemplates, setDefaultTemplates] = useState<MailTemplate[]>(() => defaultMailTemplates())
-  const [settings, setSettings] = useState<Settings | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState<'all' | 'active' | 'draft' | 'done'>('all')
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<Manuscript | null>(null)
   const [showEditor, setShowEditor] = useState(false)
+  const attachmentImport = useAttachmentImport(showEditor)
   const [accountFor, setAccountFor] = useState<Manuscript | null>(null)
   const [draftIds, setDraftIds] = useState<number[]>([])
   const [draftSendInterval, setDraftSendInterval] = useState({
@@ -142,8 +146,6 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   const [taskForm, setTaskForm] = useState<TaskInput>(emptyTask)
   const [scheduledInput, setScheduledInput] = useState('')
   const [saving, setSaving] = useState(false)
-  const pendingDefaultTemplates = useRef<MailTemplate[] | null>(null)
-  const savingDefaultTemplates = useRef(false)
   const toast = useToast()
   const confirm = useConfirm()
   const { go, setChrome } = useNav()
@@ -153,59 +155,31 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     const seq = ++loadSeq.current
     setLoading(true)
     try {
-      const [m, t, a, s, e, g, templates] = await Promise.all([
-        api.listManuscripts(), api.listTasks(), api.listAccounts(), api.getSettings(), api.listEditors(), api.listEditorGroups(), api.getDefaultMailTemplates(),
-      ])
+      const [m, t, a] = await Promise.all([api.listManuscripts(true), api.listTasks(), api.listAccounts()])
       if (seq !== loadSeq.current) return
-      const normalizedTemplates = normalizeDefaultMailTemplates(templates)
-      setManuscripts(m); setTasks(t); setAccounts(a); setSettings(s); setEditors(e); setEditorGroups(g); setDefaultTemplates(normalizedTemplates); setNotice('')
-      setDetail((current) => current ? m.find((item) => item.id === current.id) ?? null : null)
-      if (JSON.stringify(normalizedTemplates) !== JSON.stringify(templates)) {
-        void api.saveDefaultMailTemplates(normalizedTemplates).catch((error) => {
-          toast(`默认模板初始化失败：${String(error)}`, 'error')
-        })
-      }
+      setManuscripts(m); setTasks(t); setAccounts(a); setNotice('')
+      setDetail(current => {
+        if (!current) return null
+        const summary = m.find(item => item.id === current.id)
+        return summary ? { ...summary, body: current.body, mail_templates: current.mail_templates } : null
+      })
     } catch (e) { if (seq === loadSeq.current) setNotice(String(e)) }
     finally { if (seq === loadSeq.current) setLoading(false) }
-  }, [toast])
+  }, [])
   useEffect(() => {
     const sequence = loadSeq
     void load()
     return () => { sequence.current++ }
   }, [load])
-  useEffect(() => {
-    let cancelled = false
-    let un: (() => void) | undefined
-    onTask((task) => {
-      if (cancelled) return
-      setTasks((prev) => [task, ...prev.filter((x) => x.id !== task.id)])
-    }).then((u) => {
-      if (cancelled) u()
-      else un = u
-    })
-    return () => {
-      cancelled = true
-      un?.()
-    }
-  }, [])
+  useEventSubscription(onTask, task => setTasks(prev => [task, ...prev.filter(item => item.id !== task.id)]))
   useEffect(() => {
     setChrome(showEditor)
     return () => setChrome(false)
   }, [showEditor, setChrome])
 
   const detailId = detail?.id
-  useEffect(() => {
-    if (detailId === undefined) return
-    let cancelled = false
-    let timer: number | undefined
-    let un: (() => void) | undefined
-    onLog((log) => {
-      if (log.manuscript_id !== detailId) return
-      window.clearTimeout(timer)
-      timer = window.setTimeout(() => { if (!cancelled) setDetailRevision(v => v + 1) }, 150)
-    }).then((u) => { if (cancelled) u(); else un = u })
-    return () => { cancelled = true; window.clearTimeout(timer); un?.() }
-  }, [detailId])
+  useEventSubscription(onLog, () => setDetailRevision(value => value + 1), 150,
+    log => detailId !== undefined && log.manuscript_id === detailId)
 
   const enabledAccounts = accounts.filter((a) => a.enabled)
 
@@ -220,50 +194,73 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     return map
   }, [tasks])
 
-  const progressByManuscript = useMemo(
-    () => new Map(manuscripts.map((m) => [m.id, taskSendProgress(m, taskByManuscript.get(m.id))])),
-    [manuscripts, taskByManuscript],
-  )
-
-  const visibleManuscripts = useMemo(() => manuscripts.filter((m) => {
+  const visibleManuscripts = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase()
+    return manuscripts.filter((m) => {
     const task = taskByManuscript.get(m.id)
     const matchesFilter = filter === 'all'
       || (filter === 'active' && task && ['running', 'paused', 'scheduled'].includes(task.status))
       || (filter === 'draft' && !task)
       || (filter === 'done' && task && ['completed', 'stopped'].includes(task.status))
-    const query = search.trim().toLocaleLowerCase()
     return matchesFilter && (!query || [m.title, m.category, ...(m.genres ?? [])].join(' ').toLocaleLowerCase().includes(query))
-  }), [manuscripts, taskByManuscript, filter, search])
+    })
+  }, [manuscripts, taskByManuscript, filter, search])
 
+  const templateSave = useDebouncedSave<MailTemplate[]>(api.saveDefaultMailTemplates,
+    error => toast(`默认模板自动保存失败：${String(error)}`, 'error'))
   const saveDefaultTemplates = (templates: MailTemplate[]) => {
     const next = normalizeDefaultMailTemplates(templates)
-    setDefaultTemplates(next)
-    pendingDefaultTemplates.current = next
-    if (savingDefaultTemplates.current) return
-    savingDefaultTemplates.current = true
-    void (async () => {
-      try {
-        while (pendingDefaultTemplates.current) {
-          const current = pendingDefaultTemplates.current
-          pendingDefaultTemplates.current = null
-          await api.saveDefaultMailTemplates(current)
-        }
-      } catch (error) {
-        pendingDefaultTemplates.current = null
-        toast(`默认模板自动保存失败：${String(error)}`, 'error')
-      } finally {
-        savingDefaultTemplates.current = false
-      }
-    })()
+    templateSave.schedule(next)
+  }
+  const createdDraftId = useRef<number | null>(null)
+  const createdTaskId = useRef<number | null>(null)
+  const saveBusy = useRef(false)
+  const planSnapshot = JSON.stringify([form, taskForm, scheduledInput])
+  const planInteracted = useRef(false)
+  const planBaseline = useRef(planSnapshot)
+  // Internal wizard initialization can normalize recipients and templates. Freeze
+  // the baseline before the first user event, without a timer that can swallow edits.
+  if (showEditor && !planInteracted.current) planBaseline.current = planSnapshot
+  const flushTemplates = useCallback(async () => {
+    if (saving) return false
+    try { await templateSave.flush(); return true }
+    catch (error) { toast(`默认模板保存失败：${String(error)}`, 'error'); return false }
+  }, [templateSave, toast, saving])
+  const allowLeave = useUnsavedChanges(showEditor && planSnapshot !== planBaseline.current,
+    saving, '当前投稿计划尚未保存，继续会丢弃作品、附件和收件人的修改。', flushTemplates)
+  const closeEditor = async () => { if (await allowLeave()) setShowEditor(false) }
+
+  const openSeq = useRef(0)
+  useEffect(() => { const sequence = openSeq; return () => { sequence.current++ } }, [])
+  const loadPlanResources = async () => {
+    const [settings, editors, groups, savedTemplates] = await Promise.all([
+      api.getSettings(), api.listEditors(), api.listEditorGroups(), api.getDefaultMailTemplates(),
+    ])
+    return { settings, editors, groups, templates: normalizeDefaultMailTemplates(savedTemplates) }
+  }
+  const prepareEditor = async (id?: number) => {
+    const sequence = ++openSeq.current
+    try {
+      const [resources, manuscript] = await Promise.all([loadPlanResources(), id === undefined ? null : api.getManuscript(id)])
+      if (sequence !== openSeq.current) return null
+      if (id !== undefined && !manuscript) throw new Error('稿件已不存在，请刷新计划列表')
+      setEditors(resources.editors); setEditorGroups(resources.groups)
+      return { ...resources, manuscript }
+    } catch (error) { if (sequence === openSeq.current) toast(String(error), 'error'); return null }
   }
 
-  const openAdd = () => {
+  const openAdd = async () => {
+    const resources = await prepareEditor()
+    if (!resources) return
+    planInteracted.current = false
+    createdDraftId.current = null
+    createdTaskId.current = null
     setEditing(null)
-    setForm(createEmptyManuscript(defaultTemplates))
+    setForm(createEmptyManuscript(resources.templates))
     setTaskForm({
       ...emptyTask,
       account_ids: enabledAccounts.map((a) => a.id),
-      ...(settings ? { retry_max: settings.default_retry_max } : {}),
+      retry_max: resources.settings.default_retry_max,
     })
     setScheduledInput('')
     setShowEditor(true)
@@ -276,8 +273,14 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     }
   }, [loading, newPlanRequest]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const openEdit = (m: Manuscript) => {
+  const openEdit = async (summary: ManuscriptSummary) => {
+    const resources = await prepareEditor(summary.id)
+    if (!resources?.manuscript) return
+    const m = resources.manuscript
     const task = latestTask(m.id, tasks)
+    planInteracted.current = false
+    createdDraftId.current = null
+    createdTaskId.current = null
     setEditing(m)
     setForm(toInput(m))
     setTaskForm({
@@ -286,16 +289,22 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
       account_ids: (m.account_ids?.length ? m.account_ids : task?.account_ids) ?? [],
       schedule_type: task?.schedule_type ?? 'immediate',
       scheduled_at: task?.scheduled_at ?? null,
-      retry_max: task?.retry_max ?? settings?.default_retry_max ?? 3,
+      retry_max: task?.retry_max ?? resources.settings.default_retry_max ?? 3,
     })
     setScheduledInput(task?.scheduled_at ? fromDbTime(task.scheduled_at) : '')
     setShowEditor(true)
   }
 
-  const openCopy = (m: Manuscript) => {
+  const openCopy = async (summary: ManuscriptSummary) => {
+    const resources = await prepareEditor(summary.id)
+    if (!resources?.manuscript) return
+    const m = resources.manuscript
     const task = latestTask(m.id, tasks)
     const copied = toInput(m)
     const title = copied.title.trim()
+    planInteracted.current = false
+    createdDraftId.current = null
+    createdTaskId.current = null
     setEditing(null)
     setForm({
       ...copied,
@@ -307,7 +316,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     setTaskForm({
       ...emptyTask,
       account_ids: (copied.account_ids?.length ? copied.account_ids : task?.account_ids) ?? enabledAccounts.map((a) => a.id),
-      retry_max: task?.retry_max ?? settings?.default_retry_max ?? 3,
+      retry_max: task?.retry_max ?? resources.settings.default_retry_max ?? 3,
     })
     setScheduledInput('')
     setShowEditor(true)
@@ -327,32 +336,40 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
       toast('请至少填写一套邮件正文', 'warning')
       return null
     }
-    if (editing) {
-      await api.updateManuscript(editing.id, next)
-      return editing.id
+    const existingId = editing?.id ?? createdDraftId.current
+    if (existingId) {
+      await api.updateManuscript(existingId, next)
+      return existingId
     }
-    return api.addManuscript(next)
+    const id = await api.addManuscript(next)
+    createdDraftId.current = id
+    return id
   }
 
   const saveDraft = async () => {
+    if (attachmentImport.importing || saveBusy.current) return
+    saveBusy.current = true
     setSaving(true)
     try {
+      await templateSave.flush()
       const id = await persistManuscript(form)
       if (!id) return
       setShowEditor(false)
       await load()
       toast('计划已保存', 'success')
     } catch (e) { toast(String(e), 'error') }
-    finally { setSaving(false) }
+    finally { saveBusy.current = false; setSaving(false) }
   }
 
   const saveAndSend = async () => {
+    if (attachmentImport.importing || saveBusy.current) return
     if (!enabledAccounts.length) { toast('请先添加并启用发件邮箱', 'warning'); return }
     const selectedAccounts = taskForm.account_ids.length
       ? enabledAccounts.filter((a) => taskForm.account_ids.includes(a.id))
       : enabledAccounts
     if (!selectedAccounts.length) { toast('请至少勾选一个参与发送的邮箱', 'warning'); return }
-    const current = editing ? latestTask(editing.id, tasks) : undefined
+    const targetId = editing?.id ?? createdDraftId.current
+    const current = targetId ? latestTask(targetId, tasks) : undefined
     if (current && ['running', 'paused'].includes(current.status)) {
       toast('这个计划正在发送，请先停止再重新发送', 'warning')
       return
@@ -363,8 +380,10 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
       if (!scheduledInput) { toast('请选择发送时间', 'warning'); return }
       if (new Date(scheduledInput).getTime() <= Date.now()) { toast('定时时间必须晚于现在', 'warning'); return }
     }
+    saveBusy.current = true
     setSaving(true)
     try {
+      await templateSave.flush()
       const id = await persistManuscript(form)
       if (!id) return
       const input = {
@@ -373,37 +392,30 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
         manuscript_ids: [id],
         scheduled_at: taskForm.schedule_type === 'scheduled' ? toDbTime(scheduledInput) : null,
       }
-      if (current && ['stopped', 'scheduled'].includes(current.status)) {
-        await api.updateTask(current.id, input)
+      const retryTaskId = createdTaskId.current ?? (current && ['stopped', 'scheduled'].includes(current.status) ? current.id : null)
+      if (retryTaskId !== null) {
+        createdTaskId.current = retryTaskId
+        await api.updateTask(retryTaskId, input)
       } else {
-        await api.createTask(input)
+        const created = await api.createTask(input)
+        createdTaskId.current = created.id
+        if (created.start_error) throw new Error(created.start_error)
       }
       setShowEditor(false)
       await load()
       toast(taskForm.schedule_type === 'scheduled' ? '已预约，到点会自动开始' : '计划已开始发送', 'success')
-    } catch (e) { toast(String(e), 'error') }
-    finally { setSaving(false) }
+    } catch (e) { await load(); toast(String(e), 'error') }
+    finally { saveBusy.current = false; setSaving(false) }
   }
 
   const importFile = async (file: File | null) => {
     if (!file) return
-    const ext = file.name.split('.').pop()?.toLowerCase()
-    if (!ext || !['docx', 'txt', 'md', 'html', 'htm'].includes(ext)) {
-      toast('请导入 DOCX、TXT、MD 或 HTML 格式的稿件', 'warning')
-      return
-    }
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer())
-      const text = ext === 'docx'
-        ? await api.extractDocx(Array.from(bytes))
-        : new TextDecoder('utf-8').decode(bytes)
-      setForm((f) => {
-        const title = f.title.trim() || file.name.replace(/\.[^.]+$/, '')
-        const word_count = countChars(text)
-        const category = categoryFromWords(word_count)
-        // 保留文件内容，保存后会作为附件随邮件发送。
-        return { ...f, title, file_name: file.name, word_count, category, content_type: 'text/plain' as const, file_data: Array.from(bytes) }
-      })
+      const imported = await attachmentImport.stage(file)
+      if (!imported) return
+      setForm((f) => ({ ...f, title: f.title.trim() || file.name.replace(/\.[^.]+$/, ''),
+        file_name: file.name, word_count: imported.word_count, category: categoryFromWords(imported.word_count),
+        content_type: 'text/plain', file_data: null, file_token: imported.token }))
       toast('已读入作品，文件将作为附件发送', 'success')
     } catch (e) { toast(String(e), 'error') }
   }
@@ -430,12 +442,17 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     await control(task.id, 'start')
   }
 
-  const openDetail = (m: Manuscript) => {
-    setDetailRevision(v => v + 1)
-    setDetail(m)
+  const openDetail = async (summary: ManuscriptSummary) => {
+    const sequence = ++openSeq.current
+    try {
+      const m = await api.getManuscript(summary.id)
+      if (sequence !== openSeq.current) return
+      if (!m) throw new Error('稿件已不存在，请刷新计划列表')
+      setDetailRevision(v => v + 1); setDetail(m)
+    } catch (error) { if (sequence === openSeq.current) toast(String(error), 'error') }
   }
 
-  const remove = async (m: Manuscript) => {
+  const remove = async (m: ManuscriptSummary) => {
     const task = latestTask(m.id, tasks)
     if (task && ['running', 'paused'].includes(task.status)) {
       toast('请先停止发送，再删除计划', 'warning')
@@ -446,12 +463,15 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     try { await api.deleteManuscript(m.id); await load(); toast('计划已删除', 'success') } catch (e) { toast(String(e), 'error') }
   }
 
-  const planAccounts = (m: Manuscript) => {
+  const planAccounts = (m: ManuscriptSummary) => {
     const task = latestTask(m.id, tasks)
     return (m.account_ids?.length ? m.account_ids : task?.account_ids) ?? []
   }
 
-  const openAccountFor = (m: Manuscript) => {
+  const openAccountFor = async (summary: ManuscriptSummary) => {
+    const resources = await prepareEditor(summary.id)
+    if (!resources?.manuscript) return
+    const m = resources.manuscript
     setAccountFor(m)
     setDraftIds(planAccounts(m))
     setDraftSendInterval(normalizeSendIntervalRange(
@@ -493,7 +513,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     finally { setSaving(false) }
   }
 
-  const createWasteDraft = async (manuscript: Manuscript) => {
+  const createWasteDraft = async (manuscript: ManuscriptSummary) => {
     const wasteEditors = new Set(
       editors
         .filter((editor) => editor.enabled && editor.work_type.includes('废稿'))
@@ -530,6 +550,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   if (showEditor) {
     return (
       <PlanEditor
+        onInteraction={() => { planInteracted.current = true }}
         editing={editing}
         editors={editors}
         editorGroups={editorGroups}
@@ -544,8 +565,8 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
         setForm={setForm}
         taskForm={taskForm}
         setTaskForm={setTaskForm}
-        saving={saving}
-        onClose={() => setShowEditor(false)}
+        saving={saving || attachmentImport.importing}
+        onClose={() => void closeEditor()}
         onSaveDraft={() => void saveDraft()}
         onSaveAndSend={() => void saveAndSend()}
         onImportFile={importFile}
@@ -558,7 +579,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
       <div className="toolbar plans-page-toolbar">
         <div className="toolbar-actions">
           <IconButton title="刷新计划" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
-          <Button variant="primary" onClick={openAdd}><Plus size={16} />新建计划</Button>
+          <Button variant="primary" onClick={() => void openAdd()}><Plus size={16} />新建计划</Button>
         </div>
       </div>
       {notice && <div className="notice notice-error">{notice}</div>}
@@ -570,7 +591,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
         <div className="panel">
           <EmptyState icon={FileUp} title="还没有投稿计划"
             desc="写好作品和邮件，收件人按作品类型匹配，每个平台只出一位。"
-            action={<Button variant="primary" onClick={openAdd}><Plus size={16} />新建计划</Button>} />
+            action={<Button variant="primary" onClick={() => void openAdd()}><Plus size={16} />新建计划</Button>} />
         </div>
       ) : (
         <div className="panel plans-list-panel">
@@ -629,12 +650,10 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
                 width: 160,
                 render: (_value, m) => {
                   const task = taskByManuscript.get(m.id)
-                  const n = m.recipients.filter((r) => isValidEmail(r)).length
-                  const progress = progressByManuscript.get(m.id) ?? { sent: 0, total: 0 }
-                  return task
-                    ? <PlanProgress sent={progress.sent} total={progress.total || n} status={task.status}
-                        loop={task.schedule_type === 'loop'} title={m.title} />
-                    : <span className="hint">草稿</span>
+                  if (!task) return <span className="hint">草稿</span>
+                  const progress = taskSendProgress(m, task)
+                  return <PlanProgress sent={progress.sent} total={progress.total} status={task.status}
+                    loop={task.schedule_type === 'loop'} title={m.title} />
                 },
               },
               {
@@ -731,56 +750,13 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
           <div className="plan-acct-list">
             <div className="plan-acct-row">
               <div className="plan-acct-title"><b>投稿邮箱</b><small>可多选</small></div>
-              <div className="plan-accounts-list">
-                {enabledAccounts.map((a) => {
-                  const on = draftIds.includes(a.id)
-                  const quota = accountTodayQuota(a.sent_today)
-                  return (
-                    <label key={a.id} className={`plan-account-chip ${on ? 'on' : ''} ${quota.over ? 'is-over' : ''}`}>
-                      <input type="checkbox" checked={on} onChange={() => toggleDraftAccount(a.id)} />
-                      <span className="plan-account-chip-text">
-                        <b>{a.email}</b>
-                        <small>今日 {quota.label}{quota.over ? ' · 建议今天不要再发' : ''}</small>
-                      </span>
-                    </label>
-                  )
-                })}
-                {!enabledAccounts.length && <span className="hint">还没有启用邮箱，去「邮箱」页添加并启用</span>}
-              </div>
+              <AccountPicker accounts={enabledAccounts} selectedIds={draftIds} onToggle={toggleDraftAccount} emptyMeansAll={false} />
             </div>
             <div className="plan-acct-row">
               <div className="plan-acct-title"><b>发送频率</b><small>每封邮件之间的间隔</small></div>
-              <div className="send-interval-range" aria-label="随机发送间隔">
-                <label className="send-interval-field">
-                  <span>最短</span>
-                  <span className="send-interval-input-wrap">
-                    <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
-                      value={draftSendInterval.fromSec || ''}
-                      aria-invalid={draftSendIntervalTouched && !isValidSendIntervalRange(draftSendInterval.fromSec, draftSendInterval.toSec)}
-                      onBlur={() => setDraftSendIntervalTouched(true)}
-                      onChange={(event) => {
-                        const value = event.target.value === '' ? 0 : Math.round(Number(event.target.value))
-                        setDraftSendInterval((current) => ({ ...current, fromSec: value }))
-                      }} />
-                    <em>秒</em>
-                  </span>
-                </label>
-                <span className="send-interval-separator">至</span>
-                <label className="send-interval-field">
-                  <span>最长</span>
-                  <span className="send-interval-input-wrap">
-                    <input type="number" min={1} max={MAX_SEND_INTERVAL_SEC} step={1}
-                      value={draftSendInterval.toSec || ''}
-                      aria-invalid={draftSendIntervalTouched && !isValidSendIntervalRange(draftSendInterval.fromSec, draftSendInterval.toSec)}
-                      onBlur={() => setDraftSendIntervalTouched(true)}
-                      onChange={(event) => {
-                        const value = event.target.value === '' ? 0 : Math.round(Number(event.target.value))
-                        setDraftSendInterval((current) => ({ ...current, toSec: value }))
-                      }} />
-                    <em>秒</em>
-                  </span>
-                </label>
-              </div>
+              <SendIntervalField fromSec={draftSendInterval.fromSec} toSec={draftSendInterval.toSec}
+                touched={draftSendIntervalTouched} onBlur={() => setDraftSendIntervalTouched(true)}
+                onChange={(side, value) => setDraftSendInterval(current => ({ ...current, [side === 'from' ? 'fromSec' : 'toSec']: value }))} />
               {isValidSendIntervalRange(draftSendInterval.fromSec, draftSendInterval.toSec) ? (
                 <p className="hint">每封发送后随机等待 {draftSendInterval.fromSec}–{draftSendInterval.toSec} 秒。</p>
               ) : draftSendIntervalTouched ? (

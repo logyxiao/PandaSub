@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct Account {
     pub id: i64,
     pub email: String,
+    #[serde(skip_serializing)]
     pub password: String,
     pub smtp_host: String,
     pub smtp_port: u16,
@@ -98,7 +99,9 @@ pub struct Manuscript {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AttachmentInput {
     pub name: String,
+    #[serde(default)]
     pub data: Vec<u8>,
+    pub token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -148,6 +151,7 @@ pub struct ManuscriptInput {
     /// 上传的附件文件内容（Word / 文本）。None 表示无附件；更新时 None 保留原附件。
     #[serde(default)]
     pub file_data: Option<Vec<u8>>,
+    pub file_token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -198,6 +202,7 @@ pub struct AcceptedWorkInput {
     pub file_name: String,
     #[serde(default)]
     pub file_data: Option<Vec<u8>>,
+    pub file_token: Option<String>,
     #[serde(default)]
     pub remove_file: bool,
     #[serde(default)]
@@ -817,6 +822,19 @@ pub struct ReplyReadState {
     pub id: i64,
     pub is_read: bool,
     pub read_synced: bool,
+}
+
+#[derive(Serialize, Debug)]
+pub struct ReplyFlagSyncError {
+    pub account_id: i64,
+    pub email: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Debug, Default)]
+pub struct ReplyFlagSyncResult {
+    pub states: Vec<ReplyReadState>,
+    pub errors: Vec<ReplyFlagSyncError>,
 }
 
 #[derive(Serialize)]

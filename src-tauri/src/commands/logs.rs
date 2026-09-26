@@ -7,6 +7,46 @@ use crate::models::{LogPage, TaskLog};
 use crate::state::AppState;
 use crate::store;
 
+#[derive(serde::Serialize)]
+pub struct NamedOption {
+    id: i64,
+    name: String,
+}
+#[derive(serde::Serialize)]
+pub struct LogOptions {
+    tasks: Vec<NamedOption>,
+    manuscripts: Vec<NamedOption>,
+    accounts: Vec<NamedOption>,
+}
+fn load_log_options(conn: &rusqlite::Connection) -> Result<LogOptions, String> {
+    fn rows(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<NamedOption>, String> {
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(NamedOption {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
+    }
+    Ok(LogOptions {
+        tasks: rows(conn, "SELECT id,name FROM tasks ORDER BY id DESC")?,
+        manuscripts: rows(conn, "SELECT id,title FROM manuscripts ORDER BY id DESC")?,
+        accounts: rows(conn, "SELECT id,email FROM accounts ORDER BY id")?,
+    })
+}
+#[tauri::command]
+pub async fn list_log_options(state: State<'_, AppState>) -> Result<LogOptions, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        load_log_options(&conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 // ---------- Logs ----------
 
 #[tauri::command]
@@ -46,19 +86,23 @@ pub async fn list_logs_page(
 }
 
 #[tauri::command]
-pub fn clear_logs(state: State<'_, AppState>, task_id: Option<i64>) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    match task_id {
-        Some(tid) => conn
-            .execute("DELETE FROM task_logs WHERE task_id = ?1", [tid])
-            .map_err(|e| e.to_string())?,
-        None => conn
-            .execute("DELETE FROM task_logs", [])
-            .map_err(|e| e.to_string())?,
-    };
-    Ok(())
+pub async fn clear_logs(state: State<'_, AppState>, task_id: Option<i64>) -> Result<(), String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        match task_id {
+            Some(tid) => conn
+                .execute("DELETE FROM task_logs WHERE task_id = ?1", [tid])
+                .map_err(|e| e.to_string())?,
+            None => conn
+                .execute("DELETE FROM task_logs", [])
+                .map_err(|e| e.to_string())?,
+        };
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
-
 #[tauri::command]
 pub async fn export_logs(
     state: State<'_, AppState>,

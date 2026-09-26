@@ -4,7 +4,7 @@ use rust_xlsxwriter::Workbook;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-use tauri::State;
+use tauri::{State, ipc::Request};
 
 use crate::models::{
     EditorImportResult, EditorInput, EDITOR_SOURCE_IMPORT, EDITOR_SOURCE_INITIAL,
@@ -37,9 +37,16 @@ fn validate_editor(
 }
 
 #[tauri::command]
-pub fn list_editors(state: State<'_, AppState>) -> Result<Vec<crate::models::Editor>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    store::load_editors(&conn)
+pub async fn list_editors(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::Editor>, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        store::load_editors(&conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn validate_editor_group(
@@ -65,10 +72,15 @@ fn validate_editor_group(
         return Err("请至少选择一位编辑".into());
     }
 
-    let existing = store::load_editors(conn)?
-        .into_iter()
-        .map(|editor| editor.id)
-        .collect::<HashSet<_>>();
+    let requested = serde_json::to_string(&editor_ids).map_err(|e| e.to_string())?;
+    let mut statement = conn
+        .prepare("SELECT id FROM editors WHERE id IN (SELECT value FROM json_each(?1))")
+        .map_err(|e| e.to_string())?;
+    let existing = statement
+        .query_map([requested], |row| row.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|e| e.to_string())?;
     if editor_ids.iter().any(|id| !existing.contains(id)) {
         return Err("部分编辑已不在编辑库，请刷新后重新选择".into());
     }
@@ -85,12 +97,15 @@ fn replace_editor_group_members(
         [group_id],
     )
     .map_err(|e| e.to_string())?;
-    for (position, editor_id) in editor_ids.iter().enumerate() {
-        conn.execute(
+    let mut insert = conn
+        .prepare_cached(
             "INSERT INTO editor_group_members (group_id, editor_id, position) VALUES (?1, ?2, ?3)",
-            rusqlite::params![group_id, editor_id, position as i64],
         )
         .map_err(|e| e.to_string())?;
+    for (position, editor_id) in editor_ids.iter().enumerate() {
+        insert
+            .execute(rusqlite::params![group_id, editor_id, position as i64])
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -119,51 +134,66 @@ struct EditorGroupShareGroup {
 }
 
 #[tauri::command]
-pub fn list_editor_groups(
+pub async fn list_editor_groups(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::models::EditorGroup>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    store::load_editor_groups(&conn)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        store::load_editor_groups(&conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn create_editor_group(
+pub async fn create_editor_group(
     state: State<'_, AppState>,
     input: crate::models::EditorGroupInput,
 ) -> Result<i64, String> {
-    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-    let (name, editor_ids) = validate_editor_group(&conn, &input)?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("INSERT INTO editor_groups (name) VALUES (?1)", [&name])
-        .map_err(editor_group_error)?;
-    let id = tx.last_insert_rowid();
-    replace_editor_group_members(&tx, id, &editor_ids)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(id)
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        let (name, editor_ids) = validate_editor_group(&conn, &input)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO editor_groups (name) VALUES (?1)", [&name])
+            .map_err(editor_group_error)?;
+        let id = tx.last_insert_rowid();
+        replace_editor_group_members(&tx, id, &editor_ids)?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn update_editor_group(
+pub async fn update_editor_group(
     state: State<'_, AppState>,
     id: i64,
     input: crate::models::EditorGroupInput,
 ) -> Result<(), String> {
-    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-    let (name, editor_ids) = validate_editor_group(&conn, &input)?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let updated = tx
-        .execute(
-            "UPDATE editor_groups
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        let (name, editor_ids) = validate_editor_group(&conn, &input)?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let updated = tx
+            .execute(
+                "UPDATE editor_groups
              SET name = ?1, updated_at = datetime('now','localtime')
              WHERE id = ?2",
-            rusqlite::params![name, id],
-        )
-        .map_err(editor_group_error)?;
-    if updated == 0 {
-        return Err("没有找到这个编辑组".into());
-    }
-    replace_editor_group_members(&tx, id, &editor_ids)?;
-    tx.commit().map_err(|e| e.to_string())
+                rusqlite::params![name, id],
+            )
+            .map_err(editor_group_error)?;
+        if updated == 0 {
+            return Err("没有找到这个编辑组".into());
+        }
+        replace_editor_group_members(&tx, id, &editor_ids)?;
+        tx.commit().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -178,75 +208,92 @@ pub fn delete_editor_group(state: State<'_, AppState>, id: i64) -> Result<(), St
 }
 
 #[tauri::command]
-pub fn export_editor_groups(
+pub async fn export_editor_groups(
     state: State<'_, AppState>,
     path: String,
     group_ids: Vec<i64>,
 ) -> Result<String, String> {
-    let (groups, editors) = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        (
-            store::load_editor_groups(&conn)?,
-            store::load_editors(&conn)?,
-        )
-    };
-    let selected = group_ids.into_iter().collect::<HashSet<_>>();
-    let editor_map = editors
-        .into_iter()
-        .map(|editor| (editor.id, editor))
-        .collect::<HashMap<_, _>>();
-    let groups = groups
-        .into_iter()
-        .filter(|group| selected.is_empty() || selected.contains(&group.id))
-        .map(|group| EditorGroupShareGroup {
-            name: group.name,
-            editors: group
-                .editor_ids
-                .into_iter()
-                .filter_map(|id| editor_map.get(&id))
-                .map(|editor| crate::models::EditorInput {
-                    platform: editor.platform.clone(),
-                    name: editor.name.clone(),
-                    email: editor.email.clone(),
-                    work_type: editor.work_type.clone(),
-                    rejected_types: editor.rejected_types.clone(),
-                    notes: editor.notes.clone(),
-                })
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-    if groups.is_empty() {
-        return Err("没有可导出的编辑组".into());
-    }
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (groups, editors) = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            (
+                store::load_editor_groups(&conn)?,
+                store::load_editors(&conn)?,
+            )
+        };
+        let selected = group_ids.into_iter().collect::<HashSet<_>>();
+        let editor_map = editors
+            .into_iter()
+            .map(|editor| (editor.id, editor))
+            .collect::<HashMap<_, _>>();
+        let groups = groups
+            .into_iter()
+            .filter(|group| selected.is_empty() || selected.contains(&group.id))
+            .map(|group| EditorGroupShareGroup {
+                name: group.name,
+                editors: group
+                    .editor_ids
+                    .into_iter()
+                    .filter_map(|id| editor_map.get(&id))
+                    .map(|editor| crate::models::EditorInput {
+                        platform: editor.platform.clone(),
+                        name: editor.name.clone(),
+                        email: editor.email.clone(),
+                        work_type: editor.work_type.clone(),
+                        rejected_types: editor.rejected_types.clone(),
+                        notes: editor.notes.clone(),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        if groups.is_empty() {
+            return Err("没有可导出的编辑组".into());
+        }
 
-    let file = EditorGroupShareFile {
-        kind: EDITOR_GROUP_SHARE_KIND.into(),
-        version: 1,
-        groups,
-    };
-    let content = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
-    let path = if path.trim().to_lowercase().ends_with(".json") {
-        path
-    } else {
-        format!("{path}.json")
-    };
-    let file_path = std::path::PathBuf::from(&path);
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&file_path, content).map_err(|e| e.to_string())?;
-    Ok(path)
+        let file = EditorGroupShareFile {
+            kind: EDITOR_GROUP_SHARE_KIND.into(),
+            version: 1,
+            groups,
+        };
+        let content = serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())?;
+        let path = if path.trim().to_lowercase().ends_with(".json") {
+            path
+        } else {
+            format!("{path}.json")
+        };
+        let file_path = std::path::PathBuf::from(&path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&file_path, content).map_err(|e| e.to_string())?;
+        Ok(path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn import_editor_groups(
+pub async fn import_editor_groups(
     state: State<'_, AppState>,
-    data: Vec<u8>,
-    file_name: String,
+    request: Request<'_>,
 ) -> Result<crate::models::EditorGroupImportResult, String> {
-    if data.len() > 10 * 1024 * 1024 {
-        return Err("编辑组文件不能超过 10 MB".into());
+    let (data, metadata) = super::binary::read_binary(
+        request.body(),
+        request
+            .headers()
+            .get("x-file-metadata")
+            .and_then(|h| h.to_str().ok()),
+        10 * 1024 * 1024,
+        "编辑组文件",
+    )?;
+    let file_name = metadata.file_name;
+    if file_name.trim().is_empty() {
+        return Err("缺少文件名".into());
     }
+    let data = data.to_vec();
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move||{
     let file: EditorGroupShareFile =
         serde_json::from_slice(&data).map_err(|e| format!("无法读取“{file_name}”：{e}"))?;
     if file.kind != EDITOR_GROUP_SHARE_KIND || file.version != 1 {
@@ -285,7 +332,7 @@ pub fn import_editor_groups(
         normalized_groups.push((name, members));
     }
 
-    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut conn = db.lock().map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut groups_added = 0_i64;
     let mut groups_updated = 0_i64;
@@ -367,6 +414,7 @@ pub fn import_editor_groups(
         groups_updated,
         editors_added,
     })
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[tauri::command]
@@ -469,137 +517,179 @@ pub fn delete_editor(state: State<'_, AppState>, id: i64) -> Result<(), String> 
 }
 
 #[tauri::command]
-pub fn clear_editors(state: State<'_, AppState>) -> Result<i64, String> {
-    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM editor_group_members", [])
-        .map_err(|e| e.to_string())?;
-    let deleted = tx
-        .execute("DELETE FROM editors", [])
-        .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(deleted as i64)
+pub async fn clear_editors(state: State<'_, AppState>) -> Result<i64, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM editor_group_members", [])
+            .map_err(|e| e.to_string())?;
+        let deleted = tx
+            .execute("DELETE FROM editors", [])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(deleted as i64)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+pub async fn export_editors(state: State<'_, AppState>, path: String) -> Result<String, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let editors = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            store::load_editors(&conn)?
+        };
+        let path = if path.trim().to_lowercase().ends_with(".xlsx") {
+            path
+        } else {
+            format!("{path}.xlsx")
+        };
+        let file = std::path::PathBuf::from(&path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        let headers = [
+            "平台",
+            "名称",
+            "邮箱",
+            "作品类型",
+            "拒收类型",
+            "收稿说明",
+            "来源",
+        ];
+        for (col, h) in headers.iter().enumerate() {
+            sheet
+                .write_string(0, col as u16, *h)
+                .map_err(|e| e.to_string())?;
+        }
+        for (i, editor) in editors.iter().enumerate() {
+            let row = (i + 1) as u32;
+            sheet
+                .write_string(row, 0, &editor.platform)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(row, 1, &editor.name)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(row, 2, &editor.email)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(row, 3, editor.work_type.join("、"))
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(row, 4, editor.rejected_types.join("、"))
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(row, 5, &editor.notes)
+                .map_err(|e| e.to_string())?;
+            sheet
+                .write_string(row, 6, &editor.source)
+                .map_err(|e| e.to_string())?;
+        }
+        workbook.save(&path).map_err(|e| e.to_string())?;
+        Ok(path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn export_editors(state: State<'_, AppState>, path: String) -> Result<String, String> {
-    let editors = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        store::load_editors(&conn)?
-    };
-    let path = if path.trim().to_lowercase().ends_with(".xlsx") {
-        path
-    } else {
-        format!("{path}.xlsx")
-    };
-    let file = std::path::PathBuf::from(&path);
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
-    let mut workbook = Workbook::new();
-    let sheet = workbook.add_worksheet();
-    let headers = [
-        "平台",
-        "名称",
-        "邮箱",
-        "作品类型",
-        "拒收类型",
-        "收稿说明",
-        "来源",
-    ];
-    for (col, h) in headers.iter().enumerate() {
-        sheet
-            .write_string(0, col as u16, *h)
-            .map_err(|e| e.to_string())?;
-    }
-    for (i, editor) in editors.iter().enumerate() {
-        let row = (i + 1) as u32;
-        sheet
-            .write_string(row, 0, &editor.platform)
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 1, &editor.name)
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 2, &editor.email)
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 3, editor.work_type.join("、"))
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 4, editor.rejected_types.join("、"))
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 5, &editor.notes)
-            .map_err(|e| e.to_string())?;
-        sheet
-            .write_string(row, 6, &editor.source)
-            .map_err(|e| e.to_string())?;
-    }
-    workbook.save(&path).map_err(|e| e.to_string())?;
-    Ok(path)
-}
-
-#[tauri::command]
-pub fn import_editors(
+pub async fn import_editors(
     state: State<'_, AppState>,
-    data: Vec<u8>,
-    file_name: String,
+    request: Request<'_>,
 ) -> Result<EditorImportResult, String> {
-    let rows = parse_editor_import(&data, &file_name)?;
-    if rows.is_empty() {
-        return Err(
-            "文件里没有可导入的行。请用列：平台、名称、邮箱、作品类型、拒收类型、收稿说明。".into(),
-        );
+    let (data, metadata) = super::binary::read_binary(
+        request.body(),
+        request
+            .headers()
+            .get("x-file-metadata")
+            .and_then(|h| h.to_str().ok()),
+        25 * 1024 * 1024,
+        "编辑库文件",
+    )?;
+    let file_name = metadata.file_name;
+    if file_name.trim().is_empty() {
+        return Err("缺少文件名".into());
     }
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut added = 0i64;
-    let mut updated = 0i64;
-    let mut errors = Vec::new();
-    for (index, input) in rows {
-        match upsert_imported_editor(&conn, &input) {
-            Ok("updated") => updated += 1,
-            Ok(_) => added += 1,
-            Err(e) => errors.push(format!("第 {index} 行：{e}")),
+    let data = data.to_vec();
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let rows = parse_editor_import(&data, &file_name)?;
+        if rows.is_empty() {
+            return Err(
+                "文件里没有可导入的行。请用列：平台、名称、邮箱、作品类型、拒收类型、收稿说明。"
+                    .into(),
+            );
         }
-    }
-    Ok(EditorImportResult {
-        added,
-        updated,
-        errors,
+        let (valid, errors) = prepare_import(rows);
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        apply_editor_import(&mut conn, valid, errors, EDITOR_SOURCE_IMPORT)
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn import_default_editors(state: State<'_, AppState>) -> Result<EditorImportResult, String> {
-    let rows = crate::models::default_editor_inputs()?;
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut added = 0i64;
-    let mut updated = 0i64;
+pub async fn import_default_editors(
+    state: State<'_, AppState>,
+) -> Result<EditorImportResult, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let rows = crate::models::default_editor_inputs()?
+            .into_iter()
+            .enumerate()
+            .map(|(i, input)| (i + 1, input))
+            .collect();
+        let (valid, errors) = prepare_import(rows);
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        apply_editor_import(&mut conn, valid, errors, EDITOR_SOURCE_INITIAL)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// Validation/normalization runs before acquiring the shared database connection.
+fn prepare_import(rows: Vec<(usize, EditorInput)>) -> (Vec<(usize, EditorInput)>, Vec<String>) {
+    let mut valid = Vec::with_capacity(rows.len());
     let mut errors = Vec::new();
-    for input in rows {
-        match validate_editor(&input)
-            .and_then(|input| store::upsert_editor(&conn, &input, EDITOR_SOURCE_INITIAL))
-        {
-            Ok("updated") => updated += 1,
-            Ok(_) => added += 1,
-            Err(e) => errors.push(e),
+    for (row, input) in rows {
+        match validate_editor(&input) {
+            Ok(input) => valid.push((row, input)),
+            Err(error) => errors.push(format!("第 {row} 行：{error}")),
         }
     }
+    (valid, errors)
+}
+fn apply_editor_import(
+    conn: &mut rusqlite::Connection,
+    rows: Vec<(usize, EditorInput)>,
+    mut errors: Vec<String>,
+    source: &str,
+) -> Result<EditorImportResult, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut added = 0;
+    let mut updated = 0;
+    for (row, input) in rows {
+        match store::upsert_editor(&tx, &input, source) {
+            Ok("updated") => updated += 1,
+            Ok(_) => added += 1,
+            Err(error) => {
+                if tx.is_autocommit() { return Err(format!("导入事务已终止：{error}")); }
+                errors.push(format!("第 {row} 行：{error}"));
+            },
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(EditorImportResult {
         added,
         updated,
         errors,
     })
-}
-
-fn upsert_imported_editor(
-    conn: &rusqlite::Connection,
-    input: &EditorInput,
-) -> Result<&'static str, String> {
-    let input = validate_editor(input)?;
-    store::upsert_editor(conn, &input, EDITOR_SOURCE_IMPORT)
 }
 
 fn parse_editor_import(data: &[u8], file_name: &str) -> Result<Vec<(usize, EditorInput)>, String> {
@@ -635,6 +725,9 @@ fn read_spreadsheet_sheets(data: &[u8]) -> Result<SpreadsheetSheets, String> {
     let names = workbook.sheet_names().to_vec();
     let mut out = Vec::new();
     for name in names {
+        if skip_import_sheet(&name) {
+            continue;
+        }
         let Ok(range) = workbook.worksheet_range(&name) else {
             continue;
         };
@@ -903,4 +996,132 @@ fn split_tags(raw: &str) -> Vec<String> {
         out.push(tag.to_string());
     }
     out
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+    fn editor(email: &str) -> EditorInput {
+        EditorInput {
+            email: email.into(),
+            name: "编辑".into(),
+            platform: "测试平台".into(),
+            work_type: vec!["短篇".into()],
+            rejected_types: Vec::new(),
+            notes: "原说明".into(),
+        }
+    }
+    #[test]
+    fn batch_import_preserves_partial_validation_duplicates_and_favorites() {
+        let mut conn = crate::db::test_database();
+        store::upsert_editor(&conn, &editor("one@example.com"), EDITOR_SOURCE_MANUAL).unwrap();
+        conn.execute("UPDATE editors SET favorited=1,enabled=0", [])
+            .unwrap();
+        let mut update = editor(" ONE@EXAMPLE.COM ");
+        update.notes = "新说明".into();
+        let (rows, errors) = prepare_import(vec![
+            (2, editor("bad")),
+            (3, update),
+            (4, editor("two@example.com")),
+            (5, editor("two@example.com")),
+        ]);
+        let report = apply_editor_import(&mut conn, rows, errors, EDITOR_SOURCE_IMPORT).unwrap();
+        assert_eq!(
+            (report.added, report.updated, report.errors.len()),
+            (1, 2, 1)
+        );
+        assert!(report.errors[0].contains("第 2 行"));
+        let one = store::load_editors(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.email == "one@example.com")
+            .unwrap();
+        assert!(one.favorited && !one.enabled);
+        assert_eq!(one.notes, "新说明");
+        assert_eq!(one.source, EDITOR_SOURCE_IMPORT);
+    }
+    #[test]
+    fn fatal_transaction_failure_does_not_report_uncommitted_imports_as_saved() {
+        let mut conn = crate::db::test_database();
+        conn.execute_batch("CREATE TRIGGER import_failure BEFORE INSERT ON editors WHEN NEW.email='fail@example.com' BEGIN SELECT RAISE(ROLLBACK,'fixture failure'); END;").unwrap();
+        let (rows, errors) = prepare_import(vec![
+            (1, editor("ok@example.com")),
+            (2, editor("fail@example.com")),
+            (3, editor("after-failure@example.com")),
+        ]);
+        assert!(apply_editor_import(&mut conn, rows, errors, EDITOR_SOURCE_IMPORT).is_err());
+        assert!(store::load_editors(&conn).unwrap().is_empty());
+    }
+    #[test]
+    fn group_batch_read_keeps_order_empty_groups_and_omits_deleted_editors() {
+        let conn = crate::db::test_database();
+        for id in 1..=3 {
+            store::upsert_editor(
+                &conn,
+                &editor(&format!("{id}@example.com")),
+                EDITOR_SOURCE_MANUAL,
+            )
+            .unwrap();
+        }
+        conn.execute_batch("INSERT INTO editor_groups(id,name) VALUES(1,'Zulu'),(2,'Alpha'),(3,'Empty'); INSERT INTO editor_group_members(group_id,editor_id,position) VALUES(1,1,2),(1,2,0),(1,999,1),(2,3,0);").unwrap();
+        let groups = store::load_editor_groups(&conn).unwrap();
+        assert_eq!(
+            groups.iter().map(|g| g.id).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
+        assert_eq!(groups[0].editor_ids, vec![3]);
+        assert!(groups[1].editor_ids.is_empty());
+        assert_eq!(groups[2].editor_ids, vec![2, 1]);
+        let input = crate::models::EditorGroupInput {
+            name: "new".into(),
+            editor_ids: vec![3, 1, 3],
+        };
+        assert_eq!(validate_editor_group(&conn, &input).unwrap().1, vec![3, 1]);
+        assert!(validate_editor_group(
+            &conn,
+            &crate::models::EditorGroupInput {
+                name: "bad".into(),
+                editor_ids: vec![999]
+            }
+        )
+        .is_err());
+    }
+    #[test]
+    #[ignore = "Manual disk benchmark; measures WAL FULL without changing user data"]
+    fn benchmark_editor_batch_import() {
+        let rows = (0..1000)
+            .map(|i| (i + 1, editor(&format!("perf-{i}@example.com"))))
+            .collect::<Vec<_>>();
+        let mut elapsed = Vec::new();
+        for batch in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "novelsub-import-perf-{:032x}.sqlite",
+                rand::random::<u128>()
+            ));
+            let mut conn = crate::db::open_database(path.clone()).unwrap();
+            let start = std::time::Instant::now();
+            if batch {
+                let (valid, errors) = prepare_import(rows.clone());
+                apply_editor_import(&mut conn, valid, errors, EDITOR_SOURCE_IMPORT).unwrap();
+            } else {
+                for (_, input) in &rows {
+                    store::upsert_editor(
+                        &conn,
+                        &validate_editor(input).unwrap(),
+                        EDITOR_SOURCE_IMPORT,
+                    )
+                    .unwrap();
+                }
+            }
+            elapsed.push(start.elapsed());
+            drop(conn);
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+            let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+        }
+        println!(
+            "1000 editor imports, WAL FULL: per-row {:?}, batch {:?}",
+            elapsed[0], elapsed[1]
+        );
+    }
 }

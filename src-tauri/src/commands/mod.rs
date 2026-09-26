@@ -23,3 +23,11 @@ pub use replies::*;
 pub use stats::*;
 pub use system::*;
 pub use tasks::*;
+
+pub mod attachments;
+pub use attachments::*;
+
+pub(crate) mod binary;
+
+pub mod storage;
+pub use storage::*;

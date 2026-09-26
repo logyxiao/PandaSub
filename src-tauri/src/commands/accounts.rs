@@ -8,9 +8,12 @@ use crate::store;
 // ---------- Accounts ----------
 
 #[tauri::command]
-pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<crate::models::Account>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+pub async fn list_accounts(state: State<'_, AppState>) -> Result<Vec<crate::models::Account>, String> {
+    let db=state.db.clone();
+    tauri::async_runtime::spawn_blocking(move||{
+    let conn = db.lock().map_err(|e| e.to_string())?;
     store::load_accounts(&conn)
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[tauri::command]
@@ -46,9 +49,8 @@ pub fn add_account(state: State<'_, AppState>, input: AccountInput) -> Result<i6
 pub fn update_account(
     state: State<'_, AppState>,
     id: i64,
-    input: AccountInput,
+    mut input: AccountInput,
 ) -> Result<(), String> {
-    validate_account(&input)?;
     let (imap_host, imap_port) = resolve_imap(&input);
     let _scan = state
         .reply_scan
@@ -60,6 +62,8 @@ pub fn update_account(
     let mut db = state.db.lock().map_err(|e| e.to_string())?;
     store::ensure_account_idle(&db, &registry, id)?;
     let old = store::load_account(&db, id)?.ok_or("邮箱不存在")?;
+    if input.password.is_empty() { input.password = old.password.clone(); }
+    validate_account(&input)?;
     let conn = db.transaction().map_err(|e| e.to_string())?;
     if !old.email.eq_ignore_ascii_case(input.email.trim())
         || !old.imap_host.eq_ignore_ascii_case(&imap_host)
@@ -167,7 +171,7 @@ pub async fn send_test_email(
     };
     // 附件：优先用前端传入的字节（新计划还没入库）；没传时若有稿件 id，则读数据库里已保存的附件。
     let attachment_data: Option<(String, Vec<u8>)> = if let Some(att) = attachment {
-        Some((att.name, att.data))
+        Some((att.name, match att.token { Some(token) => state.attachments.resolve(&token)?, None => att.data }))
     } else if let Some(mid) = manuscript_id {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         store::load_manuscript_attachment(&conn, mid)?
@@ -233,4 +237,18 @@ fn validate_account(input: &AccountInput) -> Result<(), String> {
         return Err("请输入 SMTP 服务器地址".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod account_response_tests {
+    #[test]
+    fn public_account_rows_never_serialize_passwords() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO accounts(email,password,smtp_host) VALUES('fixture@example.com','fixture-secret','localhost')", []).unwrap();
+        let account = crate::store::load_accounts(&conn).unwrap().remove(0);
+        assert_eq!(account.password, "fixture-secret");
+        let json = serde_json::to_value(account).unwrap();
+        assert!(json.get("password").is_none());
+        assert_eq!(json["email"], "fixture@example.com");
+    }
 }

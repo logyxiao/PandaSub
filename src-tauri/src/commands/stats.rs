@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
-use tauri::State;
+use tauri::{AppHandle, Manager};
 
 use crate::models::{StatsGroup, StatsReport};
-use crate::state::AppState;
 
 // ---------- Stats ----------
 
@@ -15,20 +14,36 @@ use crate::state::AppState;
 /// - 过稿：replies.accepted = 1
 #[tauri::command]
 pub async fn get_stats(
-    state: State<'_, AppState>,
+    app: AppHandle,
     start: Option<String>,
     end: Option<String>,
     group: Option<String>,
 ) -> Result<StatsReport, String> {
-    let db = state.db.clone();
+    let path = app.path().app_data_dir().map_err(|e| e.to_string())?.join("novelsub.sqlite");
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        load_stats(&conn, start, end, group)
+        load_stats_from_path(&path, start, end, group)
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
+fn load_stats_from_path(
+    path: &std::path::Path,
+    start: Option<String>,
+    end: Option<String>,
+    group: Option<String>,
+) -> Result<StatsReport, String> {
+    let mut conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| e.to_string())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    // One read transaction gives all metrics the same WAL snapshot.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let report = load_stats(&tx, start, end, group)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(report)
+}
 pub(crate) fn load_stats(
     conn: &rusqlite::Connection,
     start: Option<String>,
@@ -81,7 +96,7 @@ pub(crate) fn load_stats(
         let sql = format!(
             "SELECT {} AS k, SUM(CASE WHEN kind = 'human' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END) FROM replies
-             WHERE (kind = 'human' OR accepted = 1) AND {} GROUP BY k",
+             WHERE delivery_id IS NOT NULL AND (kind = 'human' OR accepted = 1) AND {} GROUP BY k",
             key(col),
             range(col),
         );
@@ -213,6 +228,7 @@ mod tests {
             (1,3,'auto',1,'2021-01-01 23:59:59.999'),
             (1,4,'auto',0,'2021-01-01 10:00:00'),
             (1,5,'human',1,'2021-01-02 00:00:00');
+            UPDATE replies SET delivery_id=1;
             INSERT INTO task_logs(level,category,message,recipient,created_at) VALUES
             ('error','send','failed','one@example.com','2021-01-01 12:00:00'),
             ('warning','network','retry','one@example.com','2021-01-01 12:00:00'),
@@ -246,6 +262,15 @@ mod tests {
         let empty = load_stats(&conn, Some("2030-01-01".into()), None, None).unwrap();
         assert!(empty.groups.is_empty());
         assert!(load_stats(&conn, None, None, Some("unknown".into())).is_err());
+    }
+
+    #[test]
+    fn ordinary_incoming_mail_never_inflates_submission_statistics() {
+        let conn = fixture();
+        conn.execute("INSERT INTO replies(account_id,imap_uid,kind,accepted,received_at) VALUES(1,999,'human',1,'2021-01-01 12:00:00')", []).unwrap();
+        let report = load_stats(&conn, None, None, None).unwrap();
+        assert_eq!(report.totals.human_replies, 3);
+        assert_eq!(report.totals.accepted, 3);
     }
 
     #[test]
@@ -295,5 +320,48 @@ mod tests {
             let plan: String = conn.query_row(&format!("EXPLAIN QUERY PLAN SELECT COUNT(*) FROM {table} WHERE {predicate} AND {column} >= ?1 AND {column} < ?2"), ["2021-01-01", "2021-01-02"], |r| r.get(3)).unwrap();
             assert!(plan.contains("SEARCH") && plan.contains(index), "{plan}");
         }
+    }
+}
+
+#[cfg(test)]
+mod independent_reader_tests {
+    use super::*;
+    #[test]
+    fn reports_read_committed_wal_without_acquiring_the_shared_writer_lock() {
+        let path =
+            std::env::temp_dir().join(format!("novelsub-report-{}.sqlite", rand::random::<u128>()));
+        let conn = crate::db::open_database(path.clone()).unwrap();
+        conn.execute(
+            "INSERT INTO deliveries(recipient,message_id) VALUES('fixture@example.com','one')",
+            [],
+        )
+        .unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let mut writer = db.lock().unwrap();
+        // Hold the application's writer mutex and an uncommitted write throughout the report.
+        let tx = writer.transaction().unwrap();
+        tx.execute(
+            "INSERT INTO deliveries(recipient,message_id) VALUES('fixture@example.com','two')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            load_stats_from_path(&path, None, None, None)
+                .unwrap()
+                .totals
+                .deliveries,
+            1
+        );
+        tx.commit().unwrap();
+        assert_eq!(
+            load_stats_from_path(&path, None, None, None)
+                .unwrap()
+                .totals
+                .deliveries,
+            2
+        );
+        drop(writer);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
     }
 }

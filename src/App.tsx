@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useTrayInboxNavigation } from './hooks/useTrayInboxNavigation'
+import { useUnreadReplies } from './hooks/useUnreadReplies'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Award, BarChart3, ChevronLeft, ChevronRight, FileText, FolderOpen, Inbox, Info, LayoutDashboard, ListChecks, Mail, Plus, Settings, Users,
 } from 'lucide-react'
@@ -8,18 +10,20 @@ import './App.css'
 import './panda.css'
 import { api, onTask } from './api'
 import { ConfirmProvider, ToastProvider } from './components/feedback'
+import { restartApp } from './update'
 import { UpdateManager } from './components/UpdateManager'
 import { NavContext, type LeaveGuard, type NavOptions, type ViewId } from './nav'
 import { DashboardView } from './views/Dashboard'
-import { AccountsView } from './views/Accounts'
-import { PlansView } from './views/Plans'
-import { LogsView } from './views/Logs'
-import { RepliesView } from './views/Replies'
-import { StatsView } from './views/Stats'
-import { AcceptedView } from './views/Accepted'
-import { SettingsView } from './views/Settings'
-import { AboutView } from './views/About'
-import { EditorsView, EditorGroupsLibrary } from './views/Editors'
+const AccountsView = lazy(() => import('./views/Accounts').then(module => ({ default: module.AccountsView })))
+const PlansView = lazy(() => import('./views/Plans').then(module => ({ default: module.PlansView })))
+const LogsView = lazy(() => import('./views/Logs').then(module => ({ default: module.LogsView })))
+const RepliesView = lazy(() => import('./views/Replies').then(module => ({ default: module.RepliesView })))
+const StatsView = lazy(() => import('./views/Stats').then(module => ({ default: module.StatsView })))
+const AcceptedView = lazy(() => import('./views/Accepted').then(module => ({ default: module.AcceptedView })))
+const SettingsView = lazy(() => import('./views/Settings').then(module => ({ default: module.SettingsView })))
+const AboutView = lazy(() => import('./views/About').then(module => ({ default: module.AboutView })))
+const EditorsView = lazy(() => import('./views/Editors').then(module => ({ default: module.EditorsView })))
+const EditorGroupsLibrary = lazy(() => import('./views/Editors').then(module => ({ default: module.EditorGroupsLibrary })))
 
 interface NavItem { id: ViewId; label: string; icon: typeof LayoutDashboard }
 
@@ -71,8 +75,10 @@ const pageDescriptions: Record<ViewId, string> = {
 }
 
 export default function App() {
+  const unreadReplies = useUnreadReplies()
   const [active, setActive] = useState<ViewId>('dashboard')
   const [initialReply, setInitialReply] = useState<Reply | undefined>(undefined)
+  const [inboxEntry, setInboxEntry] = useState(0)
   const [replyKind, setReplyKind] = useState<string | undefined>(undefined)
   const [inboxAccount, setInboxAccount] = useState<number | ''>('')
   const [inboxAccounts, setInboxAccounts] = useState<Account[]>([])
@@ -96,6 +102,7 @@ export default function App() {
         setReplyKind(id === 'replies' ? options?.replyKind : undefined)
         setInitialReply(id === 'replies' ? options?.reply : undefined)
         if (id === 'replies') {
+          if (options?.replyKind === 'unread') setInboxEntry(value => value + 1)
           setInboxAccount(options?.accountId ?? '')
           if (collapsed && window.innerWidth > 880) setCollapsed(false)
         }
@@ -104,7 +111,16 @@ export default function App() {
       } finally { navigating.current = false }
     })()
   }, [active, inboxAccount, collapsed])
-  const navigation = useMemo(() => ({ go, setChrome: setHideChrome, setLeaveGuard }), [go, setLeaveGuard])
+  const restart = useCallback(async () => {
+    if (navigating.current) return
+    navigating.current = true
+    try {
+      if (leaveGuard.current && !await leaveGuard.current()) return
+      await restartApp()
+    } finally { navigating.current = false }
+  }, [])
+  useTrayInboxNavigation(go)
+  const navigation = useMemo(() => ({ go, restart, setChrome: setHideChrome, setLeaveGuard }), [go, restart, setLeaveGuard])
   const currentLabel = groups.flatMap(g => g.items).find(item => item.id === active)?.label ?? ''
 
   useEffect(() => {
@@ -163,8 +179,8 @@ export default function App() {
   return (
     <ToastProvider>
       <ConfirmProvider>
-        <UpdateManager />
         <NavContext.Provider value={navigation}>
+          <UpdateManager />
           <div className={`app-shell ${hideChrome ? 'focus-mode' : ''}`} data-density="compact">
             <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
               <div className="brand">
@@ -183,10 +199,13 @@ export default function App() {
                       <div key={id} className="nav-entry">
                       <button className={`nav-item ${active === id ? 'active' : ''}`}
                         onClick={() => go(id)}
-                        title={collapsed ? label : undefined} aria-label={label}
+                        title={id === 'replies' && unreadReplies > 0 ? `收件箱 · ${unreadReplies} 封未读人工回复` : collapsed ? label : undefined} aria-label={label}
+                        aria-describedby={id === 'replies' && unreadReplies > 0 ? 'inbox-unread-count' : undefined}
                         aria-current={active === id ? 'page' : undefined}>
                         <Icon size={18} />
                         {!collapsed && <span>{label}</span>}
+                        {id === 'replies' && unreadReplies > 0 && <b id="inbox-unread-count" className="nav-unread-badge" role="status"
+                          aria-label={`${unreadReplies} 封未读人工回复`}>{unreadReplies > 99 ? '99+' : unreadReplies}</b>}
                       </button>
                       {id === 'replies' && active === 'replies' && !collapsed && (
                         <div className="inbox-nav-accounts" role="group" aria-label="收件箱账号">
@@ -222,10 +241,11 @@ export default function App() {
                 {!hideChrome && <div className="page-heading"><div><h1>{currentLabel}</h1><p>{pageDescriptions[active]}</p></div>
                   {active === 'dashboard' && <button className="btn btn-primary" onClick={() => go('plans', { createPlan: true })}><Plus size={16} />新建投稿计划</button>}
                 </div>}
+                <Suspense fallback={<p role="status">正在加载页面…</p>}>
                 {active === 'dashboard' && <DashboardView />}
                 {active === 'plans' && <PlansView newPlanRequest={planRequest} />}
                 {active === 'logs' && <LogsView />}
-                {active === 'replies' && <RepliesView initialKind={replyKind} initialReply={initialReply}
+                {active === 'replies' && <RepliesView key={inboxEntry} initialKind={replyKind} initialReply={initialReply}
                   accountFilter={inboxAccount} onAccountChange={(accountId) => go('replies', { accountId })} />}
                 {active === 'stats' && <StatsView />}
                 {active === 'accepted' && <AcceptedView />}
@@ -234,6 +254,7 @@ export default function App() {
                 {active === 'groups' && <EditorGroupsLibrary />}
                 {active === 'settings' && <SettingsView />}
                 {active === 'about' && <AboutView />}
+                </Suspense>
               </div>
             </main>
           </div>

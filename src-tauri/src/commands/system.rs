@@ -18,6 +18,7 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 
 #[tauri::command]
 pub fn update_settings(state: State<'_, AppState>, mut settings: Settings) -> Result<(), String> {
+    if settings.default_retry_max < 1 { return Err("发送重试次数至少为 1".into()); }
     if settings.reply_poll_minutes < 1 {
         return Err("检查回复间隔至少 1 分钟".into());
     }
@@ -87,9 +88,9 @@ pub fn set_autostart(
 }
 
 #[tauri::command]
-pub fn backup_data(app: AppHandle) -> Result<String, String> {
+pub async fn backup_data(app: AppHandle) -> Result<String, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    backup_database(&data_dir)
+    tauri::async_runtime::spawn_blocking(move || backup_database(&data_dir)).await.map_err(|e| e.to_string())?
 }
 
 /// Creates a consistent snapshot of the WAL database in the data directory.
@@ -101,14 +102,17 @@ pub fn backup_database(data_dir: &Path) -> Result<String, String> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let dst = backup_dir.join(format!("novelsub_backup_{ts}.sqlite"));
+    let dst = backup_dir.join(format!("novelsub_backup_{ts}_{}.sqlite", rand::random::<u128>()));
     // The database runs in WAL mode. Copying only the main file can omit
     // committed pages that are still in the WAL, so ask SQLite for a
     // consistent snapshot instead.
     let snapshot = Connection::open(&src).map_err(|e| e.to_string())?;
-    snapshot
-        .execute("VACUUM INTO ?1", [&dst.to_string_lossy().to_string()])
-        .map_err(|e| e.to_string())?;
+    let temporary = dst.with_extension("sqlite.tmp");
+    if let Err(error) = snapshot.execute("VACUUM INTO ?1", [&temporary.to_string_lossy().to_string()]) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    std::fs::rename(&temporary, &dst).map_err(|e| e.to_string())?;
     Ok(dst.to_string_lossy().to_string())
 }
 
@@ -159,4 +163,23 @@ pub async fn delivery_summary_page(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+    #[test]
+    fn successive_backups_have_unique_paths_and_include_wal_data() {
+        let root = std::env::temp_dir().join(format!("novelsub-backup-{}", rand::random::<u128>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let conn = crate::db::open_database(root.join("novelsub.sqlite")).unwrap();
+        conn.execute("INSERT INTO manuscripts(title,body) VALUES('fixture','body')", []).unwrap();
+        let first = backup_database(&root).unwrap(); let second = backup_database(&root).unwrap();
+        assert_ne!(first, second);
+        for path in [first, second] {
+            let snapshot = Connection::open(path).unwrap();
+            assert_eq!(snapshot.query_row("SELECT COUNT(*) FROM manuscripts WHERE title='fixture'", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+        }
+        drop(conn); std::fs::remove_dir_all(root).unwrap();
+    }
 }

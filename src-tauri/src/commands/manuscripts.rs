@@ -1,4 +1,3 @@
-use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::models::{legacy_send_interval_min, normalize_send_interval_secs, Manuscript};
@@ -324,194 +323,206 @@ fn emit_current_task(app: &AppHandle, state: &AppState, task_id: Option<i64>) {
 
 // ---------- Manuscripts ----------
 #[tauri::command]
-pub fn list_manuscripts(state: State<'_, AppState>) -> Result<Vec<Manuscript>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    store::load_all_manuscripts(&conn)
+pub async fn list_manuscripts(state: State<'_, AppState>, summary: Option<bool>) -> Result<Vec<Manuscript>, String> {
+    let db=state.db.clone();
+    tauri::async_runtime::spawn_blocking(move||{
+    let conn = db.lock().map_err(|e| e.to_string())?;
+    store::load_manuscript_list(&conn, summary.unwrap_or(false))
+    }).await.map_err(|e|e.to_string())?
 }
 
 #[tauri::command]
-pub fn get_manuscript(state: State<'_, AppState>, id: i64) -> Result<Option<Manuscript>, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+pub async fn get_manuscript(state: State<'_, AppState>, id: i64) -> Result<Option<Manuscript>, String> {
+    let db=state.db.clone();
+    tauri::async_runtime::spawn_blocking(move||{
+    let conn = db.lock().map_err(|e| e.to_string())?;
     store::load_manuscript(&conn, id)
+    }).await.map_err(|e|e.to_string())?
 }
 
-#[tauri::command]
-pub fn add_manuscript(
-    state: State<'_, AppState>,
+struct PreparedManuscript {
     input: crate::models::ManuscriptInput,
+    recipients: String,
+    genres: String,
+    excluded: String,
+    accounts: String,
+    templates: String,
+}
+
+impl PreparedManuscript {
+    fn new(mut input: crate::models::ManuscriptInput) -> Result<Self, String> {
+        input.title = input.title.trim().to_owned();
+        if input.title.is_empty() {
+            return Err("作品名称不能为空".into());
+        }
+        if input.body.trim().is_empty() {
+            input.body = input
+                .mail_templates
+                .iter()
+                .find(|template| !template.body.trim().is_empty())
+                .map(|template| template.body.clone())
+                .ok_or("请至少填写一套邮件正文")?;
+        }
+        input.fixed_mail_template_id = input.fixed_mail_template_id.trim().to_owned();
+        if !input.fixed_mail_template_id.is_empty()
+            && !input.mail_templates.iter().any(|template| {
+                template.id == input.fixed_mail_template_id && !template.body.trim().is_empty()
+            })
+        {
+            return Err("固定使用的邮件模板不存在或正文为空".into());
+        }
+        if let Some(data) = &input.file_data {
+            if data.is_empty() || data.len() > super::attachments::MAX_ATTACHMENT_BYTES {
+                return Err("文稿不能为空，且不能超过 25 MB".into());
+            }
+            if input.file_name.trim().is_empty() {
+                return Err("附件缺少文件名".into());
+            }
+        }
+        let (from, to) =
+            normalize_send_interval_secs(input.send_interval_from_sec, input.send_interval_to_sec);
+        input.send_interval_from_sec = from;
+        input.send_interval_to_sec = to;
+        Ok(Self {
+            recipients: serde_json::to_string(&input.recipients).map_err(|e| e.to_string())?,
+            genres: serde_json::to_string(&input.genres).map_err(|e| e.to_string())?,
+            excluded: serde_json::to_string(&input.excluded_types).map_err(|e| e.to_string())?,
+            accounts: serde_json::to_string(&input.account_ids).map_err(|e| e.to_string())?,
+            templates: serde_json::to_string(&input.mail_templates).map_err(|e| e.to_string())?,
+            input,
+        })
+    }
+}
+
+fn write_manuscript(
+    conn: &rusqlite::Connection,
+    id: Option<i64>,
+    prepared: PreparedManuscript,
 ) -> Result<i64, String> {
-    if input.title.trim().is_empty() {
-        return Err("作品名称不能为空".into());
-    }
-    if input.body.trim().is_empty()
-        && !input
-            .mail_templates
-            .iter()
-            .any(|item| !item.body.trim().is_empty())
-    {
-        return Err("请至少填写一套邮件正文".into());
-    }
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let recipients = json!(input.recipients).to_string();
-    let genres = json!(input.genres).to_string();
-    let excluded_types = json!(input.excluded_types).to_string();
-    let mail_templates = json!(input.mail_templates).to_string();
-    let fixed_mail_template_id = input.fixed_mail_template_id.trim();
-    let (send_interval_from_sec, send_interval_to_sec) =
-        normalize_send_interval_secs(input.send_interval_from_sec, input.send_interval_to_sec);
-    if !fixed_mail_template_id.is_empty()
-        && !input
-            .mail_templates
-            .iter()
-            .any(|item| item.id == fixed_mail_template_id && !item.body.trim().is_empty())
-    {
-        return Err("固定使用的邮件模板不存在或正文为空".into());
-    }
-    let body = if input.body.trim().is_empty() {
-        input
-            .mail_templates
-            .iter()
-            .find(|item| !item.body.trim().is_empty())
-            .map(|item| item.body.clone())
-            .unwrap_or_default()
+    let input = prepared.input;
+    let sql = if id.is_some() {
+        "UPDATE manuscripts SET title=:title,body=:body,content_type=:content_type,recipients=:recipients,
+         sender_name=:sender_name,word_count=:word_count,category=:category,reader_category=:reader_category,
+         reader_emotion=:reader_emotion,style=:style,genres=:genres,excluded_types=:excluded,account_ids=:accounts,
+         send_interval_min=:interval_min,send_interval_from_sec=:interval_from,send_interval_to_sec=:interval_to,
+         subject=:subject,mail_templates=:templates,fixed_mail_template_id=:fixed_template,
+         file_name=CASE WHEN :file_data IS NULL THEN file_name ELSE :file_name END,
+         file_data=COALESCE(:file_data,file_data),updated_at=datetime('now','localtime') WHERE id=:id"
     } else {
-        input.body.clone()
+        "INSERT INTO manuscripts(id,title,body,content_type,recipients,sender_name,word_count,category,reader_category,
+         reader_emotion,style,genres,excluded_types,account_ids,send_interval_min,send_interval_from_sec,send_interval_to_sec,
+         subject,mail_templates,fixed_mail_template_id,file_name,file_data)
+         VALUES(:id,:title,:body,:content_type,:recipients,:sender_name,:word_count,:category,:reader_category,
+         :reader_emotion,:style,:genres,:excluded,:accounts,:interval_min,:interval_from,:interval_to,
+         :subject,:templates,:fixed_template,CASE WHEN :file_data IS NULL THEN '' ELSE :file_name END,:file_data)"
     };
-    conn.execute(
-        "INSERT INTO manuscripts (title, body, content_type, recipients, sender_name,
-            word_count, category, reader_category, reader_emotion, style, genres, excluded_types, account_ids, send_interval_min, subject, file_name, file_data, mail_templates, fixed_mail_template_id, send_interval_from_sec, send_interval_to_sec)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
-        rusqlite::params![
-            input.title.trim(),
-            body,
-            input.content_type,
-            recipients,
-            input.sender_name.trim(),
-            input.word_count,
-            input.category.trim(),
-            input.reader_category.trim(),
-            input.reader_emotion.trim(),
-            input.style.trim(),
-            genres,
-            excluded_types,
-            json!(input.account_ids).to_string(),
-            legacy_send_interval_min(send_interval_from_sec, send_interval_to_sec),
-            input.subject.trim(),
-            input.file_name.trim(),
-            input.file_data,
-            mail_templates,
-            fixed_mail_template_id,
-            send_interval_from_sec,
-            send_interval_to_sec,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(conn.last_insert_rowid())
+    let changed = conn.execute(sql, rusqlite::named_params! {
+        ":id": id, ":title": input.title, ":body": input.body, ":content_type": input.content_type,
+        ":recipients": prepared.recipients, ":sender_name": input.sender_name.trim(), ":word_count": input.word_count,
+        ":category": input.category.trim(), ":reader_category": input.reader_category.trim(), ":reader_emotion": input.reader_emotion.trim(),
+        ":style": input.style.trim(), ":genres": prepared.genres, ":excluded": prepared.excluded, ":accounts": prepared.accounts,
+        ":interval_min": legacy_send_interval_min(input.send_interval_from_sec,input.send_interval_to_sec),
+        ":interval_from": input.send_interval_from_sec, ":interval_to": input.send_interval_to_sec,
+        ":subject": input.subject.trim(), ":templates": prepared.templates, ":fixed_template": input.fixed_mail_template_id,
+        ":file_name": input.file_name.trim(), ":file_data": input.file_data,
+    }).map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("稿件不存在，请刷新后重试".into());
+    }
+    Ok(id.unwrap_or_else(|| conn.last_insert_rowid()))
 }
 
 #[tauri::command]
-pub fn update_manuscript(
+pub async fn add_manuscript(
+    state: State<'_, AppState>,
+    mut input: crate::models::ManuscriptInput,
+) -> Result<i64, String> {
+    let db = state.db.clone();
+    let attachments = state.attachments.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(token) = &input.file_token {
+            input.file_data = Some(attachments.resolve(token)?);
+        }
+        let prepared = PreparedManuscript::new(input)?;
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        write_manuscript(&conn, None, prepared)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn update_manuscript(
     state: State<'_, AppState>,
     id: i64,
-    input: crate::models::ManuscriptInput,
+    mut input: crate::models::ManuscriptInput,
 ) -> Result<(), String> {
-    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
-    ensure_no_manual_sends(&pending, &[id])?;
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    store::ensure_manuscript_idle(&conn, &registry, id)?;
-    let recipients = json!(input.recipients).to_string();
-    let genres = json!(input.genres).to_string();
-    let excluded_types = json!(input.excluded_types).to_string();
-    let mail_templates = json!(input.mail_templates).to_string();
-    let fixed_mail_template_id = input.fixed_mail_template_id.trim();
-    let (send_interval_from_sec, send_interval_to_sec) =
-        normalize_send_interval_secs(input.send_interval_from_sec, input.send_interval_to_sec);
-    if !fixed_mail_template_id.is_empty()
-        && !input
-            .mail_templates
-            .iter()
-            .any(|item| item.id == fixed_mail_template_id && !item.body.trim().is_empty())
-    {
-        return Err("固定使用的邮件模板不存在或正文为空".into());
-    }
-    conn.execute(
-        "UPDATE manuscripts SET title = ?1, body = ?2, content_type = ?3, recipients = ?4,
-                sender_name = ?5, word_count = ?6, category = ?7, reader_category = ?8,
-                reader_emotion = ?9, style = ?10, genres = ?11, excluded_types = ?16, account_ids = ?17,
-                send_interval_min = ?19,
-                subject = ?12, file_name = ?13,
-                file_data = COALESCE(?15, file_data),
-                mail_templates = ?18,
-                fixed_mail_template_id = ?20,
-                send_interval_from_sec = ?21,
-                send_interval_to_sec = ?22,
-                updated_at = datetime('now','localtime')
-         WHERE id = ?14",
-        rusqlite::params![
-            input.title.trim(),
-            input.body,
-            input.content_type,
-            recipients,
-            input.sender_name.trim(),
-            input.word_count,
-            input.category.trim(),
-            input.reader_category.trim(),
-            input.reader_emotion.trim(),
-            input.style.trim(),
-            genres,
-            input.subject.trim(),
-            input.file_name.trim(),
-            id,
-            input.file_data,
-            excluded_types,
-            json!(input.account_ids).to_string(),
-            mail_templates,
-            legacy_send_interval_min(send_interval_from_sec, send_interval_to_sec),
-            fixed_mail_template_id,
-            send_interval_from_sec,
-            send_interval_to_sec,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_manuscript(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    // Hold the task registry through the database transaction. A concurrent
-    // start can then only reserve the task before this check (and be rejected)
-    // or after deletion (and fail because the task no longer exists).
-    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-    let pending = state.manual_sends.lock().map_err(|e| e.to_string())?;
-    ensure_no_manual_sends(&pending, &[id])?;
-    // Deleting a manuscript also prunes orphan tasks and detaches their history.
-    // Keep those task references stable until every pending manual send is recorded.
-    if !pending.is_empty() {
-        return Err("有手动发送或重发尚未完成，请完成后再删除稿件".into());
-    }
-
-    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-    let tasks = store::load_tasks(&conn)?;
-    for task in &tasks {
-        if task.manuscript_ids.contains(&id)
-            && (registry.contains_key(&task.id)
-                || matches!(task.status.as_str(), "running" | "paused"))
-        {
-            return Err("这个计划正在发送，请先停止".into());
+    let db = state.db.clone();
+    let attachments = state.attachments.clone();
+    let tasks = state.tasks.clone();
+    let manual_sends = state.manual_sends.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(token) = &input.file_token {
+            input.file_data = Some(attachments.resolve(token)?);
         }
-    }
-    store::delete_manuscript_data(&mut conn, id)
+        let prepared = PreparedManuscript::new(input)?;
+        // Preserve registry → manual sends → database lock order through the write.
+        let registry = tasks.lock().map_err(|e| e.to_string())?;
+        let pending = manual_sends.lock().map_err(|e| e.to_string())?;
+        ensure_no_manual_sends(&pending, &[id])?;
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        store::ensure_manuscript_idle(&conn, &registry, id)?;
+        write_manuscript(&conn, Some(id), prepared).map(|_| ())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
+#[tauri::command]
+pub async fn delete_manuscript(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let db = state.db.clone();
+    let tasks = state.tasks.clone();
+    let manual_sends = state.manual_sends.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Hold the task registry through the database transaction. A concurrent
+        // start can then only reserve the task before this check (and be rejected)
+        // or after deletion (and fail because the task no longer exists).
+        let registry = tasks.lock().map_err(|e| e.to_string())?;
+        let pending = manual_sends.lock().map_err(|e| e.to_string())?;
+        ensure_no_manual_sends(&pending, &[id])?;
+        // Deleting a manuscript also prunes orphan tasks and detaches their history.
+        // Keep those task references stable until every pending manual send is recorded.
+        if !pending.is_empty() {
+            return Err("有手动发送或重发尚未完成，请完成后再删除稿件".into());
+        }
 
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        let tasks = store::load_tasks(&conn)?;
+        for task in &tasks {
+            if task.manuscript_ids.contains(&id)
+                && (registry.contains_key(&task.id)
+                    || matches!(task.status.as_str(), "running" | "paused"))
+            {
+                return Err("这个计划正在发送，请先停止".into());
+            }
+        }
+        store::delete_manuscript_data(&mut conn, id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 #[tauri::command]
 pub fn extract_docx_text(data: Vec<u8>) -> Result<String, String> {
+    extract_docx_bytes(&data)
+}
+
+pub fn extract_docx_bytes(data: &[u8]) -> Result<String, String> {
     let reader = std::io::Cursor::new(data);
     let mut archive =
         zip::ZipArchive::new(reader).map_err(|_| "不是有效的 Word 文件".to_string())?;
     let mut file = archive
         .by_name("word/document.xml")
         .map_err(|_| "不是有效的 Word 文件".to_string())?;
+    if file.size() > 50 * 1024 * 1024 { return Err("Word 文档解压后过大".into()); }
     let mut xml = String::new();
     std::io::Read::read_to_string(&mut file, &mut xml).map_err(|e| e.to_string())?;
     Ok(docx_xml_to_text(&xml))
@@ -618,4 +629,97 @@ pub fn resolve_pending_send(
     }
     emit_current_task(&app, &state, task_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod manuscript_write_tests {
+    use super::*;
+    fn input() -> crate::models::ManuscriptInput {
+        serde_json::from_value(serde_json::json!({
+            "title":" 文稿 ","body":"","content_type":"text/plain","recipients":["编辑 <editor@example.com>"],
+            "sender_name":" 作者 ","word_count":1234,"category":"短篇","reader_category":"女频",
+            "reader_emotion":"甜","style":"轻松","genres":["短篇"],"excluded_types":["悬疑"],"account_ids":[7],
+            "send_interval_from_sec":111,"send_interval_to_sec":222,"subject":" 投稿 ",
+            "mail_templates":[{"id":"one","name":"模板","subject":"主题","body":"模板正文"}],
+            "fixed_mail_template_id":"one","file_name":"文稿.txt","file_data":[1,2,3]
+        })).unwrap()
+    }
+    #[test]
+    fn create_and_update_share_validation_fallback_and_attachment_rules() {
+        let conn = crate::db::test_database();
+        let id = write_manuscript(&conn, None, PreparedManuscript::new(input()).unwrap()).unwrap();
+        let saved = store::load_manuscript(&conn, id).unwrap().unwrap();
+        assert_eq!(saved.title, "文稿");
+        assert_eq!(saved.body, "模板正文");
+        assert_eq!(saved.account_ids, [7]);
+        assert_eq!(saved.recipients, ["编辑 <editor@example.com>"]);
+        assert_eq!(saved.genres, ["短篇"]);
+        assert_eq!(saved.excluded_types, ["悬疑"]);
+        assert_eq!(
+            (saved.send_interval_from_sec, saved.send_interval_to_sec),
+            (111, 222)
+        );
+        assert_eq!(
+            (
+                saved.reader_category.as_str(),
+                saved.reader_emotion.as_str(),
+                saved.style.as_str()
+            ),
+            ("女频", "甜", "轻松")
+        );
+        let mut edited = input();
+        edited.title = "修改文稿".into();
+        edited.file_data = None;
+        edited.file_name.clear();
+        edited.mail_templates[0].body = "新模板正文".into();
+        write_manuscript(&conn, Some(id), PreparedManuscript::new(edited).unwrap()).unwrap();
+        let saved = store::load_manuscript(&conn, id).unwrap().unwrap();
+        assert_eq!(saved.title, "修改文稿");
+        assert_eq!(saved.body, "新模板正文");
+        assert_eq!(
+            store::load_manuscript_attachment(&conn, id).unwrap(),
+            Some(("文稿.txt".into(), vec![1, 2, 3]))
+        );
+        let mut replacement = input();
+        replacement.file_name = "新版.txt".into();
+        replacement.file_data = Some(vec![4, 5]);
+        write_manuscript(
+            &conn,
+            Some(id),
+            PreparedManuscript::new(replacement).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store::load_manuscript_attachment(&conn, id).unwrap(),
+            Some(("新版.txt".into(), vec![4, 5]))
+        );
+        conn.execute("DELETE FROM manuscripts WHERE id=?1", [id])
+            .unwrap();
+        assert!(
+            write_manuscript(&conn, Some(id), PreparedManuscript::new(input()).unwrap())
+                .unwrap_err()
+                .contains("不存在")
+        );
+    }
+    #[test]
+    fn invalid_manuscripts_are_rejected_before_database_write() {
+        let mut draft = input();
+        draft.title = " ".into();
+        assert!(PreparedManuscript::new(draft).is_err());
+        let mut draft = input();
+        draft.mail_templates.clear();
+        assert!(PreparedManuscript::new(draft).is_err());
+        let mut draft = input();
+        draft.fixed_mail_template_id = "deleted".into();
+        assert!(PreparedManuscript::new(draft).is_err());
+        let mut draft = input();
+        draft.file_data = Some(vec![]);
+        assert!(PreparedManuscript::new(draft).is_err());
+        let mut draft = input();
+        draft.file_data = Some(vec![0; super::super::attachments::MAX_ATTACHMENT_BYTES + 1]);
+        assert!(PreparedManuscript::new(draft).is_err());
+        let mut draft = input();
+        draft.file_name.clear();
+        assert!(PreparedManuscript::new(draft).is_err());
+    }
 }
