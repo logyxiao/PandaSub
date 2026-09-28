@@ -28,14 +28,14 @@ with sync_playwright() as p:
         calls=page.evaluate("window.__calls.filter(c=>c.name==='getReplyContent').length")
         assert calls==1,calls
         frame_source=page.locator('iframe').get_attribute('srcdoc')
-        page.get_by_role('dialog').get_by_role('button',name='完成',exact=True).click()
+        page.get_by_role('complementary',name='邮件阅读').get_by_role('button',name='完成',exact=True).click()
         page.locator('.reply-list-item').click()
         expect(page.frame_locator('iframe').get_by_text('高度回归正文')).to_be_visible()
         assert page.evaluate("window.__calls.filter(c=>c.name==='getReplyContent').length")==1
         assert page.locator('iframe').get_attribute('srcdoc')==frame_source, 'HTML was processed again'
         assert not page.evaluate("window.__calls.some(c=>c.name==='setReplyRead')"), 'Read mail must not create another IMAP write'
         print('PASS',engine,'stable height, one detail request, cached HTML reuse, no redundant seen write',flush=True)
-        page.get_by_role('dialog').get_by_role('button',name='完成',exact=True).click()
+        page.get_by_role('complementary',name='邮件阅读').get_by_role('button',name='完成',exact=True).click()
         cache_checks=page.evaluate("""async()=>{
           const cache=await import('/src/lib/mailContentCache.ts');cache.clearMailContentCache();
           const row=window.__mailIdentity;

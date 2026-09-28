@@ -34,7 +34,7 @@ with sync_playwright() as p:
     expect(rows).to_have_count(3)
     expect(rows.filter(has_text='普通测试邮件')).to_contain_text('普通来信')
     rows.filter(has_text='普通测试邮件').click()
-    preview=page.get_by_role('dialog',name='邮件阅读')
+    preview=page.get_by_role('complementary',name='邮件阅读')
     expect(preview).to_contain_text('普通来信，不计入投稿统计')
     expect(inbox.locator('.nav-unread-badge')).to_have_text('1')
     preview.get_by_role('button',name='完成',exact=True).click()

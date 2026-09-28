@@ -18,10 +18,11 @@ function preparedMessage(content: Content) {
 const addresses = (values: MailAddress[]) => values.map(v => v.name ? `${v.name} <${v.email}>` : v.email).join('；')
 const fileSize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
 
-export function MailContent({ reply, account }: { reply: Reply; account: string }) {
-  return <MailContentView key={mailIdentityKey(reply)} reply={reply} account={account} />
+type MailContentProps = { reply: Reply; account: string; onSubject?: (identity: string, subject: string) => void }
+export function MailContent(props: MailContentProps) {
+  return <MailContentView key={mailIdentityKey(props.reply)} {...props} />
 }
-function MailContentView({ reply, account }: { reply: Reply; account: string }) {
+function MailContentView({ reply, account, onSubject }: MailContentProps) {
   const { id, account_id, imap_generation, imap_uid_validity, imap_uid, message_id } = reply
   const identity = useMemo(() => ({ id, account_id, imap_generation, imap_uid_validity, imap_uid, message_id }), [id, account_id, imap_generation, imap_uid_validity, imap_uid, message_id])
   const [content, setContent] = useState<Content | null>(() => cachedMailContent(identity))
@@ -31,6 +32,9 @@ function MailContentView({ reply, account }: { reply: Reply; account: string }) 
   const [plain, setPlain] = useState(false)
   const [saving, setSaving] = useState<number | null>(null)
   const toast = useToast()
+  useEffect(() => {
+    if (content?.complete && content.subject !== undefined) onSubject?.(mailIdentityKey(identity), content.subject)
+  }, [content, identity, onSubject])
   useEffect(() => {
     let active = true
     const controller = new AbortController()

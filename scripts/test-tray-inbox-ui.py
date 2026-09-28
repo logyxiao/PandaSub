@@ -43,7 +43,7 @@ with sync_playwright() as p:
     page.screenshot(path='/tmp/novelsub-tray-unread-list.png')
     # Reading while filtered removes the record and updates the empty state after the last one.
     rows.filter(has_text='人工未读甲').click()
-    dialog=page.get_by_role('dialog',name='邮件阅读')
+    dialog=page.get_by_role('complementary',name='邮件阅读')
     expect(dialog).to_be_visible()
     expect(rows).to_have_count(1)
     dialog.get_by_role('button',name='完成',exact=True).click()

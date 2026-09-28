@@ -14,7 +14,7 @@ window.__detail=detail;
 functions.getReplyContent=id=>{
  if(window.__failDetail)throw new Error('邮箱暂时离线');
  if(window.__slowDetail){window.__slowDetail=false;return new Promise(resolve=>window.__finishMailDetail=()=>resolve(detail))}
- return id===1?detail:{...detail,html:'',text:'另一封完整正文',attachments:[]};
+ return id===1?{...detail}:{...detail,html:'',text:'另一封完整正文',attachments:[]};
 };
 '''
 with sync_playwright() as p:
@@ -33,7 +33,7 @@ with sync_playwright() as p:
         page.goto(os.environ.get('NOVELSUB_TEST_URL','http://127.0.0.1:5179'))
         page.get_by_role('navigation',name='主导航').get_by_role('button',name='收件箱',exact=True).click()
         rows=page.locator('.reply-list-item');rows.filter(has_text='稿件反馈与修改意见').click()
-        dialog=page.get_by_role('dialog',name='邮件阅读')
+        dialog=page.get_by_role('complementary',name='邮件阅读')
         body=page.frame_locator('iframe[title="邮件 HTML 正文"]')
         expect(body.get_by_text('补充人物关系')).to_be_visible()
         expect(body.locator('td').first).to_have_css('padding-top','12px')
@@ -91,6 +91,19 @@ with sync_playwright() as p:
         page.evaluate('window.__finishMailDetail()')
         expect(dialog).to_contain_text('另一封完整正文')
         expect(dialog.locator('iframe')).to_have_count(0)
+        dialog.get_by_role('button',name='完成',exact=True).click()
+        page.evaluate("""async()=>{
+          (await import('/src/lib/mailContentCache.ts')).clearMailContentCache();
+          window.__detail.subject='回复：审核通过';
+          window.__detail.text='您好，稿件审核通过。';
+          window.__detail.html='<p>您好，稿件审核通过。</p>';
+        }""")
+        rows.filter(has_text='稿件反馈与修改意见').click()
+        expect(dialog.get_by_role('heading',name='回复：审核通过',exact=True)).to_be_visible()
+        expect(body.get_by_text('您好，稿件审核通过。',exact=True)).to_be_visible()
+        dialog.get_by_role('button',name='查看纯文本',exact=True).click()
+        expect(dialog.locator('.reply-body-text')).to_have_text('您好，稿件审核通过。')
+        expect(rows.filter(has_text='回复：审核通过')).to_have_count(1)
         assert not errors,errors
         print(f'PASS {engine}: HTML tables/styles/quotes, CID images, automatic external images, blocked active content, full headers, text toggle, attachment save, narrow layout, offline retry, stale-load isolation')
         browser.close()

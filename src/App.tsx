@@ -104,11 +104,11 @@ export default function App() {
         leaveGuard.current = null
         setHideChrome(false)
         setActive(id)
-        setReplyKind(id === 'replies' ? options?.replyKind : undefined)
+        setReplyKind(id === 'replies' ? options?.replyKind ?? '' : undefined)
         setInitialReply(id === 'replies' ? options?.reply : undefined)
         if (id === 'replies') {
           if (expandInbox) setInboxExpanded(true)
-          if (options?.replyKind === 'unread') setInboxEntry(value => value + 1)
+          if (options?.replyKind === 'unread' || options?.replyKind === '') setInboxEntry(value => value + 1)
           setInboxAccount(options?.accountId ?? '')
           if (collapsed && window.innerWidth > 880) setCollapsed(false)
         }
@@ -211,7 +211,7 @@ export default function App() {
                         onClick={() => {
                           if (id === 'replies') {
                             setInboxExpanded(value => collapsed || !value)
-                            if (active !== 'replies' || collapsed) go(id, undefined, false)
+                            go(id, { replyKind: '' }, false)
                           } else go(id)
                         }}
                         aria-expanded={id === 'replies' ? inboxExpanded && !collapsed : undefined}

@@ -56,7 +56,7 @@ with sync_playwright() as p:
     # Read toggles affect the cross-account count after successful persistence.
     rows.filter(has_text='人工来信甲').click()
     expect(badge).to_have_text('1')
-    preview=page.get_by_role('dialog',name='邮件阅读')
+    preview=page.get_by_role('complementary',name='邮件阅读')
     preview.get_by_role('button',name='标为未读',exact=True).click()
     expect(badge).to_have_text('2')
     page.evaluate('window.__failSeenStore=true')

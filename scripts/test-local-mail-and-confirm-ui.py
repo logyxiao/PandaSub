@@ -62,8 +62,8 @@ with sync_playwright() as p:
         rows=s.locator('.reply-list-item');expect(rows).to_have_count(4)
         for i in range(2):
             rows.nth(i).click();s.wait_for_function('window.__network.length==='+str(i+1))
-            s.get_by_role('dialog',name='邮件阅读').get_by_role('button',name='完成',exact=True).click()
-        rows.nth(2).click();d=s.get_by_role('dialog',name='邮件阅读')
+            s.get_by_role('complementary',name='邮件阅读').get_by_role('button',name='完成',exact=True).click()
+        rows.nth(2).click();d=s.get_by_role('complementary',name='邮件阅读')
         expect(d.get_by_text('磁盘完整缓存 3',exact=True)).to_be_visible()
         expect(d.get_by_role('status')).to_have_count(0)
         assert s.evaluate('window.__network')==[1,2]

@@ -66,7 +66,7 @@ with sync_playwright() as p:
         s.get_by_role('button',name='收件箱',exact=True).click()
         rows=s.locator('.reply-list-item');expect(rows).to_have_count(8)
         for i in range(8):
-            rows.nth(i).click();d=s.get_by_role('dialog',name='邮件阅读');expect(d).to_be_visible()
+            rows.nth(i).click();d=s.get_by_role('complementary',name='邮件阅读');expect(d).to_be_visible()
             expect(d.get_by_role('status')).to_contain_text('正在加载完整邮件')
             if i<2:s.wait_for_function('window.__pendingContent.length==='+str(i+1))
             if i<7:d.get_by_role('button',name='完成',exact=True).click()

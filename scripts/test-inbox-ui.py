@@ -35,7 +35,7 @@ with sync_playwright() as p:
     # A dashboard link opens the mail preview immediately and marks it read.
     page.locator('.dashboard-reply-list > button').first.click()
     expect(page.locator('.page-heading h1')).to_have_text('收件箱')
-    preview=page.get_by_role('dialog',name='邮件阅读',exact=True)
+    preview=page.get_by_role('complementary',name='邮件阅读',exact=True)
     expect(preview).to_contain_text('writer@qq.com')
     expect(page.locator('.reply-list-item').first).to_have_class('reply-list-item is-read')
     page.keyboard.press('Escape')
@@ -51,11 +51,11 @@ with sync_playwright() as p:
     already_read=page.locator('.reply-list-item.is-read').count()
     unread=page.locator('.reply-list-item.is-unread').first
     unread.click()
-    preview=page.get_by_role('dialog')
+    preview=page.get_by_role('complementary',name='邮件阅读')
     page.screenshot(path=str(artifacts/'inbox-preview.png'))
     box=preview.bounding_box()
     assert box['y']>=0 and box['y']+box['height']<=900
-    assert preview.locator('.modal-body').evaluate('e=>e.scrollHeight>e.clientHeight')
+    assert preview.locator('.inbox-preview-body').evaluate('e=>e.scrollHeight>e.clientHeight')
     expect(preview.get_by_role('button',name='标为未读',exact=True)).to_be_visible()
     reply_id=page.evaluate("window.__calls.filter(c=>c.name==='setReplyRead').at(-1).args[0]")
     expect(page.locator('.reply-list-item.is-read')).to_have_count(already_read+1)
@@ -75,7 +75,7 @@ with sync_playwright() as p:
     expect(page.locator('.pager-meta')).to_contain_text('共 152 条')
     expect(page.locator('.pager-meta')).to_contain_text('第 1–20 条')
     assert all('writer@163.com' in text for text in page.locator('.reply-list-account').all_text_contents())
-    expect(page.get_by_role('dialog')).to_have_count(0)
+    expect(page.get_by_role('complementary',name='邮件阅读')).to_have_count(0)
     account('writer@qq.com')
     expect(page.locator('.pager-meta')).to_contain_text('共 153 条')
     search=page.get_by_placeholder('搜索邮件、编辑或邮箱')
@@ -109,7 +109,7 @@ with sync_playwright() as p:
     nav.get_by_role('button',name='工作台',exact=True).click()
     nav.get_by_role('button',name='收件箱',exact=True).click()
     expect(page.locator('.reply-list-item').first).to_have_class('reply-list-item is-read')
-    expect(page.get_by_role('dialog')).to_have_count(0)
+    expect(page.get_by_role('complementary',name='邮件阅读')).to_have_count(0)
     # Rules remain directly editable here, not on the Settings page.
     page.get_by_role('button',name='编辑关键词',exact=True).click()
     rules=page.get_by_role('dialog',name='自动回复识别关键词',exact=True)
@@ -131,5 +131,5 @@ with sync_playwright() as p:
     assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
     assert not errors,errors
     browser.close()
-print('PASS: sidebar accounts, full-width list, persistent unread state, modal preview, account filtering, rule editing, and narrow layout')
+print('PASS: sidebar accounts, selectable list, persistent unread state, side preview, account filtering, rule editing, and narrow layout')
 print('Screenshots:',artifacts)

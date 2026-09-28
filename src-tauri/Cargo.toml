@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.2.7"
+version = "0.2.8"
 description = "熊猫投稿"
 authors = ["you"]
 license = ""
@@ -36,7 +36,7 @@ tauri-plugin-dialog = "2"
 imap = "2.4.1"
 chrono = "0.4"
 native-tls = "0.2"
-mail-parser = "0.11"
+mail-parser = { version = "0.11", features = ["full_encoding"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"

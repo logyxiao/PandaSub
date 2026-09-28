@@ -504,7 +504,7 @@ export function DashboardView() {
                   type="button"
                   key={reply.id}
                   className={`dashboard-reply-item ${reply.read_synced && !reply.is_read ? 'is-unread' : ''} ${reply.accepted ? 'is-accepted' : reply.kind === 'bounce' ? 'is-bounce' : ''}`.trim()}
-                  onClick={() => go('replies', { replyKind, reply })}
+                  onClick={() => go('replies', { reply })}
                 >
                   <span className="dashboard-reply-copy">
                     <span className="dashboard-reply-meta">

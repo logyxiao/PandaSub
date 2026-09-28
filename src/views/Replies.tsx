@@ -3,7 +3,7 @@ import { useEventSubscription } from '../hooks/useEventSubscription'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { mailIdentityKey } from '../lib/mailContentCache'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Heart, Inbox, Mail, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { Heart, Inbox, Mail, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { api, onReply, onInboxStatus } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
@@ -97,6 +97,28 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
   const [readNotice, setReadNotice] = useState('')
   const [scanning, setScanning] = useState(false)
   const [preview, setPreview] = useState<Reply | null>(null)
+  const previewOpener = useRef<HTMLButtonElement | null>(null)
+  const closePreview = useCallback(() => {
+    setPreview(null)
+    if (previewOpener.current?.isConnected) previewOpener.current.focus({ preventScroll: true })
+  }, [])
+  const previewOpen = preview !== null
+  useEffect(() => {
+    if (!previewOpen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing && !document.querySelector('[aria-modal="true"]')) {
+        event.preventDefault()
+        closePreview()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [previewOpen, closePreview])
+  const updateSubject = useCallback((identity: string, subject: string) => {
+    const update = (reply: Reply) => mailIdentityKey(reply) === identity && reply.subject !== subject ? { ...reply, subject } : reply
+    setPreview(current => current ? update(current) : current)
+    setItems(current => current.map(update))
+  }, [])
   const [pendingReads, setPendingReads] = useState<Set<number>>(new Set())
   const readVersions = useRef(new Map<number, number>())
   const latestReads = useRef(new Map<number, { is_read: boolean; read_synced: boolean; identity: string }>())
@@ -289,7 +311,8 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
       }
     }
   }, [toast, kind])
-  const openPreview = (reply: Reply) => {
+  const openPreview = (reply: Reply, opener: HTMLButtonElement) => {
+    previewOpener.current = opener
     setPreview(reply)
     void setReadState(reply, true)
   }
@@ -363,45 +386,91 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
         <span className="inbox-rule-explain">退信单独识别</span>
       </div>
 
-      {!loading && !total && !search && !kind && !taskFilter && !accountFilter ? (
-        <div className="panel">
-          <EmptyState icon={Inbox} title="收件箱暂无邮件"
-            desc="启用邮箱收件检查后，会接收普通来信和投稿回复；自动回复默认已读。"
-            action={<Button variant="ghost" onClick={() => go('accounts')}>去检查邮箱 IMAP 设置</Button>} />
-        </div>
-      ) : (
-        <div className="panel reply-inbox">
-          <div className="reply-list" aria-label="邮件列表" aria-busy={loading}>
-            <div className="reply-list-caption"><span>共 {total} 封邮件</span>{loading && <span>正在更新…</span>}{!loading && items.some((reply) => reply.kind === 'human' && !reply.read_synced) && <span>{items.filter((reply) => reply.kind === 'human' && !reply.read_synced).length} 封状态待同步</span>}{readNotice && <span title={readNotice}>邮箱连接异常</span>}</div>
-            {items.map((reply) => {
-              const editor = editorForReply(reply, editorsByEmail)
-              const sender = editor ? editorLabel(editor) : reply.from_email
-              const pending = reply.kind === 'human' && pendingReads.has(reply.id)
-              const unread = reply.kind === 'human' && reply.read_synced && !reply.is_read
-              const unverified = reply.kind === 'human' && !reply.read_synced
-              return <button type="button" key={reply.id} className={`reply-list-item ${pending || unverified ? 'is-unverified' : unread ? 'is-unread' : 'is-read'}`}
-                aria-label={`${reply.kind === 'bounce' ? '退信' : pending ? '正在同步已读状态' : unverified ? '已读状态未同步' : unread ? '未读' : '已读'}邮件 ${sender} ${reply.subject || '无主题'}`}
-                onClick={() => openPreview(reply)}>
-                <span className={reply.kind === 'human' ? 'reply-unread-dot' : 'reply-dot-spacer'} aria-hidden="true" />
-                <span className="reply-list-main">
-                  <span className="reply-list-top"><b>{sender}</b><span className="reply-list-subject">{reply.subject || '无主题'}</span></span>
-                  <span className="reply-list-excerpt">{replyBodyPreview(reply)}</span>
-                </span>
-                <span className="reply-list-side">
-                  <time>{formatTime(reply.received_at)}</time>
-                  <span className="reply-list-account" title={`接收账号：${receivingAccount(reply)}`}>{receivingAccount(reply)}</span>
-                  <Badge tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}>
-                    {reply.accepted ? '过稿回复' : (reply.kind === 'human' && reply.delivery_id === null ? '普通来信' : replyKindLabel[reply.kind] ?? reply.kind)}
-                  </Badge>
-                </span>
-              </button>
-            })}
-            {!items.length && <p className="dashboard-empty">{loading ? '正在加载邮件…' : kind === 'unread' && !search && !taskFilter ? '暂无未读人工回复。' : '没有匹配的邮件，请调整账号或筛选条件。'}</p>}
+      <div className={`inbox-workspace ${preview ? 'has-preview' : ''}`}>
+        {!loading && !total && !search && !kind && !taskFilter && !accountFilter ? (
+          <div className="panel">
+            <EmptyState icon={Inbox} title="收件箱暂无邮件"
+              desc="启用邮箱收件检查后，会接收普通来信和投稿回复；自动回复默认已读。"
+              action={<Button variant="ghost" onClick={() => go('accounts')}>去检查邮箱 IMAP 设置</Button>} />
           </div>
-          <Pager page={page} pageCount={Math.max(1, Math.ceil(total / pageSize))} pageSize={pageSize}
-            total={total} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1) }} />
-        </div>
-      )}
+        ) : (
+          <div className="panel reply-inbox">
+            <div className="reply-list" aria-label="邮件列表" aria-busy={loading}>
+              <div className="reply-list-caption"><span>共 {total} 封邮件</span>{loading && <span>正在更新…</span>}{!loading && items.some((reply) => reply.kind === 'human' && !reply.read_synced) && <span>{items.filter((reply) => reply.kind === 'human' && !reply.read_synced).length} 封状态待同步</span>}{readNotice && <span title={readNotice}>邮箱连接异常</span>}</div>
+              {items.map((reply) => {
+                const editor = editorForReply(reply, editorsByEmail)
+                const sender = editor ? editorLabel(editor) : reply.from_email
+                const pending = reply.kind === 'human' && pendingReads.has(reply.id)
+                const unread = reply.kind === 'human' && reply.read_synced && !reply.is_read
+                const unverified = reply.kind === 'human' && !reply.read_synced
+                return <button type="button" key={reply.id} className={`reply-list-item ${pending || unverified ? 'is-unverified' : unread ? 'is-unread' : 'is-read'}`}
+                  aria-current={preview && mailIdentityKey(preview) === mailIdentityKey(reply) ? 'true' : undefined}
+                  aria-controls={preview ? 'inbox-mail-preview' : undefined}
+                  aria-label={`${reply.kind === 'bounce' ? '退信' : pending ? '正在同步已读状态' : unverified ? '已读状态未同步' : unread ? '未读' : '已读'}邮件 ${sender} ${reply.subject || '无主题'}`}
+                  onClick={(event) => openPreview(reply, event.currentTarget)}>
+                  <span className={reply.kind === 'human' ? 'reply-unread-dot' : 'reply-dot-spacer'} aria-hidden="true" />
+                  <span className="reply-list-main">
+                    <span className="reply-list-top"><b>{sender}</b><span className="reply-list-subject">{reply.subject || '无主题'}</span></span>
+                    <span className="reply-list-excerpt">{replyBodyPreview(reply)}</span>
+                  </span>
+                  <span className="reply-list-side">
+                    <time>{formatTime(reply.received_at)}</time>
+                    <span className="reply-list-account" title={`接收账号：${receivingAccount(reply)}`}>{receivingAccount(reply)}</span>
+                    <Badge tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}>
+                      {reply.accepted ? '过稿回复' : (reply.kind === 'human' && reply.delivery_id === null ? '普通来信' : replyKindLabel[reply.kind] ?? reply.kind)}
+                    </Badge>
+                  </span>
+                </button>
+              })}
+              {!items.length && <p className="dashboard-empty">{loading ? '正在加载邮件…' : kind === 'unread' && !search && !taskFilter ? '暂无未读人工回复。' : '没有匹配的邮件，请调整账号或筛选条件。'}</p>}
+            </div>
+            <Pager page={page} pageCount={Math.max(1, Math.ceil(total / pageSize))} pageSize={pageSize}
+              total={total} onPage={setPage} onPageSize={(size) => { setPageSize(size); setPage(1) }} />
+          </div>
+        )}
+        {preview && (
+          <aside id="inbox-mail-preview" className="panel inbox-preview" aria-label="邮件阅读">
+            <header className="inbox-preview-head">
+              <div><Mail size={15} /><h2>邮件预览</h2></div>
+              <IconButton title="关闭预览" onClick={closePreview}><X size={16} /></IconButton>
+            </header>
+            <div className="inbox-preview-body" key={mailIdentityKey(preview)}>
+              <div className="inbox-mail">
+                <div className="inbox-mail-heading">
+                  <div className="inbox-mail-heading-meta">
+                    <Badge tone={preview.accepted ? 'success' : (replyKindTone[preview.kind] ?? 'neutral')}>
+                      {preview.accepted ? '过稿回复' : (preview.kind === 'human' && preview.delivery_id === null ? '普通来信' : replyKindLabel[preview.kind] ?? preview.kind)}
+                    </Badge>
+                    <time>{preview.received_at}</time>
+                  </div>
+                  <h2>{preview.subject || '无主题'}</h2>
+                </div>
+                <div className="inbox-mail-sender">
+                  <div className="inbox-mail-avatar"><Mail size={19} /></div>
+                  <div className="inbox-mail-sender-copy">
+                    <strong>{previewEditor ? editorLabel(previewEditor) : preview.from_email}</strong>
+                    {previewEditor && <span>{preview.from_email}</span>}
+                    <small>接收账号 {receivingAccount(preview)}</small>
+                  </div>
+                  {previewEditor && <div className="inbox-mail-editor-actions">
+                    <ReplyFavStar editor={previewEditor} onToggle={(item) => void toggleFavorite(item)} />
+                    <IconButton className="danger" title="删除这位编辑" onClick={() => void removeEditor(previewEditor)}><Trash2 size={15} /></IconButton>
+                  </div>}
+                </div>
+                <div className="inbox-mail-body"><Suspense fallback={<p className="hint">正在打开邮件…</p>}><MailContent key={preview.id} reply={preview} account={receivingAccount(preview)} onSubject={updateSubject} /></Suspense></div>
+                <div className="inbox-mail-context">{preview.delivery_id === null && <span>普通来信，不计入投稿统计</span>}<span>关联计划：{replyDelivery(preview).plan}</span><span>对应收稿邮箱：{replyDelivery(preview).email}</span></div>
+              </div>
+            </div>
+            <footer className="inbox-preview-foot">
+              <span className="inbox-preview-footer-hint">{preview.kind === 'auto' ? '自动回复已默认阅读' : pendingReads.has(preview.id) ? '正在同步邮箱状态…' : preview.read_synced ? '已与邮箱同步' : '已读状态等待邮箱同步'}</span>
+              {preview.kind !== 'auto' && <Button variant="ghost" disabled={pendingReads.has(preview.id)} onClick={() => { void setReadState(preview, !preview.is_read); if (preview.is_read) closePreview() }}>
+                {pendingReads.has(preview.id) ? '同步中…' : preview.is_read ? '标为未读' : '标为已读'}
+              </Button>}
+              <Button variant="primary" onClick={closePreview}>完成</Button>
+            </footer>
+          </aside>
+        )}
+      </div>
 
       {ruleOpen && (
         <Modal title="自动回复识别关键词" onClose={() => { if (!ruleSaving) setRuleOpen(false) }} width={540}
@@ -413,43 +482,6 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
                 placeholder="每行一个关键词" onChange={(event) => setRuleDraft(event.target.value)} />
             </label>
             <p className="hint">每行一个关键词，不区分英文大小写。清空后不再按关键词识别自动回复；退信仍单独识别。保存后点击“按当前规则重新判定”可更新已有邮件。</p>
-          </div>
-        </Modal>
-      )}
-
-      {preview && (
-        <Modal title="邮件阅读" onClose={() => setPreview(null)} width={920} className="inbox-preview-modal"
-          footer={<>
-            <span className="inbox-preview-footer-hint">{preview.kind === 'auto' ? '自动回复已默认阅读' : pendingReads.has(preview.id) ? '正在同步邮箱状态…' : preview.read_synced ? '已与邮箱同步' : '已读状态等待邮箱同步'}</span>
-            {preview.kind !== 'auto' && <Button variant="ghost" disabled={pendingReads.has(preview.id)} onClick={() => { void setReadState(preview, !preview.is_read); if (preview.is_read) setPreview(null) }}>
-              {pendingReads.has(preview.id) ? '同步中…' : preview.is_read ? '标为未读' : '标为已读'}
-            </Button>}
-            <Button variant="primary" onClick={() => setPreview(null)}>完成</Button>
-          </>}>
-          <div className="inbox-mail">
-            <div className="inbox-mail-heading">
-              <div className="inbox-mail-heading-meta">
-                <Badge tone={preview.accepted ? 'success' : (replyKindTone[preview.kind] ?? 'neutral')}>
-                  {preview.accepted ? '过稿回复' : (preview.kind === 'human' && preview.delivery_id === null ? '普通来信' : replyKindLabel[preview.kind] ?? preview.kind)}
-                </Badge>
-                <time>{preview.received_at}</time>
-              </div>
-              <h2>{preview.subject || '无主题'}</h2>
-            </div>
-            <div className="inbox-mail-sender">
-              <div className="inbox-mail-avatar"><Mail size={19} /></div>
-              <div className="inbox-mail-sender-copy">
-                <strong>{previewEditor ? editorLabel(previewEditor) : preview.from_email}</strong>
-                {previewEditor && <span>{preview.from_email}</span>}
-                <small>接收账号 {receivingAccount(preview)}</small>
-              </div>
-              {previewEditor && <div className="inbox-mail-editor-actions">
-                <ReplyFavStar editor={previewEditor} onToggle={(item) => void toggleFavorite(item)} />
-                <IconButton className="danger" title="删除这位编辑" onClick={() => void removeEditor(previewEditor)}><Trash2 size={15} /></IconButton>
-              </div>}
-            </div>
-            <div className="inbox-mail-body"><Suspense fallback={<p className="hint">正在打开邮件…</p>}><MailContent key={preview.id} reply={preview} account={receivingAccount(preview)} /></Suspense></div>
-            <div className="inbox-mail-context">{preview.delivery_id === null && <span>普通来信，不计入投稿统计</span>}<span>关联计划：{replyDelivery(preview).plan}</span><span>对应收稿邮箱：{replyDelivery(preview).email}</span></div>
           </div>
         </Modal>
       )}

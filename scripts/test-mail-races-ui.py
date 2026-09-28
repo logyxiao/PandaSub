@@ -25,7 +25,7 @@ with sync_playwright() as p:
     page.goto(os.environ.get('NOVELSUB_TEST_URL','http://127.0.0.1:5179'))
     # Dashboard detail intent should be consumed once, not on every filter callback change.
     page.locator('.dashboard-reply-list > button').first.click()
-    dialog=page.get_by_role('dialog',name='邮件阅读')
+    dialog=page.get_by_role('complementary',name='邮件阅读')
     expect(dialog).to_be_visible()
     expect(dialog.get_by_role('button',name='标为未读',exact=True)).to_be_enabled()
     dialog.get_by_role('button',name='完成',exact=True).click()

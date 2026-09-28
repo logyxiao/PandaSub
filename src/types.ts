@@ -352,6 +352,7 @@ export interface InboxStatus {
 export interface MailAddress { name: string; email: string }
 export interface MailAttachment { index: number; name: string; mime: string; size: number; content_id: string }
 export interface MailContent {
+  subject?: string
   from: MailAddress[]; to: MailAddress[]; cc: MailAddress[]; bcc: MailAddress[]; reply_to: MailAddress[];
   sent_at: string; text: string; html: string; attachments: MailAttachment[];
   inline_images: Record<string,string>; complete: boolean; warning?: string | null;

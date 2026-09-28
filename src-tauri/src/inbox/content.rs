@@ -4,6 +4,8 @@ use mail_parser::MimeHeaders;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+const DECODER_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MailAddress {
     pub name: String,
@@ -19,6 +21,10 @@ pub struct MailAttachment {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MailContent {
+    #[serde(default)]
+    pub subject: String,
+    #[serde(default)]
+    pub decoder_version: u32,
     pub from: Vec<MailAddress>,
     pub to: Vec<MailAddress>,
     pub cc: Vec<MailAddress>,
@@ -56,6 +62,8 @@ fn addresses(value: Option<&mail_parser::Address<'_>>) -> Vec<MailAddress> {
 }
 pub(super) fn parse(parsed: &mail_parser::Message<'_>) -> ParsedContent {
     let mut detail = MailContent {
+        subject: parsed.subject().unwrap_or_default().into(),
+        decoder_version: DECODER_VERSION,
         from: addresses(parsed.from()),
         to: addresses(parsed.to()),
         cc: addresses(parsed.cc()),
@@ -162,20 +170,45 @@ fn save_encoded(
         )
         .map_err(|e| e.to_string())?;
     }
+    if content.detail.complete {
+        // Keep the list/search fields and repaired MIME cache in the same transaction.
+        tx.execute(
+            "UPDATE replies SET subject=?2,body=?3,snippet=?4 WHERE id=?1",
+            params![id, content.detail.subject, content.detail.text,
+                content.detail.text.chars().take(180).collect::<String>()],
+        ).map_err(|e| e.to_string())?;
+    }
     tx.commit().map_err(|e| e.to_string())
 }
-fn cached_json(conn: &Connection, id: i64) -> Result<Option<String>, String> {
+fn cached_json(conn: &Connection, id: i64) -> Result<Option<(String, String)>, String> {
     conn.query_row(
-        "SELECT json FROM reply_contents WHERE reply_id=?1",
+        "SELECT c.json,r.subject FROM reply_contents c JOIN replies r ON r.id=c.reply_id WHERE reply_id=?1",
         [id],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     )
     .optional()
     .map_err(|e| e.to_string())
 }
-fn decode_cached(json: Option<String>) -> Result<Option<MailContent>, String> {
-    json.map(|j| serde_json::from_str(&j).map_err(|e| e.to_string()))
-        .transpose()
+fn decode_cached(json: Option<(String, String)>) -> Result<Option<MailContent>, String> {
+    json.map(|(json, subject)| {
+        let mut content: MailContent = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        if content.decoder_version == 0 {
+            content.subject = subject;
+        }
+        // Older builds decoded multibyte charsets as lossy UTF-8. Those bytes are
+        // unrecoverable locally: retain the fallback and let the reader fetch the
+        // original message again. Healthy legacy caches remain offline-readable.
+        if content.decoder_version < DECODER_VERSION && has_decoding_damage(&content) {
+            content.complete = false;
+        }
+        Ok(content)
+    }).transpose()
+}
+fn has_decoding_damage(content: &MailContent) -> bool {
+    [&content.subject, &content.text, &content.html].into_iter().any(|s| s.contains('\u{fffd}'))
+        || [&content.from, &content.to, &content.cc, &content.bcc, &content.reply_to]
+            .into_iter().flatten().any(|a| a.name.contains('\u{fffd}'))
+        || content.attachments.iter().any(|a| a.name.contains('\u{fffd}'))
 }
 #[cfg(test)]
 pub fn cached(conn: &Connection, id: i64) -> Result<Option<MailContent>, String> {
@@ -253,10 +286,11 @@ pub fn load_local(db: &Arc<Mutex<Connection>>, id: i64) -> Result<MailContent, S
         return Ok(content);
     }
     let conn = db.lock().map_err(|e| e.to_string())?;
-    conn.query_row("SELECT from_email,body FROM replies WHERE id=?1", [id], |row| {
+    conn.query_row("SELECT from_email,body,subject FROM replies WHERE id=?1", [id], |row| {
         Ok(MailContent {
             from: vec![MailAddress { name: String::new(), email: row.get(0)? }],
             text: row.get(1)?,
+            subject: row.get(2)?,
             ..Default::default()
         })
     }).optional().map_err(|e| e.to_string())?.ok_or_else(|| "邮件不存在或已删除".into())
@@ -319,15 +353,6 @@ fn load_full(db: &Arc<Mutex<Connection>>, id: i64) -> Result<MailContent, String
         return Ok(content.detail);
     }
     save_encoded(&conn, id, &content, &encoded)?;
-    conn.execute(
-        "UPDATE replies SET body=?2,snippet=?3 WHERE id=?1",
-        params![
-            id,
-            content.detail.text,
-            content.detail.text.chars().take(180).collect::<String>()
-        ],
-    )
-    .map_err(|e| e.to_string())?;
     Ok(content.detail)
 }
 
@@ -407,6 +432,32 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+    #[test]
+    fn chinese_mime_charsets_decode_headers_bodies_and_attachment_names() {
+        let b64 = |text: &str, encoding: &'static encoding_rs::Encoding| {
+            let (bytes, _, errors) = encoding.encode(text);
+            assert!(!errors);
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        };
+        for (label, encoding, text) in [
+            ("GB18030", encoding_rs::GB18030, "编辑您好，稿件审核通过。𠀀"),
+            ("GBK", encoding_rs::GBK, "编辑您好，稿件审核通过。"),
+            ("gb2312", encoding_rs::GBK, "编辑您好，稿件审核通过。"),
+            ("Big5", encoding_rs::BIG5, "編輯您好，稿件審核通過。"),
+        ] {
+            let encoded = b64(text, encoding);
+            let html = format!("<p>{text}</p>");
+            let raw = format!("From: =?{label}?B?{encoded}?= <editor@example.com>\r\nSubject: =?{label}?B?{encoded}?=\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n--a\r\nContent-Type: text/plain; charset={label}\r\nContent-Transfer-Encoding: base64\r\n\r\n{encoded}\r\n--a\r\nContent-Type: text/html; charset={label}\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n--a--\r\n--m\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"=?{label}?B?{encoded}?=\"\r\nContent-Transfer-Encoding: base64\r\n\r\nAP8BAg==\r\n--m--\r\n", b64(&html, encoding));
+            let mail = parse_message(1, raw.as_bytes(), String::new());
+            assert_eq!(mail.subject, text, "{label} subject");
+            assert_eq!(mail.body, text, "{label} body");
+            let content = mail.content.unwrap();
+            assert_eq!(content.detail.from[0].name, text, "{label} sender");
+            assert_eq!(content.detail.html, html, "{label} HTML");
+            assert_eq!(content.detail.attachments[0].name, text, "{label} filename");
+            assert_eq!(content.files[0].1, [0, 255, 1, 2], "attachment bytes must stay intact");
+        }
     }
     #[test]
     fn html_only_entities_and_non_utf8_text_are_decoded() {
@@ -526,6 +577,62 @@ mod summary_tests {
 #[cfg(test)]
 mod local_read_tests {
     use super::*;
+    #[test]
+    fn legacy_damaged_cache_refetches_but_healthy_and_current_caches_stay_complete() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO replies(id,subject,body,kind) VALUES(1,'旧主题','旧正文','human')", []).unwrap();
+        for damage in ["none", "subject", "text", "html", "sender", "filename"] {
+            let mut content = MailContent { text: "旧正文".into(), complete: true, ..Default::default() };
+            let subject = if damage == "subject" { "旧�主题" } else { "旧主题" };
+            match damage {
+                "text" => content.text = "旧�正文".into(),
+                "html" => content.html = "<p>旧�正文</p>".into(),
+                "sender" => content.from.push(MailAddress { name: "�编辑".into(), email: "editor@example.com".into() }),
+                "filename" => content.attachments.push(MailAttachment { index: 0, name: "�附件".into(), mime: "text/plain".into(), size: 0, content_id: String::new() }),
+                _ => (),
+            }
+            let mut legacy = serde_json::to_value(&content).unwrap();
+            legacy.as_object_mut().unwrap().remove("decoder_version");
+            legacy.as_object_mut().unwrap().remove("subject");
+            conn.execute("UPDATE replies SET subject=?1 WHERE id=1", [subject]).unwrap();
+            conn.execute("INSERT OR REPLACE INTO reply_contents VALUES(1,?1)", [legacy.to_string()]).unwrap();
+            let cached = cached(&conn, 1).unwrap().unwrap();
+            assert_eq!(cached.complete, damage == "none", "{damage}");
+            assert_eq!(cached.subject, subject);
+            assert_eq!(cached.text, content.text, "retain offline fallback");
+        }
+        // Genuine replacement characters must not trigger repeated network reads
+        // after a message has already passed through the corrected decoder.
+        let current = MailContent { text: "原文中的�".into(), decoder_version: DECODER_VERSION, complete: true, ..Default::default() };
+        conn.execute("UPDATE reply_contents SET json=?1 WHERE reply_id=1", [serde_json::to_string(&current).unwrap()]).unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        assert!(load(&db, 1).unwrap().complete);
+    }
+    #[test]
+    fn repaired_content_updates_summary_atomically_and_preserves_reply_state() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO replies(id,subject,body,snippet,kind,accepted,is_read,read_synced,read_revision,imap_uid,message_id) VALUES(1,'�主题','�正文','�摘要','human',1,1,1,4,9,'same-message')", []).unwrap();
+        let legacy = MailContent { text: "�正文".into(), complete: true, ..Default::default() };
+        let json = serde_json::to_string(&legacy).unwrap();
+        conn.execute("INSERT INTO reply_contents VALUES(1,?1)", [&json]).unwrap();
+        let db = Arc::new(Mutex::new(conn));
+        let fallback = load(&db, 1).unwrap();
+        assert!(!fallback.complete);
+        assert!(fallback.warning.is_some());
+        assert_eq!(fallback.text, "�正文");
+        let conn = db.lock().unwrap();
+        let repaired = parse_message(9, "Subject: 正确主题\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n正确正文".as_bytes(), String::new()).content.unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_summary BEFORE UPDATE OF subject ON replies BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").unwrap();
+        assert!(save(&conn, 1, &repaired).is_err());
+        assert_eq!(conn.query_row("SELECT json FROM reply_contents WHERE reply_id=1", [], |r| r.get::<_, String>(0)).unwrap(), json);
+        conn.execute_batch("DROP TRIGGER fail_summary").unwrap();
+        save(&conn, 1, &repaired).unwrap();
+        assert!(cached(&conn, 1).unwrap().unwrap().complete);
+        let row: (String, String, String, String, bool, bool, bool, i64, i64, String) = conn.query_row(
+            "SELECT subject,body,snippet,kind,accepted,is_read,read_synced,read_revision,imap_uid,message_id FROM replies WHERE id=1", [],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?))).unwrap();
+        assert_eq!(row, ("正确主题".into(), "正确正文".into(), "正确正文".into(), "human".into(), true, true, true, 4, 9, "same-message".into()));
+    }
     #[test]
     fn local_reader_returns_full_cache_or_plain_text_without_imap_metadata() {
         let conn = crate::db::test_database();
