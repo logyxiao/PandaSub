@@ -1,0 +1,23 @@
+Vendored imap-proto 0.10.2 from crates.io.
+Upstream: https://github.com/djc/tokio-imap
+Source commit: 08f269400ec95b176d30cac7b23730820fe94d7e
+Original crate SHA-256: 16a6def1d5ac8975d70b3fd101d57953fe3278ef2ee5d7816cba54b1d1dfc22f
+
+The app uses imap 2.4.1, which requires imap-proto ^0.10.0.
+The [patch.crates-io] override preserves that dependency and its API.
+
+Local change in src/macros.rs (2026-10-03): remove the trailing semicolon
+from the function-expression forwarding arm of paren_delimited!,
+parenthesized_list!, parenthesized_nonempty_list!, and opt_opt!.
+This fixes Rust's semicolon_in_expressions_from_macros future incompatibility
+without suppressing the lint or changing the parser's return values.
+Additional warning-only cleanup exposed by building this crate locally:
+- src/lib.rs and src/parser/rfc3501.rs: explicitly write inferred '_ return lifetimes.
+- src/parser/rfc5464.rs: explicitly write inferred '_ return lifetimes and remove
+  the unused usize payload from the private initial parser state (always 0,
+  always ignored). Parser transitions and public data types are unchanged.
+All other upstream source files remain unchanged.
+
+LICENSE-MIT and LICENSE-APACHE are copied from the source commit above.
+When replacing this dependency with an upstream fix, remove the Cargo patch
+and this directory together, then rerun parser and inbox regressions.

@@ -199,6 +199,7 @@ pub fn load_account(conn: &Connection, id: i64) -> Result<Option<Account>, Strin
     Ok(row)
 }
 
+#[cfg(test)]
 pub fn load_manuscripts(conn: &Connection, ids: &[i64]) -> Result<Vec<Manuscript>, String> {
     let mut result = Vec::new();
     for id in ids {
@@ -268,6 +269,7 @@ fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
     let raw_rejected: String = r.get(5)?;
     let source: String = r.get(7)?;
     Ok(Editor {
+        blocked_senders: Vec::new(),
         id: r.get(0)?,
         platform: r.get(1)?,
         name: r.get(2)?,
@@ -340,6 +342,45 @@ pub fn upsert_editor(
     }
 }
 
+pub fn set_editor_enabled(conn: &Connection, id: i64, enabled: bool) -> Result<(), String> {
+    let changed = conn.execute(
+        "UPDATE editors SET enabled=?2, updated_at=datetime('now','localtime') WHERE id=?1",
+        params![id, enabled],
+    ).map_err(|e| e.to_string())?;
+    if changed == 0 { return Err("没有找到这位编辑".into()); }
+    Ok(())
+}
+
+/// Apply explicit editor ids atomically. A stale selection fails without partial writes.
+pub fn batch_editors(conn: &mut Connection, ids: &[i64], enabled: Option<bool>) -> Result<usize, String> {
+    let ids: std::collections::BTreeSet<_> = ids.iter().copied().collect();
+    if ids.is_empty() { return Err("请先选择编辑".into()); }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for id in &ids {
+        if let Some(enabled) = enabled {
+            set_editor_enabled(&tx, *id, enabled)?;
+        } else {
+            tx.execute("DELETE FROM editor_group_members WHERE editor_id=?1", [id]).map_err(|e| e.to_string())?;
+            let changed = tx.execute("DELETE FROM editors WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+            if changed == 0 { return Err("部分编辑已不存在，请刷新后重新选择；本次未删除任何编辑".into()); }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ids.len())
+}
+
+/// Saved plan recipients may outlive library selections. Check at send time too.
+/// Explicit recipients outside the library keep their existing behavior.
+pub fn ensure_editor_enabled(conn: &Connection, recipient: &str) -> Result<(), String> {
+    let email = crate::editor_blocks::mailbox(recipient);
+    let disabled: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM editors WHERE lower(trim(email))=?1 AND enabled=0)",
+        [&email], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    if disabled { return Err(format!("编辑 {email} 已停用，本次未发送。请确认恢复收稿后在收件箱中启用该编辑，再重新发送。")); }
+    Ok(())
+}
+
 pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
     let mut stmt = conn
         .prepare(&format!(
@@ -347,8 +388,15 @@ pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
         ))
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], map_editor).map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
+    let mut editors = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let mut blocked = std::collections::HashMap::<String, Vec<String>>::new();
+    for block in crate::editor_blocks::list(conn)? {
+        blocked.entry(block.recipient_email).or_default().push(block.sender_email);
+    }
+    for editor in &mut editors {
+        editor.blocked_senders = blocked.remove(&editor.email.trim().to_lowercase()).unwrap_or_default();
+    }
+    Ok(editors)
 }
 
 pub fn load_editor_groups(conn: &Connection) -> Result<Vec<EditorGroup>, String> {
@@ -617,6 +665,13 @@ pub fn insert_send_log(
     message: &str,
     recipient: &str,
 ) -> Result<TaskLog, String> {
+    // Keep evidence independently of logs, so clearing logs cannot forget blocks.
+    if level == "error" && crate::editor_blocks::is_blacklist_message(message) {
+        if let Some(account_id) = account_id {
+            let sender: String = conn.query_row("SELECT email FROM accounts WHERE id=?1", [account_id], |r| r.get(0)).map_err(|e|e.to_string())?;
+            crate::editor_blocks::record(conn, &sender, recipient, message, &now_str(conn)?)?;
+        }
+    }
     conn.execute(
         "INSERT INTO task_logs (task_id, manuscript_id, account_id, level, category, message, recipient) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![task_id, manuscript_id, account_id, level, category, message, recipient],
@@ -1115,7 +1170,11 @@ pub fn delivered_emails_for_task_manuscript(
         .prepare(
             "SELECT DISTINCT recipient FROM deliveries
              WHERE (task_id = ?1 OR task_id IS NULL) AND manuscript_id = ?2
-               AND run_id = COALESCE((SELECT run_id FROM tasks WHERE id = ?1), 0)",
+               AND run_id = COALESCE((SELECT run_id FROM tasks WHERE id = ?1), 0)
+             UNION SELECT r.original_recipient FROM send_recipient_routes r JOIN deliveries d
+               ON d.manuscript_id=r.manuscript_id AND lower(d.recipient)=r.recipient AND d.run_id=r.run_id
+              AND (d.task_id=r.task_id OR d.task_id IS NULL)
+             WHERE r.task_id=?1 AND r.manuscript_id=?2 AND r.run_id=COALESCE((SELECT run_id FROM tasks WHERE id=?1),0)",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1249,6 +1308,7 @@ pub fn set_account_imap_cursor(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn reply_exists(
     conn: &Connection,
     account: &Account,
@@ -1346,6 +1406,7 @@ pub fn insert_reply(
         (String::new(), String::new())
     };
     Ok(Reply {
+        submissions_paused: [subject, snippet, body].iter().any(|text| text.contains("暂停收稿")),
         id,
         delivery_id,
         account_id: Some(account_id),
@@ -1377,6 +1438,7 @@ pub fn insert_reply(
 
 fn map_reply(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reply> {
     Ok(Reply {
+        submissions_paused: r.get(22)?,
         id: r.get(0)?,
         delivery_id: r.get(1)?,
         account_id: r.get(2)?,
@@ -1402,6 +1464,8 @@ fn map_reply(r: &rusqlite::Row<'_>) -> rusqlite::Result<Reply> {
     })
 }
 
+// A derived category: keep human/auto/bounce and their read semantics intact.
+const PAUSED_REPLY: &str = "(instr(r.body, '暂停收稿')>0 OR instr(r.snippet, '暂停收稿')>0 OR instr(r.subject, '暂停收稿')>0)";
 const REPLY_FROM: &str = "FROM replies r
     LEFT JOIN deliveries d ON d.id = r.delivery_id
     LEFT JOIN tasks t ON t.id = r.task_id
@@ -1417,6 +1481,7 @@ fn reply_filter(
     let mut values = Vec::<Value>::new();
     if let Some(kind) = kind.filter(|kind| !kind.is_empty()) {
         clauses.push(match kind {
+            "paused" => PAUSED_REPLY.into(),
             "accepted" => "r.accepted=1".into(),
             "unread" => "r.kind='human' AND r.is_read=0 AND r.read_synced=1".into(),
             "submission" => "r.delivery_id IS NOT NULL".into(),
@@ -1476,7 +1541,7 @@ pub fn query_replies(
     let offset_parameter = values.len() + 2;
     let sql = format!("SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject,
         substr(CASE WHEN r.snippet<>'' THEN r.snippet ELSE r.body END,1,180), '' AS body, r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid,
-        r.received_at, r.created_at, d.recipient, COALESCE(t.name, m.title, ''), r.imap_uid_validity, r.imap_generation, r.is_read, r.read_synced
+        r.received_at, r.created_at, d.recipient, COALESCE(t.name, m.title, ''), r.imap_uid_validity, r.imap_generation, r.is_read, r.read_synced, {PAUSED_REPLY}
         {REPLY_FROM} {filter} ORDER BY r.received_at DESC, r.id DESC LIMIT ?{limit_parameter} OFFSET ?{offset_parameter}");
     values.push(limit.max(1).into());
     values.push(offset.max(0).into());
@@ -1498,6 +1563,7 @@ pub fn load_replies(
     Ok(query_replies(conn, kind, task_id, "", limit, 0, None)?.items)
 }
 
+#[cfg(test)]
 pub fn set_reply_read(conn: &Connection, id: i64, is_read: bool) -> Result<(), String> {
     let changed = conn
         .execute(
@@ -1699,7 +1765,31 @@ mod tests {
                  );",
             )
             .unwrap();
+        connection.execute_batch(crate::editor_blocks::SCHEMA).unwrap();
         connection
+    }
+
+    #[test]
+    fn paused_category_uses_full_history_and_preserves_kind_and_read_state() {
+        let conn = test_connection();
+        conn.execute("INSERT INTO tasks(id,name,manuscript_ids) VALUES(7,'历史计划','[]')", []).unwrap();
+        for id in 1..=45 {
+            conn.execute("INSERT INTO replies(id,account_id,task_id,body,kind,is_read,read_synced) VALUES(?1,?2,7,?3,?4,0,1)",
+                params![id, if id == 3 { 2 } else { 1 }, if id <= 3 { format!("{}暂停收稿", "正文".repeat(200)) } else { "普通回复".into() }, if id == 2 { "auto" } else { "human" }]).unwrap();
+        }
+        let page = query_replies(&conn, Some("paused"), Some(7), "历史计划", 1, 0, Some(1)).unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.items[0].id, 2);
+        assert_eq!(page.items[0].kind, "auto");
+        assert!(page.items[0].submissions_paused);
+        assert!(!page.items[0].snippet.contains("暂停收稿"));
+        let second = query_replies(&conn, Some("paused"), Some(7), "", 1, 1, Some(1)).unwrap();
+        assert_eq!(second.total, 2);
+        assert_eq!(second.items[0].id, 1);
+        assert!(!second.items[0].is_read);
+        assert_eq!(query_replies(&conn, Some("unread"), None, "", 100, 0, None).unwrap().total, 44);
+        conn.execute("INSERT INTO replies(subject) VALUES('暂停收稿通知')", []).unwrap();
+        assert_eq!(query_replies(&conn, Some("paused"), None, "", 100, 0, None).unwrap().total, 4);
     }
 
     #[test]
@@ -1918,6 +2008,7 @@ mod tests {
 
 #[derive(serde::Serialize)]
 pub struct DeliverySummary {
+    pub latest_recipient: Option<String>,
     pub row_index: usize,
     pub sent_count: i64,
     pub latest_id: Option<i64>,
@@ -1966,7 +2057,10 @@ pub fn delivery_summary_page(
         "WITH summary AS (
         SELECT CAST(r.key AS INTEGER) row_index, COUNT(d.id) sent_count, MAX(d.id) latest_id
         FROM json_each(?2) r LEFT JOIN deliveries d
-          ON d.manuscript_id=?1 AND {recipient_key}=r.value
+          ON d.manuscript_id=?1 AND ({recipient_key}=r.value OR EXISTS(
+            SELECT 1 FROM send_recipient_routes x WHERE x.manuscript_id=d.manuscript_id
+              AND x.original_recipient=r.value AND x.recipient={recipient_key}
+              AND x.run_id=d.run_id AND (x.task_id=d.task_id OR d.task_id IS NULL)))
         GROUP BY r.key), filtered AS (
         SELECT * FROM summary WHERE row_index IN (SELECT value FROM json_each(?3))
         AND (?4='all' OR (?4='sent' AND sent_count>0) OR (?4='unsent' AND sent_count=0)))"
@@ -1986,7 +2080,8 @@ pub fn delivery_summary_page(
         let mut stmt = tx
             .prepare(&format!(
                 "{cte} SELECT row_index,sent_count,latest_id,
-            (SELECT sent_at FROM deliveries WHERE id=latest_id) FROM filtered
+            (SELECT sent_at FROM deliveries WHERE id=latest_id),
+            (SELECT recipient FROM deliveries WHERE id=latest_id) FROM filtered
             ORDER BY row_index LIMIT ?5 OFFSET ?6"
             ))
             .map_err(|e| e.to_string())?;
@@ -2006,6 +2101,7 @@ pub fn delivery_summary_page(
                         sent_count: r.get(1)?,
                         latest_id: r.get(2)?,
                         last_sent_at: r.get(3)?,
+                        latest_recipient: r.get(4)?,
                     })
                 },
             )
@@ -2395,5 +2491,48 @@ mod account_config_tests {
         assert_eq!(accounts[0].email, "on@example.com");
         assert_eq!(accounts[0].sent_today, 0);
         assert!(load_accounts(&conn).is_err(), "UI account statistics still require deliveries");
+    }
+}
+
+#[cfg(test)]
+mod editor_batch_tests {
+    use super::*;
+    fn fixture() -> Connection {
+        let conn = crate::db::test_database();
+        conn.execute_batch("INSERT INTO editors(id,name,email,favorited,notes) VALUES(1,'甲','a@example.com',1,'保留'),(2,'乙','b@example.com',0,''),(3,'丙','c@example.com',0,'');
+            INSERT INTO editor_groups(id,name) VALUES(1,'编辑组');
+            INSERT INTO editor_group_members(group_id,editor_id,position) VALUES(1,1,0),(1,2,1),(1,3,2);
+            INSERT INTO manuscripts(id,title,body,recipients) VALUES(1,'稿件','正文','[\"a@example.com\"]');
+            INSERT INTO replies(id,from_email,body,kind) VALUES(1,'a@example.com','暂停收稿','human');").unwrap();
+        conn
+    }
+    #[test]
+    fn batch_status_deduplicates_preserves_profiles_and_rolls_back_stale_selection() {
+        let mut conn = fixture();
+        assert!(batch_editors(&mut conn, &[], Some(false)).is_err());
+        assert!(batch_editors(&mut conn, &[1, 999], Some(false)).is_err());
+        assert!(ensure_editor_enabled(&conn, "a@example.com").is_ok());
+        assert_eq!(batch_editors(&mut conn, &[2, 1, 1], Some(false)).unwrap(), 2);
+        assert!(ensure_editor_enabled(&conn, "a@example.com").is_err());
+        assert!(ensure_editor_enabled(&conn, "b@example.com").is_err());
+        assert!(ensure_editor_enabled(&conn, "c@example.com").is_ok());
+        let profile: (bool, String) = conn.query_row("SELECT favorited,notes FROM editors WHERE id=1", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(profile, (true, "保留".into()));
+        assert_eq!(batch_editors(&mut conn, &[1, 2], Some(true)).unwrap(), 2);
+        assert!(ensure_editor_enabled(&conn, "a@example.com").is_ok());
+    }
+    #[test]
+    fn batch_delete_is_atomic_and_preserves_mail_and_plan_recipients() {
+        let mut conn = fixture();
+        assert!(batch_editors(&mut conn, &[1, 999], None).is_err());
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM editor_group_members", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        conn.execute_batch("CREATE TRIGGER fail_delete BEFORE DELETE ON editors WHEN OLD.id=2 BEGIN SELECT RAISE(ABORT,'fixture failure'); END;").unwrap();
+        assert!(batch_editors(&mut conn, &[1, 2], None).is_err());
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM editors", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        conn.execute_batch("DROP TRIGGER fail_delete;").unwrap();
+        assert_eq!(batch_editors(&mut conn, &[2, 1, 1], None).unwrap(), 2);
+        assert_eq!(conn.query_row("SELECT editor_id FROM editor_group_members", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM replies", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(conn.query_row("SELECT recipients FROM manuscripts WHERE id=1", [], |r| r.get::<_, String>(0)).unwrap(), "[\"a@example.com\"]");
     }
 }

@@ -1,4 +1,7 @@
 import { useEditorListModel } from '../hooks/useEditorListModel'
+import { EditorBlockBadge } from '../components/EditorBlocks'
+import { onLog } from '../api'
+import { useEventSubscription } from '../hooks/useEventSubscription'
 import { changeEditorSelection } from '../lib/editorListModel'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -30,10 +33,11 @@ import {
   type TagMatchMode,
 } from './editorLibraryShared'
 
-type View = 'all' | 'favorites' | 'incomplete' | 'changed'
+type View = 'all' | 'favorites' | 'incomplete' | 'changed' | 'blocked'
 type Draft = { id: number; input: EditorInput; types: string }
 
 export function EditorLibrary({
+  onBlockedDetails,
   reloadSignal,
   updatedEditorId,
   onEdit,
@@ -45,6 +49,7 @@ export function EditorLibrary({
   onDirtyChange,
   onBusyChange,
 }: {
+  onBlockedDetails: (recipient: string) => void
   reloadSignal: number
   updatedEditorId: number | null
   onEdit: (editor: Editor) => void
@@ -116,6 +121,7 @@ export function EditorLibrary({
       if (seq === requestSeq.current) setLoading(false)
     }
   }, [])
+  useEventSubscription(onLog, () => { if (!dirty && !savingRef.current) void load(true) }, 200, log => ['blacklist', 'editor_replacement'].includes(log.category))
   useEffect(() => {
     void load(reloadSignal > 0)
     const sequence = requestSeq
@@ -126,6 +132,7 @@ export function EditorLibrary({
   const inView = useCallback(
     (e: Editor, candidate: View) =>
       candidate === 'all' ||
+      (candidate === 'blocked' && Boolean(e.blocked_senders?.length)) ||
       (candidate === 'favorites' && e.favorited) ||
       (candidate === 'incomplete' &&
         (!e.work_type.length || !e.notes.trim())) ||
@@ -133,9 +140,10 @@ export function EditorLibrary({
     [changed],
   )
   const viewCounts = useMemo(() => {
-    const counts = { all: items.length, favorites: 0, incomplete: 0, changed: 0 }
+    const counts = { all: items.length, favorites: 0, incomplete: 0, changed: 0, blocked: 0 }
     for (const editor of items) {
       if (editor.favorited) counts.favorites++
+      if (editor.blocked_senders?.length) counts.blocked++
       if (!editor.work_type.length || !editor.notes.trim()) counts.incomplete++
       if (changed.has(editor.id)) counts.changed++
     }
@@ -370,6 +378,7 @@ export function EditorLibrary({
               ['favorites', '已收藏'],
               ['incomplete', '资料待完善'],
               ['changed', '本次修改'],
+              ['blocked', '有拉黑记录'],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -386,6 +395,7 @@ export function EditorLibrary({
           ))}
         </div>
         <div className="library-toolbar">
+          <Button size="sm" onClick={() => void allowChange().then(ok => { if (ok) onBlockedDetails('') })}>拉黑记录</Button>
           <label className="plan-search">
             <Search size={15} />
             <input
@@ -551,6 +561,8 @@ export function EditorLibrary({
                             <span className="library-modified">已修改</span>
                           )}
                         </small>
+                        {!e.enabled && <span className="library-modified">已停用</span>}
+                        <EditorBlockBadge senders={e.blocked_senders} onClick={() => void allowChange().then(ok => { if (ok) onBlockedDetails(e.email) })} />
                       </td>
                       <td onDoubleClick={() => void edit(e)}>
                         {editing ? (

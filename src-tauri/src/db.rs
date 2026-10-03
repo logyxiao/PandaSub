@@ -220,6 +220,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     connection
         .execute_batch(SCHEMA)
         .map_err(|e| e.to_string())?;
+    connection.execute_batch(crate::editor_blocks::SCHEMA).map_err(|e| e.to_string())?;
     ensure_columns(&connection, "accepted_works", &[(
         "review_status", "review_status TEXT NOT NULL DEFAULT 'accepted' CHECK(review_status IN ('accepted','preliminary','final_rejected','not_accepted'))",
     )])?;
@@ -280,6 +281,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
+    crate::editor_blocks::backfill(&connection)?;
     Ok(connection)
 }
 
@@ -1135,7 +1137,7 @@ fn normalize_editor_style_values(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-09-02-local-library";
+const BUNDLED_EDITOR_LIBRARY_VERSION: &str = "2026-10-03-editor-supplement";
 
 fn refresh_bundled_editor_library(conn: &Connection) -> Result<(), String> {
     let current: String = conn
@@ -1766,6 +1768,7 @@ mod tests {
 pub(crate) fn test_database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(crate::editor_blocks::SCHEMA).unwrap();
     migrate_delivery_reliability(&conn).unwrap();
     add_runtime_query_indexes(&conn).unwrap();
     conn
@@ -1887,6 +1890,7 @@ mod reliability_tests {
     fn reliability_migration_preserves_legacy_resume_progress() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(crate::editor_blocks::SCHEMA).unwrap();
         seed(&conn);
         conn.execute_batch("UPDATE tasks SET sent=1,status='stopped';
             INSERT INTO deliveries(task_id,account_id,manuscript_id,recipient,message_id) VALUES(1,1,1,'a@example.com','old');").unwrap();

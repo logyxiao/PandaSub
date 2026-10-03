@@ -25,7 +25,7 @@ struct SendTarget {
 }
 
 enum SendOutcome {
-    Success { message_id: String, account_id: i64 },
+    Success { message_id: String, account_id: i64, recipient: String, subject: String },
     Failed,
     RetryLater,
     NeedsReview(String),
@@ -77,6 +77,9 @@ fn skip_pending_recipients(
     for manuscript in manuscripts {
         for attempt in store::pending_sends(conn, manuscript.id)? {
             pending.insert(delivery_target_key(manuscript.id, &attempt.recipient));
+            let mut stmt=conn.prepare("SELECT original_recipient FROM send_recipient_routes WHERE manuscript_id=?1 AND recipient=?2").map_err(|e|e.to_string())?;
+            let rows=stmt.query_map(rusqlite::params![manuscript.id,crate::editor_blocks::mailbox(&attempt.recipient)],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?;
+            for row in rows {pending.insert(delivery_target_key(manuscript.id,&row.map_err(|e|e.to_string())?));}
         }
     }
     queue.retain(|target| {
@@ -573,20 +576,13 @@ async fn run_task_worker(
             }
         };
 
-        let (_editor_name, recipient_email) = smtp::parse_recipient(&target.recipient);
-        let (subject, body) = smtp::resolve_outgoing_mail(
-            &target.manuscript,
-            &target.recipient,
-            settings.anti_spam_mutation,
-        );
         let outcome = send_with_retry(
             &app,
             &db,
             task_id,
             &account,
             &target,
-            &subject,
-            &body,
+            settings.anti_spam_mutation,
             task.retry_max,
             &mut cursor,
             &allowed_accounts,
@@ -598,7 +594,10 @@ async fn run_task_worker(
             SendOutcome::Success {
                 message_id,
                 account_id,
+                recipient,
+                subject,
             } => {
+                let recipient_email = smtp::parse_recipient(&recipient).1;
                 let recorded = {
                     let mut conn = db.lock().unwrap();
                     store::record_successful_delivery(
@@ -623,7 +622,7 @@ async fn run_task_worker(
                         "success",
                         "send",
                         "投递成功",
-                        &target.recipient,
+                        &recipient,
                     ),
                     Err(error) => {
                         had_pending = true;
@@ -635,7 +634,7 @@ async fn run_task_worker(
                             "error",
                             "storage",
                             &format!("邮件已发出，但保存投递记录失败：{error}。已保留待确认记录，继续发送其他邮件"),
-                            &target.recipient,
+                            &recipient,
                         )
                     }
                 };
@@ -720,8 +719,7 @@ async fn send_with_retry(
     task_id: i64,
     initial_account: &Account,
     target: &SendTarget,
-    subject: &str,
-    body: &str,
+    anti_spam_mutation: bool,
     retry_max: i64,
     cursor: &mut usize,
     allowed: &std::collections::HashSet<i64>,
@@ -745,21 +743,32 @@ async fn send_with_retry(
             Some(current) => current,
             None => return SendOutcome::RetryLater,
         };
+        let route = crate::editor_blocks::route(&db.lock().unwrap(), task_id, &account, &target.manuscript, &target.recipient);
+        let recipient = match route {
+            Ok(crate::editor_blocks::Route::Ready {recipient,notice}) => {
+                if let Some(log)=notice {emit_log(app,&log);}
+                recipient
+            }
+            Ok(crate::editor_blocks::Route::Unavailable(log)) => {emit_log(app,&log);return SendOutcome::Failed;}
+            Err(error) => return SendOutcome::DataError(error),
+        };
+        // Regenerate placeholders for the actual replacement editor, never the blocked one.
+        let (subject, body) = smtp::resolve_outgoing_mail(&target.manuscript, &recipient, anti_spam_mutation);
         let sender_name = if target.manuscript.sender_name.trim().is_empty() {
             account.sender_name.as_str()
         } else {
             target.manuscript.sender_name.as_str()
         };
         let message_id = smtp::make_message_id();
-        let recipient = smtp::parse_recipient(&target.recipient).1;
+        let recipient_email = smtp::parse_recipient(&recipient).1;
         let prepared = store::begin_send_attempt(
             &db.lock().unwrap(),
             &store::SuccessfulDelivery {
                 task_id: Some(task_id),
                 account_id: account.id,
                 manuscript_id: target.manuscript.id,
-                recipient: &recipient,
-                subject,
+                recipient: &recipient_email,
+                subject: &subject,
                 message_id: &message_id,
                 increment_task_progress: true,
             },
@@ -769,10 +778,10 @@ async fn send_with_retry(
         }
         match smtp::send_email_with_id(
             &account,
-            &smtp::parse_recipient(&target.recipient).1,
+            &recipient_email,
             sender_name,
-            subject,
-            body,
+            &subject,
+            &body,
             &target.manuscript.content_type,
             target
                 .attachment
@@ -786,19 +795,28 @@ async fn send_with_retry(
                 return SendOutcome::Success {
                     message_id,
                     account_id: account.id,
+                    recipient,
+                    subject,
                 }
             }
             Err(err) => {
                 let (category, message) = classify_error(&err);
                 if !smtp::definitely_not_sent(&err) {
                     return SendOutcome::NeedsReview(format!(
-                        "发送结果待确认：{message}。已跳过该收件人，继续发送其他邮件；请在计划记录中核对"
+                        "发送给 {recipient} 的结果待确认：{message}。已跳过该收件人，继续发送其他邮件；请在计划记录中核对"
                     ));
                 }
                 if let Err(error) = store::mark_attempt_not_sent(&db.lock().unwrap(), &message_id) {
                     return SendOutcome::DataError(error);
                 }
                 match category.as_str() {
+                    "blacklist" => {
+                        let log = store::insert_send_log(&db.lock().unwrap(),Some(task_id),Some(target.manuscript.id),Some(account.id),
+                            "error","blacklist",&format!("投递被永久拒绝：{message}；已记录 {} 被 {recipient} 拉黑，将检查同平台可用编辑。",account.email),&recipient);
+                        match log { Ok(log)=>emit_log(app,&log), Err(error)=>return SendOutcome::DataError(error) }
+                        interruptible_sleep(send_delay_secs(target.manuscript.send_interval_from_sec,target.manuscript.send_interval_to_sec),handle).await;
+                        continue;
+                    }
                     "auth" => {
                         let log = store::insert_log(
                             &db.lock().unwrap(),
@@ -832,7 +850,7 @@ async fn send_with_retry(
                             "error",
                             "send",
                             &format!("投递被永久拒绝：{message}"),
-                            &target.recipient,
+                            &recipient,
                         );
                         if let Ok(log) = log {
                             emit_log(app, &log);
@@ -860,8 +878,8 @@ async fn send_with_retry(
                                 Some(account.id),
                                 "error",
                                 &category,
-                                &format!("重试次数耗尽，跳过 {}", target.recipient),
-                                &target.recipient,
+                                &format!("重试次数耗尽，跳过 {}", recipient),
+                                &recipient,
                             );
                             if let Ok(log) = log {
                                 emit_log(app, &log);
@@ -890,6 +908,27 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn replacement_pending_and_delivered_targets_keep_original_progress_after_restart() {
+        let mut conn=prepared_fixture();
+        conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'sender@example.com','','localhost');
+            INSERT INTO editors(name,email,platform) VALUES('原编辑','one@example.com','平台'),('替代编辑','peer@example.com','平台');").unwrap();
+        crate::editor_blocks::record(&conn,"sender@example.com","one@example.com","550 The sender is blacklisted by the recipient","2026-10-03").unwrap();
+        let account=store::load_account(&conn,1).unwrap().unwrap();
+        let manuscript=store::load_manuscript(&conn,1).unwrap().unwrap();
+        assert!(matches!(crate::editor_blocks::route(&conn,1,&account,&manuscript,"one@example.com").unwrap(),crate::editor_blocks::Route::Ready{..}));
+        let attempt=store::SuccessfulDelivery{task_id:Some(1),account_id:1,manuscript_id:1,recipient:"peer@example.com",subject:"fixture",message_id:"replaced-pending",increment_task_progress:true};
+        store::begin_send_attempt(&conn,&attempt).unwrap();
+        let prepared=prepare_task(&conn,1).unwrap();
+        assert!(prepared.has_pending);assert_eq!(prepared.queue.len(),1);assert_eq!(prepared.queue[0].recipient,"two@example.com");
+        store::record_successful_delivery(&mut conn,attempt).unwrap();
+        let prepared=prepare_task(&conn,1).unwrap();
+        assert!(!prepared.has_pending);assert_eq!(prepared.queue.len(),1);
+        assert_eq!(store::load_task(&conn,1).unwrap().unwrap().sent,1);
+        conn.execute("DELETE FROM tasks WHERE id=1",[]).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM send_recipient_routes",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     }
 
     #[test]

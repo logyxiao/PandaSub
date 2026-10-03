@@ -10,6 +10,7 @@ import './App.css'
 import './panda.css'
 import { api, onTask } from './api'
 import { ConfirmProvider, ToastProvider } from './components/feedback'
+import { EditorBlockNotifications } from './components/EditorBlocks'
 import { restartApp } from './update'
 import { UpdateManager } from './components/UpdateManager'
 import { NavContext, type LeaveGuard, type NavOptions, type ViewId } from './nav'
@@ -189,6 +190,7 @@ export default function App() {
   return (
     <ToastProvider>
       <ConfirmProvider>
+        <EditorBlockNotifications />
         <NavContext.Provider value={navigation}>
           <UpdateManager />
           <div className={`app-shell ${hideChrome ? 'focus-mode' : ''}`} data-density="compact">

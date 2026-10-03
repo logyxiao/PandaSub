@@ -1,0 +1,1532 @@
+{
+  "source": "用户提供的六张图文字名单（未访问原图）",
+  "date": "2026-10-03",
+  "entries": [
+    {
+      "number": 1,
+      "source_platform": "Dreame",
+      "source_name": "仙仙",
+      "source_contact": "3126931064",
+      "platform": "Dreame",
+      "name": "仙仙",
+      "email": "3126931064@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "Dreame",
+        "name": "仙仙",
+        "email": "3126931064@qq.com"
+      }
+    },
+    {
+      "number": 2,
+      "source_platform": "九州",
+      "source_name": "浅浅",
+      "source_contact": "2818256356",
+      "platform": "九州",
+      "name": "浅浅",
+      "email": "2818256356@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "九州",
+        "name": "浅浅"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "九州",
+        "name": "浅浅",
+        "email": "2818256356@qq.com"
+      }
+    },
+    {
+      "number": 3,
+      "source_platform": "黑岩",
+      "source_name": "花椒",
+      "source_contact": "597527161",
+      "platform": "黑岩",
+      "name": "花椒",
+      "email": "597527161@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "黑岩",
+        "name": "花椒"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "黑岩",
+        "name": "花椒",
+        "email": "597527161@qq.com"
+      }
+    },
+    {
+      "number": 4,
+      "source_platform": "若初",
+      "source_name": "豌豆",
+      "source_contact": "1192020512",
+      "platform": "若初",
+      "name": "豌豆",
+      "email": "1192020512@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "黑岩",
+        "name": "豌豆"
+      },
+      "action": "updated",
+      "changed_fields": [
+        "platform",
+        "notes"
+      ],
+      "stored_identity": {
+        "platform": "若初",
+        "name": "豌豆",
+        "email": "1192020512@qq.com"
+      }
+    },
+    {
+      "number": 5,
+      "source_platform": "七猫",
+      "source_name": "弥生",
+      "source_contact": "3904974951",
+      "platform": "七猫",
+      "name": "弥生",
+      "email": null,
+      "status": "pending",
+      "reason": "同一邮箱对应七猫·弥生、洞洞猫·眠羊，归属待核对"
+    },
+    {
+      "number": 6,
+      "source_platform": "洞洞猫",
+      "source_name": "眠羊",
+      "source_contact": "3904974951",
+      "platform": "洞洞猫",
+      "name": "眠羊",
+      "email": null,
+      "status": "pending",
+      "reason": "同一邮箱对应七猫·弥生、洞洞猫·眠羊，归属待核对"
+    },
+    {
+      "number": 7,
+      "source_platform": "掌心",
+      "source_name": "爆米",
+      "source_contact": "3972987357",
+      "platform": "掌心",
+      "name": "爆米",
+      "email": "3972987357@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "掌心",
+        "name": "爆米"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "掌心",
+        "name": "爆米",
+        "email": "3972987357@qq.com"
+      }
+    },
+    {
+      "number": 8,
+      "source_platform": "点众",
+      "source_name": "圆圆",
+      "source_contact": "3304320047",
+      "platform": "点众",
+      "name": "圆圆",
+      "email": "3304320047@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "点众",
+        "name": "圆圆"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "点众",
+        "name": "圆圆",
+        "email": "3304320047@qq.com"
+      }
+    },
+    {
+      "number": 9,
+      "source_platform": "光芒",
+      "source_name": "珍珠",
+      "source_contact": "3097577057",
+      "platform": "光芒",
+      "name": "珍珠",
+      "email": "3097577057@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "光芒",
+        "name": "珍珠",
+        "email": "3097577057@qq.com"
+      }
+    },
+    {
+      "number": 10,
+      "source_platform": "四季",
+      "source_name": "芝士",
+      "source_contact": "3640078145",
+      "platform": "四季",
+      "name": "芝士",
+      "email": "3640078145@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "四季",
+        "name": "芝士",
+        "email": "3640078145@qq.com"
+      }
+    },
+    {
+      "number": 11,
+      "source_platform": "月下",
+      "source_name": "莲子",
+      "source_contact": "3269360646",
+      "platform": "月下小说",
+      "name": "莲子",
+      "email": "3269360646@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "月下小说",
+        "name": "莲子"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "月下小说",
+        "name": "莲子",
+        "email": "3269360646@qq.com"
+      }
+    },
+    {
+      "number": 12,
+      "source_platform": "17K",
+      "source_name": "西瓜",
+      "source_contact": "826893832",
+      "platform": "17k",
+      "name": "西瓜",
+      "email": "826893832@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "17k",
+        "name": "西瓜"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "17k",
+        "name": "西瓜",
+        "email": "826893832@qq.com"
+      }
+    },
+    {
+      "number": 13,
+      "source_platform": "最右",
+      "source_name": "数字大王",
+      "source_contact": "1736794052",
+      "platform": "最右",
+      "name": "数字大王",
+      "email": "1736794052@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "最右",
+        "name": "数字大王",
+        "email": "1736794052@qq.com"
+      }
+    },
+    {
+      "number": 14,
+      "source_platform": "果悦",
+      "source_name": "荔枝盐",
+      "source_contact": "2780056738",
+      "platform": "果悦",
+      "name": "荔枝盐",
+      "email": "2780056738@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "果悦",
+        "name": "荔枝盐"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "果悦",
+        "name": "荔枝盐",
+        "email": "2780056738@qq.com"
+      }
+    },
+    {
+      "number": 15,
+      "source_platform": "风华",
+      "source_name": "青苔",
+      "source_contact": "397216553",
+      "platform": "风华",
+      "name": "青苔",
+      "email": "397216553@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "风华",
+        "name": "青苔"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "风华",
+        "name": "青苔",
+        "email": "397216553@qq.com"
+      }
+    },
+    {
+      "number": 16,
+      "source_platform": "炎畅",
+      "source_name": "夏夏",
+      "source_contact": "1479306644",
+      "platform": "炎畅",
+      "name": "夏夏",
+      "email": "1479306644@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "炎畅",
+        "name": "夏夏",
+        "email": "1479306644@qq.com"
+      }
+    },
+    {
+      "number": 17,
+      "source_platform": "娃娃书屋",
+      "source_name": "雪碧兽",
+      "source_contact": "1056523462",
+      "platform": "娃娃书屋",
+      "name": "雪碧兽",
+      "email": "1056523462@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "娃娃书屋",
+        "name": "雪碧兽",
+        "email": "1056523462@qq.com"
+      }
+    },
+    {
+      "number": 18,
+      "source_platform": "绣球",
+      "source_name": "莓糕",
+      "source_contact": "2082854406",
+      "platform": "绣球",
+      "name": "莓糕",
+      "email": "2082854406@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "绣球",
+        "name": "莓糕",
+        "email": "2082854406@qq.com"
+      }
+    },
+    {
+      "number": 19,
+      "source_platform": "好书文化",
+      "source_name": "茜茜",
+      "source_contact": "3760377690",
+      "platform": "好书文化",
+      "name": "茜茜",
+      "email": "3760377690@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "好书文化",
+        "name": "茜茜",
+        "email": "3760377690@qq.com"
+      }
+    },
+    {
+      "number": 20,
+      "source_platform": "硕才",
+      "source_name": "肖葱",
+      "source_contact": "2750446837",
+      "platform": "硕才",
+      "name": "肖葱",
+      "email": "2750446837@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "硕才",
+        "name": "肖葱",
+        "email": "2750446837@qq.com"
+      }
+    },
+    {
+      "number": 21,
+      "source_platform": "忘忧",
+      "source_name": "江雾",
+      "source_contact": "iKoi-fish",
+      "platform": "忘忧",
+      "name": "江雾",
+      "email": null,
+      "status": "pending",
+      "reason": "账号类型不明，不能推断为邮箱"
+    },
+    {
+      "number": 22,
+      "source_platform": "行舟",
+      "source_name": "弦月",
+      "source_contact": "2698955499",
+      "platform": "行舟",
+      "name": "弦月",
+      "email": "2698955499@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "行舟",
+        "name": "弦月",
+        "email": "2698955499@qq.com"
+      }
+    },
+    {
+      "number": 23,
+      "source_platform": "阅见",
+      "source_name": "希希",
+      "source_contact": "3563180663",
+      "platform": "阅见",
+      "name": "希希",
+      "email": "3563180663@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "阅见",
+        "name": "希希",
+        "email": "3563180663@qq.com"
+      }
+    },
+    {
+      "number": 24,
+      "source_platform": "墨墨",
+      "source_name": "文商",
+      "source_contact": "3592124348",
+      "platform": "墨墨",
+      "name": "文商",
+      "email": "3592124348@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "墨墨",
+        "name": "文商",
+        "email": "3592124348@qq.com"
+      }
+    },
+    {
+      "number": 25,
+      "source_platform": "乐阅",
+      "source_name": "小柒",
+      "source_contact": "1156559766",
+      "platform": "乐阅",
+      "name": "小柒",
+      "email": "1156559766@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "乐阅",
+        "name": "小柒"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "乐阅",
+        "name": "小柒",
+        "email": "1156559766@qq.com"
+      }
+    },
+    {
+      "number": 26,
+      "source_platform": "点文",
+      "source_name": "未注明",
+      "source_contact": "3697590325",
+      "platform": "点文科技",
+      "name": "",
+      "email": "3697590325@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "点文科技",
+        "name": "锦葵"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "点文科技",
+        "name": "锦葵",
+        "email": "3697590325@qq.com"
+      }
+    },
+    {
+      "number": 27,
+      "source_platform": "简书",
+      "source_name": "回不回",
+      "source_contact": "3169305331",
+      "platform": "简书",
+      "name": "回不回",
+      "email": "3169305331@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "简书",
+        "name": "回不回"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "简书",
+        "name": "回不回",
+        "email": "3169305331@qq.com"
+      }
+    },
+    {
+      "number": 28,
+      "source_platform": "烟流",
+      "source_name": "久久",
+      "source_contact": "264025751",
+      "platform": "烟流",
+      "name": "久久",
+      "email": "264025751@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "烟流",
+        "name": "久久"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "烟流",
+        "name": "久久",
+        "email": "264025751@qq.com"
+      }
+    },
+    {
+      "number": 29,
+      "source_platform": "浮月",
+      "source_name": "月见",
+      "source_contact": "1968354731",
+      "platform": "浮月",
+      "name": "月见",
+      "email": "1968354731@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "浮月",
+        "name": "月见"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "浮月",
+        "name": "月见",
+        "email": "1968354731@qq.com"
+      }
+    },
+    {
+      "number": 30,
+      "source_platform": "跃金",
+      "source_name": "巧克力耶",
+      "source_contact": "1611402717",
+      "platform": "跃金",
+      "name": "巧克力耶",
+      "email": "1611402717@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "跃金",
+        "name": "巧克力椰"
+      },
+      "action": "updated",
+      "changed_fields": [
+        "name",
+        "notes"
+      ],
+      "stored_identity": {
+        "platform": "跃金",
+        "name": "巧克力耶",
+        "email": "1611402717@qq.com"
+      }
+    },
+    {
+      "number": 31,
+      "source_platform": "热岛",
+      "source_name": "小和",
+      "source_contact": "3781613365",
+      "platform": "热岛",
+      "name": "小和",
+      "email": "3781613365@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "热岛",
+        "name": "小和",
+        "email": "3781613365@qq.com"
+      }
+    },
+    {
+      "number": 32,
+      "source_platform": "今贝",
+      "source_name": "槿阳",
+      "source_contact": "3955654623",
+      "platform": "今贝",
+      "name": "槿阳",
+      "email": "3955654623@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "今贝",
+        "name": "槿阳",
+        "email": "3955654623@qq.com"
+      }
+    },
+    {
+      "number": 33,
+      "source_platform": "粉雾",
+      "source_name": "楚天阁",
+      "source_contact": "805607437",
+      "platform": "粉雾",
+      "name": "楚天阁",
+      "email": "805607437@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "粉雾",
+        "name": "楚天阁",
+        "email": "805607437@qq.com"
+      }
+    },
+    {
+      "number": 34,
+      "source_platform": "大江禾禾",
+      "source_name": "花花",
+      "source_contact": "tougaohh@163…",
+      "platform": "大江禾禾",
+      "name": "花花",
+      "email": "tougaohh@163.com",
+      "status": "existing",
+      "resolution": "按用户说明补齐 163 邮箱域名；与现有库地址一致",
+      "existing_identity": {
+        "platform": "大江禾禾",
+        "name": ""
+      },
+      "action": "updated",
+      "changed_fields": [
+        "name"
+      ],
+      "stored_identity": {
+        "platform": "大江禾禾",
+        "name": "花花",
+        "email": "tougaohh@163.com"
+      }
+    },
+    {
+      "number": 35,
+      "source_platform": "知禾",
+      "source_name": "茶茶",
+      "source_contact": "3118764741",
+      "platform": "知禾",
+      "name": "茶茶",
+      "email": "3118764741@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "知禾",
+        "name": "茶茶",
+        "email": "3118764741@qq.com"
+      }
+    },
+    {
+      "number": 36,
+      "source_platform": "匠紫",
+      "source_name": "沅也",
+      "source_contact": "2761984942",
+      "platform": "匠紫",
+      "name": "沅也",
+      "email": "2761984942@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "匠紫",
+        "name": "沅也"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "匠紫",
+        "name": "沅也",
+        "email": "2761984942@qq.com"
+      }
+    },
+    {
+      "number": 37,
+      "source_platform": "万紫",
+      "source_name": "千蓝",
+      "source_contact": "2993566298",
+      "platform": "万紫",
+      "name": "千蓝",
+      "email": "2993566298@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "万紫",
+        "name": "千蓝"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "万紫",
+        "name": "千蓝",
+        "email": "2993566298@qq.com"
+      }
+    },
+    {
+      "number": 38,
+      "source_platform": "奥城云创",
+      "source_name": "今痕",
+      "source_contact": "464449321",
+      "platform": "奥城云创",
+      "name": "今痕",
+      "email": "464449321@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "奥城云创",
+        "name": "今痕"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "奥城云创",
+        "name": "今痕",
+        "email": "464449321@qq.com"
+      }
+    },
+    {
+      "number": 39,
+      "source_platform": "启阅",
+      "source_name": "时光",
+      "source_contact": "117565975…",
+      "platform": "启阅",
+      "name": "时光",
+      "email": null,
+      "status": "pending",
+      "reason": "账号被截断，现有默认库没有可确认的完整号码"
+    },
+    {
+      "number": 40,
+      "source_platform": "希禾",
+      "source_name": "肉丸",
+      "source_contact": "523845106",
+      "platform": "希禾",
+      "name": "肉丸",
+      "email": "523845106@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "希河",
+        "name": "肉丸"
+      },
+      "action": "updated",
+      "changed_fields": [
+        "platform",
+        "notes"
+      ],
+      "stored_identity": {
+        "platform": "希禾",
+        "name": "肉丸",
+        "email": "523845106@qq.com"
+      }
+    },
+    {
+      "number": 41,
+      "source_platform": "七方",
+      "source_name": "糯米",
+      "source_contact": "879748848",
+      "platform": "七方",
+      "name": "糯米",
+      "email": "879748848@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "七方",
+        "name": "糯米",
+        "email": "879748848@qq.com"
+      }
+    },
+    {
+      "number": 42,
+      "source_platform": "云屿",
+      "source_name": "咩咩",
+      "source_contact": "3927218819",
+      "platform": "云屿",
+      "name": "咩咩",
+      "email": "3927218819@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "云屿",
+        "name": "咩咩",
+        "email": "3927218819@qq.com"
+      }
+    },
+    {
+      "number": 43,
+      "source_platform": "阅众",
+      "source_name": "子扬",
+      "source_contact": "3099564410",
+      "platform": "阅众",
+      "name": "子扬",
+      "email": "3099564410@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "阅众",
+        "name": "子扬"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "阅众",
+        "name": "子扬",
+        "email": "3099564410@qq.com"
+      }
+    },
+    {
+      "number": 44,
+      "source_platform": "文枢",
+      "source_name": "粥粥",
+      "source_contact": "2727856843",
+      "platform": "文枢",
+      "name": "粥粥",
+      "email": "2727856843@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "文枢",
+        "name": "粥粥",
+        "email": "2727856843@qq.com"
+      }
+    },
+    {
+      "number": 45,
+      "source_platform": "粉粉袖",
+      "source_name": "苏安",
+      "source_contact": "1402601189",
+      "platform": "粉粉袖",
+      "name": "苏安",
+      "email": "1402601189@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "粉粉柚",
+        "name": "苏安"
+      },
+      "action": "updated",
+      "changed_fields": [
+        "platform",
+        "notes"
+      ],
+      "stored_identity": {
+        "platform": "粉粉袖",
+        "name": "苏安",
+        "email": "1402601189@qq.com"
+      }
+    },
+    {
+      "number": 46,
+      "source_platform": "看点小故事",
+      "source_name": "图图",
+      "source_contact": "3928039184",
+      "platform": "看点小故事",
+      "name": "图图",
+      "email": "3928039184@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "看点小故事",
+        "name": "图图",
+        "email": "3928039184@qq.com"
+      }
+    },
+    {
+      "number": 47,
+      "source_platform": "弦月",
+      "source_name": "金鱼",
+      "source_contact": "3056707764",
+      "platform": "弦月",
+      "name": "金鱼",
+      "email": "3056707764@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "弦月",
+        "name": "金鱼"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "弦月",
+        "name": "金鱼",
+        "email": "3056707764@qq.com"
+      }
+    },
+    {
+      "number": 48,
+      "source_platform": "云波",
+      "source_name": "未注明",
+      "source_contact": "2353534815",
+      "platform": "云波",
+      "name": "",
+      "email": "2353534815@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "云波",
+        "name": "",
+        "email": "2353534815@qq.com"
+      }
+    },
+    {
+      "number": 49,
+      "source_platform": "学亿（中短）",
+      "source_name": "啵唧",
+      "source_contact": "231068326",
+      "platform": "学亿",
+      "name": "啵唧",
+      "email": "231068326@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "学亿",
+        "name": "啵唧",
+        "email": "231068326@qq.com"
+      }
+    },
+    {
+      "number": 50,
+      "source_platform": "六峥",
+      "source_name": "小汐",
+      "source_contact": "3316769564",
+      "platform": "六峥",
+      "name": "小汐",
+      "email": "3316769564@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "六峥",
+        "name": "小汐"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "六峥",
+        "name": "小汐",
+        "email": "3316769564@qq.com"
+      }
+    },
+    {
+      "number": 51,
+      "source_platform": "银杏文学",
+      "source_name": "云暖",
+      "source_contact": "1792172475",
+      "platform": "银杏文学",
+      "name": "云暖",
+      "email": "1792172475@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "银杏",
+        "name": "云暖"
+      },
+      "action": "updated",
+      "changed_fields": [
+        "platform",
+        "notes"
+      ],
+      "stored_identity": {
+        "platform": "银杏文学",
+        "name": "云暖",
+        "email": "1792172475@qq.com"
+      }
+    },
+    {
+      "number": 52,
+      "source_platform": "山海书盟（中短）",
+      "source_name": "锦倩",
+      "source_contact": "2647730067",
+      "platform": "山海书盟",
+      "name": "锦倩",
+      "email": "2647730067@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "山海书盟",
+        "name": "锦倩",
+        "email": "2647730067@qq.com"
+      }
+    },
+    {
+      "number": 53,
+      "source_platform": "天阅",
+      "source_name": "六六",
+      "source_contact": "664026129",
+      "platform": "天阅",
+      "name": "六六",
+      "email": "664026129@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "天越",
+        "name": "六六"
+      },
+      "action": "updated",
+      "changed_fields": [
+        "platform",
+        "notes"
+      ],
+      "stored_identity": {
+        "platform": "天阅",
+        "name": "六六",
+        "email": "664026129@qq.com"
+      }
+    },
+    {
+      "number": 54,
+      "source_platform": "乐阅",
+      "source_name": "梓钰",
+      "source_contact": "113869018…",
+      "platform": "乐阅",
+      "name": "梓钰",
+      "email": null,
+      "status": "pending",
+      "reason": "账号被截断，现有默认库没有可确认的完整号码"
+    },
+    {
+      "number": 55,
+      "source_platform": "咪咕",
+      "source_name": "番番",
+      "source_contact": "3652655837",
+      "platform": "咪咕",
+      "name": "番番",
+      "email": "3652655837@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "咪咕",
+        "name": "番番"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "咪咕",
+        "name": "番番",
+        "email": "3652655837@qq.com"
+      }
+    },
+    {
+      "number": 56,
+      "source_platform": "青松阅读",
+      "source_name": "桑芒",
+      "source_contact": "3816141638",
+      "platform": "青松阅读",
+      "name": "桑芒",
+      "email": "3816141638@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "青松阅读",
+        "name": "桑芒",
+        "email": "3816141638@qq.com"
+      }
+    },
+    {
+      "number": 57,
+      "source_platform": "酷匠",
+      "source_name": "破军",
+      "source_contact": "379613127…",
+      "platform": "酷匠",
+      "name": "破军",
+      "email": null,
+      "status": "pending",
+      "reason": "账号被截断，现有默认库没有可确认的完整号码"
+    },
+    {
+      "number": 58,
+      "source_platform": "掌阅",
+      "source_name": "暂定",
+      "source_contact": "暂定",
+      "platform": "掌阅",
+      "name": "暂定",
+      "email": null,
+      "status": "pending",
+      "reason": "邮箱待定"
+    },
+    {
+      "number": 59,
+      "source_platform": "玄鹿",
+      "source_name": "甜醋",
+      "source_contact": "2540386607",
+      "platform": "玄鹿",
+      "name": "甜醋",
+      "email": "2540386607@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "玄鹿",
+        "name": "甜醋"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "玄鹿",
+        "name": "甜醋",
+        "email": "2540386607@qq.com"
+      }
+    },
+    {
+      "number": 60,
+      "source_platform": "秉笔",
+      "source_name": "小牛",
+      "source_contact": "2358118713",
+      "platform": "秉笔",
+      "name": "小牛",
+      "email": "2358118713@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "秉笔",
+        "name": "小牛",
+        "email": "2358118713@qq.com"
+      }
+    },
+    {
+      "number": 61,
+      "source_platform": "🍅",
+      "source_name": "九山",
+      "source_contact": "147954667…",
+      "platform": "番茄",
+      "name": "九山",
+      "email": "1479546675@qq.com",
+      "status": "new",
+      "resolution": "本机现有编辑资料中唯一匹配：番茄·九山，号码前缀 147954667；采用其完整邮箱",
+      "action": "added",
+      "stored_identity": {
+        "platform": "番茄",
+        "name": "九山",
+        "email": "1479546675@qq.com"
+      }
+    },
+    {
+      "number": 62,
+      "source_platform": "婉书",
+      "source_name": "苹果",
+      "source_contact": "3059328484",
+      "platform": "婉书",
+      "name": "苹果",
+      "email": "3059328484@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "婉书",
+        "name": "苹果",
+        "email": "3059328484@qq.com"
+      }
+    },
+    {
+      "number": 63,
+      "source_platform": "澜悦",
+      "source_name": "雨",
+      "source_contact": "10114848",
+      "platform": "澜悦",
+      "name": "雨",
+      "email": "10114848@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "澜悦",
+        "name": "雨",
+        "email": "10114848@qq.com"
+      }
+    },
+    {
+      "number": 64,
+      "source_platform": "览山",
+      "source_name": "尔尔",
+      "source_contact": "1461639568",
+      "platform": "览山",
+      "name": "尔尔",
+      "email": "1461639568@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "览山",
+        "name": "尔尔"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "览山",
+        "name": "尔尔",
+        "email": "1461639568@qq.com"
+      }
+    },
+    {
+      "number": 65,
+      "source_platform": "盛星",
+      "source_name": "小白",
+      "source_contact": "2443139469",
+      "platform": "盛星",
+      "name": "小白",
+      "email": "2443139469@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "盛星",
+        "name": "小白"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "盛星",
+        "name": "小白",
+        "email": "2443139469@qq.com"
+      }
+    },
+    {
+      "number": 66,
+      "source_platform": "银灯",
+      "source_name": "未注明",
+      "source_contact": "1982812140",
+      "platform": "银灯",
+      "name": "",
+      "email": "1982812140@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "银灯",
+        "name": "",
+        "email": "1982812140@qq.com"
+      }
+    },
+    {
+      "number": 67,
+      "source_platform": "沐风/拾怡",
+      "source_name": "金喜",
+      "source_contact": "130741790…",
+      "platform": "沐风/拾怡",
+      "name": "金喜",
+      "email": null,
+      "status": "pending",
+      "reason": "账号被截断，现有默认库没有可确认的完整号码"
+    },
+    {
+      "number": 68,
+      "source_platform": "goodnovel",
+      "source_name": "嘻嘻",
+      "source_contact": "3973508378",
+      "platform": "GoodNovel",
+      "name": "嘻嘻",
+      "email": "3973508378@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "GoodNovel",
+        "name": "嘻嘻",
+        "email": "3973508378@qq.com"
+      }
+    },
+    {
+      "number": 69,
+      "source_platform": "moboreader",
+      "source_name": "星雨",
+      "source_contact": "1941699186",
+      "platform": "Moboreader",
+      "name": "星雨",
+      "email": "1941699186@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "Moboreader",
+        "name": "星雨"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "Moboreader",
+        "name": "星雨",
+        "email": "1941699186@qq.com"
+      }
+    },
+    {
+      "number": 70,
+      "source_platform": "Reelshort",
+      "source_name": "芽芽",
+      "source_contact": "3761848852",
+      "platform": "Reelshort",
+      "name": "芽芽",
+      "email": "3761848852@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "Reelshort",
+        "name": "芽芽",
+        "email": "3761848852@qq.com"
+      }
+    },
+    {
+      "number": 71,
+      "source_platform": "逸云",
+      "source_name": "橙子",
+      "source_contact": "2713178922",
+      "platform": "逸云",
+      "name": "橙子",
+      "email": "2713178922@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "逸云",
+        "name": "橙子",
+        "email": "2713178922@qq.com"
+      }
+    },
+    {
+      "number": 72,
+      "source_platform": "文辞故事会",
+      "source_name": "阿予",
+      "source_contact": "1285190987",
+      "platform": "文辞故事会",
+      "name": "阿予",
+      "email": "1285190987@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "文辞故事会",
+        "name": "阿予"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "文辞故事会",
+        "name": "阿予",
+        "email": "1285190987@qq.com"
+      }
+    },
+    {
+      "number": 73,
+      "source_platform": "咸鱼工作室",
+      "source_name": "未注明",
+      "source_contact": "376710388…",
+      "platform": "咸鱼工作室",
+      "name": "",
+      "email": null,
+      "status": "pending",
+      "reason": "账号被截断，现有默认库没有可确认的完整号码"
+    },
+    {
+      "number": 74,
+      "source_platform": "米月文化",
+      "source_name": "未注明",
+      "source_contact": "2589681978",
+      "platform": "米月文化",
+      "name": "",
+      "email": "2589681978@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "米月文化",
+        "name": "",
+        "email": "2589681978@qq.com"
+      }
+    },
+    {
+      "number": 75,
+      "source_platform": "小茗",
+      "source_name": "未注明",
+      "source_contact": "xiaoming0yf@163",
+      "platform": "小茗",
+      "name": "",
+      "email": "xiaoming0yf@163.com",
+      "status": "existing",
+      "resolution": "按用户说明补齐 163 邮箱域名；与现有库地址一致",
+      "existing_identity": {
+        "platform": "小茗",
+        "name": ""
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "小茗",
+        "name": "",
+        "email": "xiaoming0yf@163.com"
+      }
+    },
+    {
+      "number": 76,
+      "source_platform": "清梦工作室",
+      "source_name": "未注明",
+      "source_contact": "3502155079",
+      "platform": "清梦工作室",
+      "name": "",
+      "email": "3502155079@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "清梦工作室",
+        "name": "",
+        "email": "3502155079@qq.com"
+      }
+    },
+    {
+      "number": 77,
+      "source_platform": "红薯网",
+      "source_name": "水滴",
+      "source_contact": "2793493126",
+      "platform": "红薯",
+      "name": "水滴",
+      "email": "2793493126@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "红薯",
+        "name": "水滴"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "红薯",
+        "name": "水滴",
+        "email": "2793493126@qq.com"
+      }
+    },
+    {
+      "number": 78,
+      "source_platform": "笔尚",
+      "source_name": "昼明",
+      "source_contact": "2163911748",
+      "platform": "笔尚",
+      "name": "昼明",
+      "email": "2163911748@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "笔尚",
+        "name": "昼明",
+        "email": "2163911748@qq.com"
+      }
+    },
+    {
+      "number": 79,
+      "source_platform": "墨焱",
+      "source_name": "猫",
+      "source_contact": "2791136047",
+      "platform": "墨焱",
+      "name": "猫",
+      "email": "2791136047@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "墨焱",
+        "name": "猫"
+      },
+      "action": "kept_existing",
+      "stored_identity": {
+        "platform": "墨焱",
+        "name": "猫",
+        "email": "2791136047@qq.com"
+      }
+    },
+    {
+      "number": 80,
+      "source_platform": "猛犸（只要定制）",
+      "source_name": "深雪",
+      "source_contact": "355326496",
+      "platform": "猛犸",
+      "name": "深雪",
+      "email": "355326496@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "猛犸",
+        "name": "深雪",
+        "email": "355326496@qq.com"
+      }
+    },
+    {
+      "number": 81,
+      "source_platform": "起源",
+      "source_name": "染卿",
+      "source_contact": "3061263051",
+      "platform": "起源",
+      "name": "染卿",
+      "email": "3061263051@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "起源",
+        "name": "染卿",
+        "email": "3061263051@qq.com"
+      }
+    },
+    {
+      "number": 82,
+      "source_platform": "八道文化",
+      "source_name": "奶酪",
+      "source_contact": "3645561236",
+      "platform": "八道文化",
+      "name": "奶酪",
+      "email": "3645561236@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "八道文化",
+        "name": "奶酪",
+        "email": "3645561236@qq.com"
+      }
+    },
+    {
+      "number": 83,
+      "source_platform": "白鹭工作室（世情废稿）",
+      "source_name": "芝芝",
+      "source_contact": "1852822433",
+      "platform": "白鹭工作室",
+      "name": "芝芝",
+      "email": "1852822433@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "白鹭工作室",
+        "name": "芝芝",
+        "email": "1852822433@qq.com"
+      }
+    },
+    {
+      "number": 84,
+      "source_platform": "萌麦（废稿）",
+      "source_name": "咕叽",
+      "source_contact": "183064814…",
+      "platform": "萌麦",
+      "name": "咕叽",
+      "email": "1830648140@qq.com",
+      "status": "existing",
+      "resolution": "号码前缀、平台和昵称同时匹配现有默认库唯一记录",
+      "existing_identity": {
+        "platform": "萌麦",
+        "name": "咕叽"
+      },
+      "action": "updated",
+      "changed_fields": [
+        "notes"
+      ],
+      "stored_identity": {
+        "platform": "萌麦",
+        "name": "咕叽",
+        "email": "1830648140@qq.com"
+      }
+    },
+    {
+      "number": 85,
+      "source_platform": "江月（废稿）",
+      "source_name": "漾漾",
+      "source_contact": "813529985",
+      "platform": "江月",
+      "name": "漾漾",
+      "email": "813529985@qq.com",
+      "status": "existing",
+      "existing_identity": {
+        "platform": "江月",
+        "name": "漾漾"
+      },
+      "action": "updated",
+      "changed_fields": [
+        "notes"
+      ],
+      "stored_identity": {
+        "platform": "江月",
+        "name": "漾漾",
+        "email": "813529985@qq.com"
+      }
+    },
+    {
+      "number": 86,
+      "source_platform": "平台未注明",
+      "source_name": "九江（废稿）",
+      "source_contact": "1840464407",
+      "platform": "未知",
+      "name": "九江",
+      "email": "1840464407@qq.com",
+      "status": "new",
+      "action": "added",
+      "stored_identity": {
+        "platform": "未知",
+        "name": "九江",
+        "email": "1840464407@qq.com"
+      }
+    }
+  ],
+  "summary": {
+    "source_entries": 86,
+    "imported_or_merged": 77,
+    "added": 40,
+    "updated": 9,
+    "kept_existing": 28,
+    "pending": 9,
+    "previous_library_size": 434,
+    "new_library_size": 474
+  }
+}

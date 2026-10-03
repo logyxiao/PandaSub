@@ -32,6 +32,7 @@ pub struct Classification {
     pub reason: String,
 }
 
+#[cfg(test)]
 pub fn classify(mail: &IncomingMail) -> Classification {
     classify_with_keywords(mail, &crate::models::default_auto_reply_subject_keywords())
 }

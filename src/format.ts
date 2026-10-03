@@ -43,6 +43,9 @@ export const providerName: Record<string, string> = {
 }
 
 export const logCategoryLabel: Record<string, string> = {
+  blacklist: '编辑拉黑',
+  editor_status: '编辑启用状态',
+  editor_replacement: '同平台替换',
   task: '计划',
   send: '发送',
   limit: '限流',

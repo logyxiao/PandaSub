@@ -31,6 +31,8 @@ async function changesStats<T>(operation: Promise<T>): Promise<T> {
 }
 
 export const api = {
+  listEditorBlocks: () => invoke<import('./types').EditorBlock[]>('list_editor_blocks'),
+  clearEditorBlock: (senderEmail: string, recipientEmail: string) => editLibrary(invoke<void>('clear_editor_block', { senderEmail, recipientEmail })),
   prepareUpdateInstall: () => invoke<void>('prepare_update_install'),
   releaseUpdateInstall: () => invoke<void>('release_update_install'),
   getLocalReplyContent: (id: number) => invoke<import('./types').MailContent>('get_local_reply_content', { id }),
@@ -127,6 +129,9 @@ export const api = {
   importEditorGroups: (data: Uint8Array, fileName: string) => editLibrary(invokeBinary<EditorGroupImportResult>('import_editor_groups', data, { file_name: fileName })),
   addEditor: (input: EditorInput) => editLibrary(invoke<number>('add_editor', { input })),
   updateEditor: (id: number, input: EditorInput) => editLibrary(invoke('update_editor', { id, input })),
+  setEditorsEnabled: (ids: number[], enabled: boolean) => editLibrary(invoke<number>('set_editors_enabled', { ids, enabled })),
+  deleteEditors: (ids: number[]) => editLibrary(invoke<number>('delete_editors', { ids })),
+  setEditorEnabled: (id: number, enabled: boolean) => editLibrary(invoke<void>('set_editor_enabled', { id, enabled })),
   toggleEditorFavorite: (id: number) => editLibrary(invoke<boolean>('toggle_editor_favorite', { id })),
   deleteEditor: (id: number) => editLibrary(invoke('delete_editor', { id })),
   clearEditors: () => editLibrary(invoke<number>('clear_editors')),
@@ -136,7 +141,11 @@ export const api = {
 }
 
 function safeListen<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
-  return listen<T>(event, (e) => { if (event === 'log' || event === 'reply' || event === 'task') invalidateStats(); cb(e.payload) }).then((unlisten) => {
+  return listen<T>(event, (e) => {
+    if (event === 'log' || event === 'reply' || event === 'task') invalidateStats()
+    if (event === 'log' && ['blacklist', 'editor_replacement'].includes((e.payload as TaskLog).category)) editorCache.invalidate()
+    cb(e.payload)
+  }).then((unlisten) => {
     return () => {
       try {
         void Promise.resolve(unlisten()).catch(() => {})

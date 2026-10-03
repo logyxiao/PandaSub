@@ -31,6 +31,7 @@ export interface AccountInput {
 }
 
 export interface Editor {
+  blocked_senders?: string[]
   id: number
   platform: string
   name: string
@@ -295,6 +296,7 @@ export interface Delivery {
 export type ReplyKind = 'auto' | 'human' | 'bounce'
 
 export interface Reply {
+  submissions_paused?: boolean
   id: number
   delivery_id: number | null
   account_id: number | null
@@ -333,7 +335,7 @@ export interface StatsReport {
 }
 
 export interface DeliverySummaryPage {
-  items: { row_index: number; sent_count: number; latest_id: number | null; last_sent_at: string | null }[]
+  items: { row_index: number; sent_count: number; latest_id: number | null; last_sent_at: string | null; latest_recipient?: string | null }[]
   total: number
   sent_total: number
 }
@@ -365,4 +367,9 @@ export interface StorageSummary {
   protected_messages: number
   backup_bytes: number
   backup_count: number
+}
+
+export interface EditorBlock {
+  sender_email: string; recipient_email: string; editor_name: string; platform: string;
+  reason: string; first_seen: string; last_seen: string;
 }

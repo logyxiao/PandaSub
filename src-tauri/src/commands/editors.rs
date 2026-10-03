@@ -485,6 +485,30 @@ pub fn update_editor(
 }
 
 #[tauri::command]
+pub fn set_editor_enabled(state: State<'_, AppState>, id: i64, enabled: bool) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::set_editor_enabled(&conn, id, enabled)
+}
+
+#[tauri::command]
+pub async fn set_editors_enabled(state: State<'_, AppState>, ids: Vec<i64>, enabled: bool) -> Result<usize, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        store::batch_editors(&mut conn, &ids, Some(enabled))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn delete_editors(state: State<'_, AppState>, ids: Vec<i64>) -> Result<usize, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        store::batch_editors(&mut conn, &ids, None)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn toggle_editor_favorite(state: State<'_, AppState>, id: i64) -> Result<bool, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute(
@@ -1124,4 +1148,15 @@ mod performance_tests {
             elapsed[0], elapsed[1]
         );
     }
+}
+
+#[tauri::command]
+pub async fn list_editor_blocks(state: State<'_, AppState>) -> Result<Vec<crate::editor_blocks::EditorBlock>, String> {
+    let db=state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::editor_blocks::list(&*db.lock().map_err(|e|e.to_string())?)).await.map_err(|e|e.to_string())?
+}
+#[tauri::command]
+pub async fn clear_editor_block(state: State<'_, AppState>, sender_email: String, recipient_email: String) -> Result<(),String> {
+    let db=state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::editor_blocks::clear(&*db.lock().map_err(|e|e.to_string())?,&sender_email,&recipient_email)).await.map_err(|e|e.to_string())?
 }

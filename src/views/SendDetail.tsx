@@ -24,6 +24,7 @@ interface DetailRow {
   sentCount: number
   lastSentAt: string | null
   latestId: number | null
+  latestRecipient?: string | null
 }
 
 export function SendDetailModal({ manuscript, revision, editors, enabledAccounts, locked, onClose, onChanged }: {
@@ -98,7 +99,7 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
   const filtered = useMemo(() => (result?.items ?? []).flatMap(summary => {
     const row = rows[summary.row_index]
     return row ? [{ ...row, sent: summary.sent_count > 0, sentCount: summary.sent_count,
-      latestId: summary.latest_id, lastSentAt: summary.last_sent_at }] : []
+      latestId: summary.latest_id, lastSentAt: summary.last_sent_at, latestRecipient: summary.latest_recipient }] : []
   }), [rows, result])
   const sentCount = result?.sent_total
   const busy = locked || resending !== null || loading || Boolean(error) || pending.length > 0 || resolving
@@ -172,7 +173,7 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
     if (row.latestId === null) { toast('没有找到可重发的投递记录', 'warning'); return }
     const ok = await confirm({
       title: '重新发送？',
-      message: `将把「${row.name}」的稿件邮件重新发送一份到 ${row.email}，使用原发件账号。`,
+      message: `将把稿件邮件重新发送一份到 ${row.latestRecipient || row.email}，使用原发件账号。${row.latestRecipient && row.latestRecipient.toLowerCase() !== row.email.toLowerCase() ? '这条记录曾自动替换编辑，此次会发给实际收到邮件的替代编辑。' : ''}`,
       confirmLabel: '重新发送',
     })
     if (!ok) return
@@ -377,6 +378,7 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
                         ? <Badge tone="success" dot>已发送{r.sentCount > 1 ? ` ×${r.sentCount}` : ''}</Badge>
                         : <Badge tone="neutral">未发送</Badge>}
                       <small>{r.lastSentAt ? formatTime(r.lastSentAt) : '—'}</small>
+                      {r.latestRecipient && r.latestRecipient.toLowerCase() !== r.email.toLowerCase() && <small className="warn-text" title={`实际投递给 ${r.latestRecipient}`}>已改投 {r.latestRecipient}</small>}
                     </div>
                   ),
                 },

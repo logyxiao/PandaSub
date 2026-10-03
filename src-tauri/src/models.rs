@@ -675,6 +675,8 @@ fn strip_platform_suffix(value: &str) -> String {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Editor {
+    #[serde(default)]
+    pub blocked_senders: Vec<String>,
     pub id: i64,
     pub platform: String,
     pub name: String,
@@ -789,6 +791,8 @@ pub struct Delivery {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Reply {
+    #[serde(default)]
+    pub submissions_paused: bool,
     pub id: i64,
     pub delivery_id: Option<i64>,
     pub account_id: Option<i64>,

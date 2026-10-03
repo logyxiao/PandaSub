@@ -1073,3 +1073,35 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .mail-attachment small { font-size: 11px; color: var(--muted); }
 .mail-attachment button { flex: none; }
 @media (max-width: 720px) { .mail-attachment-grid { grid-template-columns: minmax(0,1fr); } .mail-envelope summary { gap: 6px; } }
+
+/* Sender-specific recipient refusals remain visible alongside editor identities. */
+.editor-block-badge { display: inline-block; margin-top: 5px; max-width: 100%; padding: 3px 6px; border: 1px solid var(--danger-border); border-radius: 5px; background: var(--danger-soft); color: var(--danger); font-size: 10px; line-height: 1.5; text-align: left; white-space: normal; }
+button.editor-block-badge { cursor: pointer; }
+.editor-block-filters { margin-top: 14px; }
+.editor-block-filters input { flex: 1; min-width: 180px; }
+.editor-block-list { display: grid; gap: 10px; }
+.editor-block-entry { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.editor-block-entry > div { display: grid; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.editor-block-entry span, .editor-block-entry b { font-size: 12px; font-weight: 400; }
+.editor-block-entry b { color: var(--danger); }
+.editor-block-entry small, .editor-block-entry details { color: var(--muted); font-size: 11px; }
+.editor-block-entry > button { flex: none; }
+
+.inbox-editor-status { margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.inbox-editor-status > div { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.inbox-editor-status > div > span { overflow-wrap: anywhere; min-width: 0; }
+.inbox-editor-status .hint { margin: 8px 0 0; }
+
+.reply-list-side .reply-list-tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; min-width: 0; }
+.inbox-mail-heading-meta { flex-wrap: wrap; }
+
+/* Selection controls stay outside the mail button, so selecting never marks mail read. */
+.inbox-batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 11px; color: var(--muted); }
+.inbox-select-all { display: flex; align-items: center; gap: 6px; color: var(--ink); cursor: pointer; }
+.inbox-batch-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.reply-select-row { display: flex; align-items: stretch; min-width: 0; border-bottom: 1px solid var(--border-2); }
+.reply-select-box { display: flex; align-items: center; justify-content: center; flex: 0 0 30px; cursor: pointer; background: var(--surface); }
+.reply-select-row .reply-list-item { flex: 1; min-width: 0; border-bottom: 0; padding-left: 5px; }
+.reply-select-row.is-selected .reply-select-box { background: var(--brand-soft); }
+.reply-select-box input, .inbox-select-all input { width: 14px; height: 14px; accent-color: var(--brand); }
+@media (max-width: 800px) { .inbox-batch-actions { margin-left: 0; } }

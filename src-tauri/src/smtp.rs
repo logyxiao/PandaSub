@@ -341,6 +341,9 @@ pub fn classify_error(err: &SendError) -> (String, String) {
         SendError::Smtp(smtp_err) => {
             let text = smtp_err.to_string();
             let code = smtp_err.status().map(u16::from);
+            if code == Some(550) && crate::editor_blocks::is_blacklist_message(&format!("550 {text}")) {
+                return ("blacklist".into(), smtp_message("服务端拒绝投递（550）".into(), &text));
+            }
             match code {
                 Some(535) | Some(530) | Some(534) => (
                     "auth".into(),
@@ -500,7 +503,7 @@ mod outcome_tests {
     use std::io::{BufRead, Write};
 
     /// A loopback protocol fixture, never a real email provider or account.
-    async fn server_outcome(explicit_rejection: bool) -> SendError {
+    async fn server_outcome(rejection: Option<&'static str>) -> SendError {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -518,9 +521,9 @@ mod outcome_tests {
                 }
                 if in_data {
                     if line == ".\r\n" {
-                        if explicit_rejection {
+                        if let Some(rejection) = rejection {
                             stream
-                                .write_all(b"450 fixture temporary rejection\r\n")
+                                .write_all(rejection.as_bytes())
                                 .unwrap();
                         }
                         // Otherwise simulate accepting DATA then losing the acknowledgement.
@@ -554,13 +557,26 @@ mod outcome_tests {
 
     #[tokio::test]
     async fn lost_data_acknowledgement_requires_review_not_retry() {
-        assert!(!definitely_not_sent(&server_outcome(false).await));
+        assert!(!definitely_not_sent(&server_outcome(None).await));
     }
     #[tokio::test]
     async fn explicit_negative_data_response_can_retry() {
-        assert!(definitely_not_sent(&server_outcome(true).await));
+        assert!(definitely_not_sent(&server_outcome(Some("450 fixture temporary rejection\r\n")).await));
         assert!(definitely_not_sent(&SendError::Build(
             "invalid address".into()
         )));
+    }
+    #[tokio::test]
+    async fn only_explicit_recipient_blacklist_is_classified_as_a_block() {
+        for (response,expected) in [
+            ("550 The sender is blacklisted by the recipient, please contact the recipient.\r\n","blacklist"),
+            ("550 Recipient not found\r\n","send"),
+            ("550 Sender IP is on a public blacklist\r\n","send"),
+            ("450 The sender is blacklisted by the recipient\r\n","limit"),
+        ] {
+            let error=server_outcome(Some(response)).await;
+            assert!(definitely_not_sent(&error));
+            assert_eq!(classify_error(&error).0,expected);
+        }
     }
 }

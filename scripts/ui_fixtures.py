@@ -37,7 +37,7 @@ const functions={
  takeTrayInboxRequest:()=>{const pending=!!window.__trayRequest;window.__trayRequest=false;return pending},
  unreadHumanReplyCount:()=>replies.filter(r=>r.kind==='human'&&r.read_synced&&!r.is_read).length,
  runningTaskCount:()=>1,
- dashboard:(replyKind)=>({account_count:1,manuscript_count:1,editor_count:1,sent_today:window.__sentToday,failed_today:0,running_tasks:1,human_replies:305,auto_replies:0,accepted_replies:0,tasks:[task],recent_replies:replies.filter(r=>!replyKind||(replyKind==='accepted'?r.accepted:r.kind===replyKind)).slice(0,3).map(r=>({...r,snippet:r.body.slice(0,180),body:''}))}),
+ dashboard:(replyKind)=>({account_count:1,manuscript_count:1,editor_count:1,sent_today:window.__sentToday,failed_today:0,running_tasks:1,human_replies:305,auto_replies:0,accepted_replies:0,tasks:[task],recent_replies:replies.filter(r=>!replyKind||(replyKind==='accepted'?r.accepted:r.kind===replyKind)).slice(0,3).map(r=>({...r,submissions_paused:[r.body,r.subject,r.snippet].some(t=>(t||'').includes('暂停收稿')),snippet:r.body.slice(0,180),body:''}))}),
  stageAttachment:(bytes)=>({token:"fixture-token",word_count:new TextDecoder().decode(bytes).replace(/\s/g, "").length}),releaseAttachment:()=>null,
  listManuscripts:()=>[m],getManuscript:(id)=>id===m.id?m:null,listTasks:()=>[task],listAccounts:()=>accounts,
  listEditors:()=>[{id:1,email:'a@example.com',name:'编辑甲',platform:'平台',work_type:['短篇'],rejected_types:[],notes:'',enabled:true,favorited:false}],
@@ -61,7 +61,7 @@ const functions={
  exportLogs:(path)=>path,
  setReplyRead:(id,isRead)=>{if(window.__failSeenStore)throw new Error('fixture IMAP STORE rejected');const reply=replies.find(r=>r.id===id);if(!reply)throw new Error('邮件不存在');serverSeen.set(id,isRead);reply.is_read=isRead;reply.read_synced=true;window.__emit('reply-read-change')},
  syncReplyReadFlags:(ids)=>({states:ids.map(id=>{const reply=replies.find(r=>r.id===id);if(!reply)return null;reply.is_read=serverSeen.get(id);reply.read_synced=true;return{id,is_read:reply.is_read,read_synced:true}}).filter(Boolean).map(state=>{window.__emit('reply-read-change');return state}),errors:[]}),
- listRepliesPage:(kind,taskId,q,limit,offset,accountId)=>{let rows=replies.filter(r=>(!accountId||r.account_id===accountId)&&(!kind||(kind==='unread'?r.kind==='human'&&r.read_synced&&!r.is_read:kind==='submission'?r.delivery_id!=null:kind==='unmatched'?r.delivery_id==null:r.kind===kind))&&(!taskId||r.task_id===taskId)&&(!q||r.body.includes(q)));return{total:rows.length,items:rows.slice(offset,offset+limit).map(r=>({...r,snippet:r.body.slice(0,180),body:''}))}},
+ listRepliesPage:(kind,taskId,q,limit,offset,accountId)=>{let rows=replies.filter(r=>(!accountId||r.account_id===accountId)&&(!kind||(kind==='paused'?[r.body,r.subject,r.snippet].some(t=>(t||'').includes('暂停收稿')):kind==='unread'?r.kind==='human'&&r.read_synced&&!r.is_read:kind==='submission'?r.delivery_id!=null:kind==='unmatched'?r.delivery_id==null:r.kind===kind))&&(!taskId||r.task_id===taskId)&&(!q||r.body.includes(q)));return{total:rows.length,items:rows.slice(offset,offset+limit).map(r=>({...r,submissions_paused:[r.body,r.subject,r.snippet].some(t=>(t||'').includes('暂停收稿')),snippet:r.body.slice(0,180),body:''}))}},
 };
 export const api=new Proxy({}, {get:(_,name)=>(...args)=>{window.__calls.push({name,args});if(!(name in functions))return Promise.reject(new Error('Unexpected API: '+name));return Promise.resolve(functions[name](...args))}});
 '''

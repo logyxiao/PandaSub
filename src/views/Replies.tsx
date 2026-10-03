@@ -78,6 +78,8 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
   }, [])
   const [items, setItems] = useState<Reply[]>([])
   const [editors, setEditors] = useState<Editor[]>([])
+  const [savingEditors, setSavingEditors] = useState<Set<number>>(new Set())
+  const editorWrites = useRef(new Set<number>())
   const [tasks, setTasks] = useState<Task[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -91,6 +93,13 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [total, setTotal] = useState(0)
+  // Selection survives paging, but never leaks across filters or mailbox accounts.
+  const selectionScope = JSON.stringify([accountFilter, kind, taskFilter, query])
+  const [selection, setSelection] = useState<{ scope: string; entries: Map<string, number | null> }>({ scope: selectionScope, entries: new Map() })
+  const selected = useMemo(() => selection.scope === selectionScope ? selection.entries : new Map<string, number | null>(), [selection, selectionScope])
+  useEffect(() => { setSelection(current => current.scope === selectionScope ? current : { scope: selectionScope, entries: new Map() }) }, [selectionScope])
+  const [batchBusy, setBatchBusy] = useState(false)
+  const batchLock = useRef(false)
 
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
@@ -251,6 +260,63 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
     return map
   }, [editors])
 
+  const selectedEditors = useMemo(() => {
+    const ids = new Set(selected.values())
+    return editors.filter(editor => ids.has(editor.id))
+  }, [selected, editors])
+  const selectedEditorIds = new Set(selectedEditors.map(editor => editor.id))
+  const unmatchedSelected = [...selected.values()].filter(id => id === null || !selectedEditorIds.has(id)).length
+  const pageSelected = items.filter(reply => selected.has(mailIdentityKey(reply))).length
+  const allPageSelected = items.length > 0 && pageSelected === items.length
+  const selectionBusy = batchBusy || savingEditors.size > 0
+  const selectReplies = (replies: Reply[], checked: boolean) => {
+    if (batchLock.current || loading) return
+    setSelection(current => {
+      const entries = new Map(current.scope === selectionScope ? current.entries : [])
+      for (const reply of replies) {
+        const key = mailIdentityKey(reply)
+        if (checked) entries.set(key, editorForReply(reply, editorsByEmail)?.id ?? null)
+        else entries.delete(key)
+      }
+      return { scope: selectionScope, entries }
+    })
+  }
+  const batchEditors = async (action: 'pause' | 'enable' | 'delete') => {
+    if (batchLock.current || editorWrites.current.size || loading || !selectedEditors.length) return
+    const targets = selectedEditors.filter(editor => action === 'delete' || editor.enabled !== (action === 'enable'))
+    if (!targets.length) return
+    const ids = targets.map(editor => editor.id)
+    const idSet = new Set(ids)
+    const snapshot = selection
+    batchLock.current = true
+    setBatchBusy(true)
+    try {
+      if (action === 'delete' && !await confirm({
+        title: `删除 ${ids.length} 位编辑`,
+        message: `将从编辑库及编辑组中删除以下 ${ids.length} 位编辑：\n${targets.map(editor => `${editorLabel(editor)} <${editor.email}>`).join('\n')}\n\n邮件与投递历史会保留。已有计划中的收件人不会自动删除，仍可能向这些邮箱发送；如需停止投递，请使用“批量暂停编辑”。`,
+        confirmLabel: `删除 ${ids.length} 位编辑`, tone: 'danger',
+      })) return
+      const count = action === 'delete' ? await api.deleteEditors(ids) : await api.setEditorsEnabled(ids, action === 'enable')
+      setEditors(list => action === 'delete' ? list.filter(editor => !idSet.has(editor.id)) : list.map(editor => idSet.has(editor.id) ? { ...editor, enabled: action === 'enable' } : editor))
+      setSelection(current => current === snapshot ? { scope: current.scope, entries: new Map() } : current)
+      toast(action === 'delete' ? `已删除 ${count} 位编辑，邮件已保留` : action === 'pause' ? `已暂停 ${count} 位编辑，后续投递将跳过这些邮箱` : `已启用 ${count} 位编辑，可重新安排投递`, 'success')
+    } catch (error) { toast(`批量操作失败，未作更改：${String(error)}`, 'error') }
+    finally { batchLock.current = false; setBatchBusy(false) }
+  }
+
+  const toggleEnabled = async (editor: Editor) => {
+    if (batchLock.current || editorWrites.current.has(editor.id)) return
+    editorWrites.current.add(editor.id)
+    setSavingEditors(new Set(editorWrites.current))
+    const enabled = !editor.enabled
+    try {
+      await api.setEditorEnabled(editor.id, enabled)
+      setEditors(list => list.map(item => item.id === editor.id ? { ...item, enabled } : item))
+      toast(enabled ? `${editorLabel(editor)} 已启用，可重新安排投递` : `${editorLabel(editor)} 已停用，后续投递将跳过该邮箱`, 'success')
+    } catch (e) { toast(`编辑状态保存失败：${String(e)}`, 'error') }
+    finally { editorWrites.current.delete(editor.id); setSavingEditors(new Set(editorWrites.current)) }
+  }
+
   const toggleFavorite = async (editor: Editor) => {
     try {
       const saved = await api.toggleEditorFavorite(editor.id)
@@ -259,6 +325,7 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
   }
 
   const removeEditor = async (editor: Editor) => {
+    if (batchLock.current) return
     const label = editor.name.trim() || editor.email
     const ok = await confirm({
       title: '删除编辑',
@@ -348,6 +415,7 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
             options={[
               { value: '', label: '全部类型' },
               { value: 'unread', label: '未读人工回复' },
+              { value: 'paused', label: '暂停收稿' },
               { value: 'human', label: '人工邮件' },
               { value: 'submission', label: '投稿相关' },
               { value: 'unmatched', label: '普通来信' },
@@ -386,6 +454,20 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
         <span className="inbox-rule-explain">退信单独识别</span>
       </div>
 
+      {kind === 'paused' && <p className="hint">按邮件主题或正文中的“暂停收稿”筛选，包含历史邮件。勾选邮件可批量暂停对应编辑；恢复收稿后可批量启用。</p>}
+      <div className="inbox-batch-bar" aria-label="批量编辑操作">
+        <label className="inbox-select-all"><input type="checkbox" aria-label="全选本页邮件"
+          checked={allPageSelected} ref={node => { if (node) node.indeterminate = pageSelected > 0 && !allPageSelected }}
+          disabled={loading || batchBusy || !items.length} onChange={event => selectReplies(items, event.target.checked)} />全选本页</label>
+        <span role="status">已选 {selected.size} 封邮件 / {selectedEditors.length} 位编辑{unmatchedSelected > 0 && `（${unmatchedSelected} 封未匹配，操作时跳过）`}</span>
+        <div className="inbox-batch-actions">
+          <Button size="sm" disabled={loading || selectionBusy || !selectedEditors.some(editor => editor.enabled)} onClick={() => void batchEditors('pause')}>批量暂停编辑</Button>
+          <Button size="sm" disabled={loading || selectionBusy || !selectedEditors.some(editor => !editor.enabled)} onClick={() => void batchEditors('enable')}>批量启用编辑</Button>
+          <Button size="sm" variant="danger" disabled={loading || selectionBusy || !selectedEditors.length} onClick={() => void batchEditors('delete')}>批量删除编辑</Button>
+          <Button size="sm" disabled={batchBusy || !selected.size} onClick={() => setSelection({ scope: selectionScope, entries: new Map() })}>清空选择</Button>
+        </div>
+        {batchBusy && <span role="status">正在处理…</span>}
+      </div>
       <div className={`inbox-workspace ${preview ? 'has-preview' : ''}`}>
         {!loading && !total && !search && !kind && !taskFilter && !accountFilter ? (
           <div className="panel">
@@ -403,7 +485,11 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
                 const pending = reply.kind === 'human' && pendingReads.has(reply.id)
                 const unread = reply.kind === 'human' && reply.read_synced && !reply.is_read
                 const unverified = reply.kind === 'human' && !reply.read_synced
-                return <button type="button" key={reply.id} className={`reply-list-item ${pending || unverified ? 'is-unverified' : unread ? 'is-unread' : 'is-read'}`}
+                return <div className={`reply-select-row ${selected.has(mailIdentityKey(reply)) ? 'is-selected' : ''}`} key={mailIdentityKey(reply)}>
+                  <label className="reply-select-box"><input type="checkbox" aria-label={`选择邮件 ${reply.subject || '无主题'}`}
+                    checked={selected.has(mailIdentityKey(reply))} disabled={loading || batchBusy}
+                    onChange={event => selectReplies([reply], event.target.checked)} /></label>
+                  <button type="button" className={`reply-list-item ${pending || unverified ? 'is-unverified' : unread ? 'is-unread' : 'is-read'}`}
                   aria-current={preview && mailIdentityKey(preview) === mailIdentityKey(reply) ? 'true' : undefined}
                   aria-controls={preview ? 'inbox-mail-preview' : undefined}
                   aria-label={`${reply.kind === 'bounce' ? '退信' : pending ? '正在同步已读状态' : unverified ? '已读状态未同步' : unread ? '未读' : '已读'}邮件 ${sender} ${reply.subject || '无主题'}`}
@@ -416,11 +502,16 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
                   <span className="reply-list-side">
                     <time>{formatTime(reply.received_at)}</time>
                     <span className="reply-list-account" title={`接收账号：${receivingAccount(reply)}`}>{receivingAccount(reply)}</span>
-                    <Badge tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}>
-                      {reply.accepted ? '过稿回复' : (reply.kind === 'human' && reply.delivery_id === null ? '普通来信' : replyKindLabel[reply.kind] ?? reply.kind)}
-                    </Badge>
+                    <span className="reply-list-tags">
+                      {reply.submissions_paused && <Badge tone="warning">暂停收稿</Badge>}
+                      {editor && !editor.enabled && <Badge tone="neutral">编辑已停用</Badge>}
+                      <Badge tone={reply.accepted ? 'success' : (replyKindTone[reply.kind] ?? 'neutral')}>
+                        {reply.accepted ? '过稿回复' : (reply.kind === 'human' && reply.delivery_id === null ? '普通来信' : replyKindLabel[reply.kind] ?? reply.kind)}
+                      </Badge>
+                    </span>
                   </span>
                 </button>
+                </div>
               })}
               {!items.length && <p className="dashboard-empty">{loading ? '正在加载邮件…' : kind === 'unread' && !search && !taskFilter ? '暂无未读人工回复。' : '没有匹配的邮件，请调整账号或筛选条件。'}</p>}
             </div>
@@ -441,6 +532,7 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
                     <Badge tone={preview.accepted ? 'success' : (replyKindTone[preview.kind] ?? 'neutral')}>
                       {preview.accepted ? '过稿回复' : (preview.kind === 'human' && preview.delivery_id === null ? '普通来信' : replyKindLabel[preview.kind] ?? preview.kind)}
                     </Badge>
+                    {preview.submissions_paused && <Badge tone="warning">暂停收稿</Badge>}
                     <time>{preview.received_at}</time>
                   </div>
                   <h2>{preview.subject || '无主题'}</h2>
@@ -454,8 +546,19 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
                   </div>
                   {previewEditor && <div className="inbox-mail-editor-actions">
                     <ReplyFavStar editor={previewEditor} onToggle={(item) => void toggleFavorite(item)} />
-                    <IconButton className="danger" title="删除这位编辑" onClick={() => void removeEditor(previewEditor)}><Trash2 size={15} /></IconButton>
+                    <IconButton disabled={selectionBusy} className="danger" title="删除这位编辑" onClick={() => void removeEditor(previewEditor)}><Trash2 size={15} /></IconButton>
                   </div>}
+                </div>
+                <div className="inbox-editor-status" aria-label="编辑启用状态">
+                  {previewEditor ? <>
+                    <div><Badge tone={previewEditor.enabled ? 'success' : 'neutral'}>{previewEditor.enabled ? '编辑已启用' : '编辑已停用'}</Badge>
+                      <span>{previewEditor.email}</span>
+                      <Button size="sm" disabled={batchBusy || savingEditors.has(previewEditor.id)} onClick={() => void toggleEnabled(previewEditor)}>
+                        {savingEditors.has(previewEditor.id) ? '保存中…' : previewEditor.enabled ? '停用编辑' : '启用编辑'}
+                      </Button>
+                    </div>
+                    <p className="hint">停用会影响所有发件账号，后续投递将跳过此邮箱；已经开始发送的邮件无法撤回。启用后需重新安排未完成的投递。</p>
+                  </> : <p className="hint">未匹配到编辑库中的邮箱，暂无法切换编辑启用状态。</p>}
                 </div>
                 <div className="inbox-mail-body"><Suspense fallback={<p className="hint">正在打开邮件…</p>}><MailContent key={preview.id} reply={preview} account={receivingAccount(preview)} onSubject={updateSubject} /></Suspense></div>
                 <div className="inbox-mail-context">{preview.delivery_id === null && <span>普通来信，不计入投稿统计</span>}<span>关联计划：{replyDelivery(preview).plan}</span><span>对应收稿邮箱：{replyDelivery(preview).email}</span></div>

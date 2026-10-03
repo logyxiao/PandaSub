@@ -2,6 +2,7 @@ import { useBusyAction } from '../hooks/useBusyAction'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { MAX_ATTACHMENT_BYTES, MAX_EDITOR_GROUP_BYTES, readFileBytes } from '../lib/binaryIpc'
 import { useEditorListModel } from '../hooks/useEditorListModel'
+import { EditorBlockBadge, EditorBlocksDialog } from '../components/EditorBlocks'
 import { useRequestGuard } from '../hooks/useRequestGuard'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -14,7 +15,7 @@ import { EditorLibrary } from './EditorLibrary'
 import { Modal } from '../components/Modal'
 import { GroupMemberPicker } from '../components/GroupMemberPicker'
 import { useConfirm, useToast } from '../components/feedback'
-import { Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
+import { Badge, Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
 import { Table, type TableColumn } from '../components/Table'
 import { validateEditorInput } from './editorLibraryShared'
 import { useNav } from '../nav'
@@ -212,6 +213,8 @@ export function EditorsList({
             onClick={onEdit ? () => onEdit(e) : undefined}
             onKeyDown={onEdit ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onEdit(e) } } : undefined}>
             <EditorIdentity name={e.name} platform={e.platform} email={e.email} />
+            {!e.enabled && <Badge tone="neutral">已停用</Badge>}
+            <EditorBlockBadge senders={e.blocked_senders} />
           </div>
         ),
       },
@@ -932,6 +935,7 @@ export function EditorGroupsLibrary() {
 }
 
 export function EditorsView() {
+  const [blockedRecipient, setBlockedRecipient] = useState<string | null>(null)
   const dataMutation = useBusyAction()
   const [updatedEditorId, setUpdatedEditorId] = useState<number | null>(null)
   const [reloadSignal, setReloadSignal] = useState(0)
@@ -1075,8 +1079,10 @@ export function EditorsView() {
       <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.txt" hidden
         onChange={(e) => { void importList(e.target.files?.[0] ?? null); e.target.value = '' }} />
       <EditorLibrary reloadSignal={reloadSignal} updatedEditorId={updatedEditorId} onEdit={openEdit} onDelete={e => void remove(e.id)}
+        onBlockedDetails={setBlockedRecipient}
         onAdd={openAdd} onData={() => setShowData(true)} onPlatformsChange={setPlatformOptions} onTagsChange={setTagOptions}
         onDirtyChange={setRowDirty} onBusyChange={setRowBusy} />
+      {blockedRecipient !== null && <EditorBlocksDialog recipient={blockedRecipient} onClose={() => setBlockedRecipient(null)} onChanged={refresh} />}
 
       {showData && (
         <Modal title="数据管理" width={440} onClose={() => { if (!dataMutation.busy) setShowData(false) }}>

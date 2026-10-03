@@ -44,6 +44,7 @@ pub async fn resend_delivery(
     }
 
     let (_editor_name, recipient_email) = smtp::parse_recipient(&delivery.recipient);
+    ensure_recipient_available(&state, &account.email, &recipient_email)?;
     let (subject, body) = smtp::resolve_outgoing_mail(
         &manuscript,
         &delivery.recipient,
@@ -82,7 +83,15 @@ pub async fn resend_delivery(
     )
     .await;
     settle_send_error(&state, &message_id, &send_result)?;
-    let message_id = send_result.map_err(|err| smtp::classify_error(&err).1)?;
+    let message_id = match send_result {
+        Ok(id) => id,
+        Err(err) => {
+            let (category,message)=smtp::classify_error(&err);
+            let log=store::insert_send_log(&*state.db.lock().map_err(|e|e.to_string())?,delivery.task_id,Some(manuscript.id),Some(account.id),"error",&category,&message,&delivery.recipient)?;
+            let _=app.emit("log",&log);
+            return Err(message);
+        }
+    };
 
     let recorded = {
         let mut conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -193,6 +202,7 @@ pub async fn send_manual_delivery(
     }
 
     let (_editor_name, recipient_email) = smtp::parse_recipient(&recipient);
+    ensure_recipient_available(&state, &account.email, &recipient_email)?;
     let (subject, body) =
         smtp::resolve_outgoing_mail(&manuscript, &recipient, settings.anti_spam_mutation);
     let sender_name = if manuscript.sender_name.trim().is_empty() {
@@ -545,6 +555,15 @@ fn docx_xml_to_text(xml: &str) -> String {
         .replace("&amp;", "&")
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
+}
+
+fn ensure_recipient_available(state: &AppState, sender: &str, recipient: &str) -> Result<(),String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    store::ensure_editor_enabled(&conn, recipient)?;
+    if crate::editor_blocks::blocked(&conn,sender,recipient)? {
+        return Err(format!("发件邮箱 {sender} 已被 {recipient} 拉黑，本次手动发送已停止。可使用自动投递尝试同平台替换，或先在编辑库中调整收件人；对方确认解除后可清除拉黑标记。"));
+    }
+    Ok(())
 }
 
 fn settle_send_error(

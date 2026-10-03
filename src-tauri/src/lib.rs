@@ -1,6 +1,7 @@
 mod classify;
 mod commands;
 mod db;
+mod editor_blocks;
 mod inbox;
 mod models;
 mod scheduler;
@@ -207,6 +208,8 @@ pub fn run() {
             commands::list_pending_sends,
             commands::resolve_pending_send,
             commands::list_editors,
+            commands::list_editor_blocks,
+            commands::clear_editor_block,
             commands::list_editor_groups,
             commands::create_editor_group,
             commands::update_editor_group,
@@ -215,6 +218,9 @@ pub fn run() {
             commands::import_editor_groups,
             commands::add_editor,
             commands::update_editor,
+            commands::set_editor_enabled,
+            commands::set_editors_enabled,
+            commands::delete_editors,
             commands::toggle_editor_favorite,
             commands::delete_editor,
             commands::clear_editors,

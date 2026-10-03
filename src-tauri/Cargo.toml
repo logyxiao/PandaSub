@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.2.8"
+version = "0.2.9"
 description = "熊猫投稿"
 authors = ["you"]
 license = ""
@@ -44,3 +44,7 @@ tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util"] }
+
+# Keep imap 2.x's parser API while fixing expression-macro compatibility.
+[patch.crates-io]
+imap-proto = { path = "vendor/imap-proto" }

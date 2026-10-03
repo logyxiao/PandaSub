@@ -77,6 +77,7 @@ export function editorMatchesPlan(
   selected: string[],
   excluded: Iterable<string> = [],
 ) {
+  if (!editor.enabled) return false
   const next = normalizeEditorTags(editor)
   const tags = next.work_type
   const banned = new Set([...excluded].map((tag) => tag.trim()).filter(Boolean))
