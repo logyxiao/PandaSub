@@ -1,6 +1,7 @@
 import { useEditorListModel } from '../hooks/useEditorListModel'
 import { EditorBlockBadge } from '../components/EditorBlocks'
-import { onLog } from '../api'
+import { onLog, onReply } from '../api'
+import { EditorReplyTime } from '../components/EditorReplyTime'
 import { useEventSubscription } from '../hooks/useEventSubscription'
 import { changeEditorSelection } from '../lib/editorListModel'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -87,6 +88,7 @@ export function EditorLibrary({
   const focusField = useRef<'email' | 'types' | 'notes'>('email')
   const checkAllRef = useRef<HTMLInputElement>(null)
   const requestSeq = useRef(0)
+  const replyStatsPending = useRef(false)
   const confirm = useConfirm()
   const toast = useToast()
   const editorsById = useMemo(() => new Map(items.map(editor => [editor.id, editor])), [items])
@@ -121,6 +123,13 @@ export function EditorLibrary({
       if (seq === requestSeq.current) setLoading(false)
     }
   }, [])
+  useEventSubscription(onReply, () => {
+    replyStatsPending.current = true
+    if (!dirty && !savingRef.current) { replyStatsPending.current = false; void load(true) }
+  }, 300)
+  useEffect(() => {
+    if (!dirty && !saving && replyStatsPending.current) { replyStatsPending.current = false; void load(true) }
+  }, [dirty, saving, load])
   useEventSubscription(onLog, () => { if (!dirty && !savingRef.current) void load(true) }, 200, log => ['blacklist', 'editor_replacement'].includes(log.category))
   useEffect(() => {
     void load(reloadSignal > 0)
@@ -498,6 +507,7 @@ export function EditorLibrary({
                   <th>编辑 / 平台</th>
                   <th>投稿邮箱</th>
                   <th>收稿类型</th>
+                  <th title="每次发送至首次人工回复的平均耗时；未回复不计入">平均回复时间</th>
                   <th>收稿要求与备注</th>
                   <th>操作</th>
                 </tr>
@@ -617,6 +627,7 @@ export function EditorLibrary({
                           </div>
                         )}
                       </td>
+                      <td><EditorReplyTime editor={e} /></td>
                       <td>
                         {editing ? (
                           <textarea
@@ -690,7 +701,7 @@ export function EditorLibrary({
                 })}
                 {!rows.length && (
                   <tr>
-                    <td colSpan={6} className="library-empty">
+                    <td colSpan={7} className="library-empty">
                       {loading
                         ? '正在读取编辑…'
                         : '没有匹配的编辑，请调整筛选。'}

@@ -272,6 +272,10 @@ pub struct Task {
     pub status: String,
     pub schedule_type: String,
     pub scheduled_at: Option<String>,
+    #[serde(default)]
+    pub after_task_id: Option<i64>,
+    #[serde(default)]
+    pub delay_minutes: i64,
     pub retry_max: i64,
     pub sent: i64,
     pub total: i64,
@@ -288,6 +292,10 @@ pub struct TaskInput {
     pub account_ids: Vec<i64>,
     pub schedule_type: String,
     pub scheduled_at: Option<String>,
+    #[serde(default)]
+    pub after_task_id: Option<i64>,
+    #[serde(default)]
+    pub delay_minutes: i64,
     pub retry_max: i64,
 }
 
@@ -307,6 +315,10 @@ pub struct TaskLog {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
+    #[serde(default = "default_send_interval_from_sec")]
+    pub last_send_interval_from_sec: i64,
+    #[serde(default = "default_send_interval_to_sec")]
+    pub last_send_interval_to_sec: i64,
     pub default_retry_max: i64,
     pub anti_spam_mutation: bool,
     pub auto_start: bool,
@@ -381,6 +393,8 @@ pub fn legacy_send_interval_min(from_sec: i64, to_sec: i64) -> i64 {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            last_send_interval_from_sec: DEFAULT_SEND_INTERVAL_FROM_SEC,
+            last_send_interval_to_sec: DEFAULT_SEND_INTERVAL_TO_SEC,
             default_retry_max: 3,
             anti_spam_mutation: true,
             auto_start: false,
@@ -675,6 +689,10 @@ fn strip_platform_suffix(value: &str) -> String {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Editor {
+    #[serde(default)]
+    pub average_reply_seconds: Option<f64>,
+    #[serde(default)]
+    pub reply_sample_count: usize,
     #[serde(default)]
     pub blocked_senders: Vec<String>,
     pub id: i64,

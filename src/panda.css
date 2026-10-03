@@ -211,7 +211,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .library-table th:nth-child(2) { width: 15%; }
 .library-table th:nth-child(3) { width: 23%; }
 .library-table th:nth-child(4) { width: 17%; }
-.library-table th:nth-child(6) { width: 112px; }
+.library-table th:nth-child(5) { width: 110px; }
+.library-table th:nth-child(7) { width: 112px; }
 .library-table td { padding: 8px; }
 .library-table td:first-child { padding-left: 12px; }
 .library-table small { margin-top: 1px; }
@@ -1105,3 +1106,13 @@ button.editor-block-badge { cursor: pointer; }
 .reply-select-row.is-selected .reply-select-box { background: var(--brand-soft); }
 .reply-select-box input, .inbox-select-all input { width: 14px; height: 14px; accent-color: var(--brand); }
 @media (max-width: 800px) { .inbox-batch-actions { margin-left: 0; } }
+
+.editor-reply-time { display: grid; gap: 3px; font-variant-numeric: tabular-nums; }
+.editor-reply-time > span { color: var(--ink); }
+.editor-reply-time > small { color: var(--muted); font-size: 10px; }
+
+.plan-schedule-field { display: grid; gap: 10px; margin: 18px 0; }
+.plan-schedule-field .field { display: grid; gap: 6px; }
+.plan-schedule-field input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; }
+.plan-schedule-field .hint { margin: 0; }
+.plan-scheduled-time { display: block; margin-top: 5px; color: var(--muted); }

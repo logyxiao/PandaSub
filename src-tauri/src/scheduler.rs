@@ -152,12 +152,13 @@ pub fn start_scheduler_watcher(
             tokio::time::sleep(Duration::from_secs(15)).await;
             let now = {
                 let conn = db.lock().unwrap();
+                if store::resolve_relative_schedules(&conn).is_err() { continue; }
                 store::now_str(&conn).unwrap_or_default()
             };
             let due: Vec<i64> = {
                 let conn = db.lock().unwrap();
                 let mut stmt = match conn.prepare(
-                    "SELECT id FROM tasks WHERE schedule_type = 'scheduled'
+                    "SELECT id FROM tasks WHERE schedule_type IN ('scheduled','after_previous')
                      AND status = 'scheduled' AND scheduled_at IS NOT NULL AND scheduled_at <= ?1",
                 ) {
                     Ok(s) => s,
@@ -224,8 +225,9 @@ fn claim_scheduled_task(
         return Ok(false);
     }
     conn.execute(
-        "UPDATE tasks SET status = 'running' WHERE id = ?1 AND status = 'scheduled'",
-        [id],
+        "UPDATE tasks SET status = 'running' WHERE id = ?1 AND status = 'scheduled'
+         AND schedule_type IN ('scheduled','after_previous') AND scheduled_at IS NOT NULL AND scheduled_at <= ?2",
+        rusqlite::params![id, store::now_str(conn)?],
     )
     .map(|n| n == 1)
     .map_err(|e| e.to_string())
@@ -1033,7 +1035,7 @@ mod tests {
             .query_row("SELECT run_id FROM tasks WHERE id=1", [], |r| r.get(0))
             .unwrap();
         conn.execute(
-            "UPDATE tasks SET schedule_type='scheduled',status='scheduled'",
+            "UPDATE tasks SET schedule_type='scheduled',status='scheduled',scheduled_at='2000-01-01 00:00:00'",
             [],
         )
         .unwrap();
@@ -1096,10 +1098,50 @@ mod tests {
     }
 
     #[test]
+    fn relative_schedule_counts_from_finish_and_freezes_deadline() {
+        let mut conn = prepared_fixture();
+        conn.execute_batch("INSERT INTO manuscripts(id,title,body) VALUES(2,'后续稿件','正文');
+            INSERT INTO tasks(id,name,manuscript_ids,status,schedule_type,after_task_id,delay_minutes)
+            VALUES(2,'后续计划','[2]','scheduled','after_previous',1,30);").unwrap();
+        store::resolve_relative_schedules(&conn).unwrap();
+        assert!(store::load_task(&conn,2).unwrap().unwrap().scheduled_at.is_none());
+        assert!(store::delete_task_data(&mut conn,1).is_err());
+        assert!(store::delete_manuscript_data(&mut conn,1).is_err());
+        conn.execute("UPDATE tasks SET status='paused',finished_at='2000-01-01 10:00:00' WHERE id=1",[]).unwrap();
+        store::resolve_relative_schedules(&conn).unwrap();
+        assert!(store::load_task(&conn,2).unwrap().unwrap().scheduled_at.is_none());
+        conn.execute("UPDATE tasks SET status='completed' WHERE id=1",[]).unwrap();
+        store::resolve_relative_schedules(&conn).unwrap();
+        assert_eq!(store::load_task(&conn,2).unwrap().unwrap().scheduled_at.as_deref(), Some("2000-01-01 10:30:00"));
+        store::mark_task_running(&conn,1).unwrap();
+        store::resolve_relative_schedules(&conn).unwrap();
+        assert_eq!(store::load_task(&conn,2).unwrap().unwrap().scheduled_at.as_deref(), Some("2000-01-01 10:30:00"));
+        assert!(claim_scheduled_task(&conn,&HashMap::new(),2).unwrap());
+        assert!(!claim_scheduled_task(&conn,&HashMap::new(),2).unwrap());
+        conn.execute("UPDATE tasks SET status='scheduled',scheduled_at=NULL,delay_minutes=60 WHERE id=2",[]).unwrap();
+        store::mark_task_finished(&conn,1,"stopped").unwrap();
+        let delay: i64 = conn.query_row("SELECT strftime('%s',c.scheduled_at)-strftime('%s',p.finished_at) FROM tasks c JOIN tasks p ON p.id=c.after_task_id WHERE c.id=2",[],|r|r.get(0)).unwrap();
+        assert_eq!(delay,3600);
+        assert!(!claim_scheduled_task(&conn,&HashMap::new(),2).unwrap());
+    }
+
+    #[test]
+    fn scheduled_claim_rechecks_due_time_and_cancellation() {
+        let conn = prepared_fixture();
+        conn.execute("UPDATE tasks SET schedule_type='scheduled',status='scheduled',scheduled_at='2999-01-01 00:00:00'", []).unwrap();
+        assert!(!claim_scheduled_task(&conn, &HashMap::new(), 1).unwrap());
+        conn.execute("UPDATE tasks SET scheduled_at='2000-01-01 00:00:00',status='stopped'", []).unwrap();
+        assert!(!claim_scheduled_task(&conn, &HashMap::new(), 1).unwrap());
+        conn.execute("UPDATE tasks SET status='scheduled'", []).unwrap();
+        assert!(claim_scheduled_task(&conn, &HashMap::new(), 1).unwrap());
+        assert!(!claim_scheduled_task(&conn, &HashMap::new(), 1).unwrap());
+    }
+
+    #[test]
     fn scheduled_task_waits_for_manual_submission_without_losing_schedule() {
         let conn = prepared_fixture();
         conn.execute(
-            "UPDATE tasks SET schedule_type='scheduled',status='scheduled'",
+            "UPDATE tasks SET schedule_type='scheduled',status='scheduled',scheduled_at='2000-01-01 00:00:00'",
             [],
         )
         .unwrap();

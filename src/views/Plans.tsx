@@ -25,7 +25,7 @@ import {
 
 const emptyTask: TaskInput = {
   name: '', manuscript_ids: [], account_ids: [], schedule_type: 'immediate', scheduled_at: null,
-  retry_max: 3,
+  retry_max: 3, after_task_id: null, delay_minutes: 30,
 }
 
 type PlanAction = { label: string; icon: typeof Copy; onClick: () => void; disabled?: boolean; danger?: boolean }
@@ -256,7 +256,10 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     createdDraftId.current = null
     createdTaskId.current = null
     setEditing(null)
-    setForm(createEmptyManuscript(resources.templates))
+    setForm({ ...createEmptyManuscript(resources.templates),
+      send_interval_from_sec: resources.settings.last_send_interval_from_sec ?? DEFAULT_SEND_INTERVAL_FROM_SEC,
+      send_interval_to_sec: resources.settings.last_send_interval_to_sec ?? DEFAULT_SEND_INTERVAL_TO_SEC,
+    })
     setTaskForm({
       ...emptyTask,
       account_ids: enabledAccounts.map((a) => a.id),
@@ -289,6 +292,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
       account_ids: (m.account_ids?.length ? m.account_ids : task?.account_ids) ?? [],
       schedule_type: task?.schedule_type ?? 'immediate',
       scheduled_at: task?.scheduled_at ?? null,
+      after_task_id: task?.after_task_id ?? null, delay_minutes: task?.delay_minutes ?? 30,
       retry_max: task?.retry_max ?? resources.settings.default_retry_max ?? 3,
     })
     setScheduledInput(task?.scheduled_at ? fromDbTime(task.scheduled_at) : '')
@@ -378,7 +382,12 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     if (!sending.length) { toast('还没有可发送的编辑', 'warning'); return }
     if (taskForm.schedule_type === 'scheduled') {
       if (!scheduledInput) { toast('请选择发送时间', 'warning'); return }
-      if (new Date(scheduledInput).getTime() <= Date.now()) { toast('定时时间必须晚于现在', 'warning'); return }
+      if (!Number.isFinite(new Date(scheduledInput).getTime()) || new Date(scheduledInput).getTime() <= Date.now()) { toast('定时时间必须晚于现在', 'warning'); return }
+    }
+    if (taskForm.schedule_type === 'after_previous') {
+      const parent = tasks.find(task => task.id === taskForm.after_task_id)
+      if (!parent || parent.manuscript_ids.includes(targetId ?? -1)) { toast('请选择要等待的其他投稿计划', 'warning'); return }
+      if (!Number.isInteger(taskForm.delay_minutes) || taskForm.delay_minutes! < 1 || taskForm.delay_minutes! > 10080) { toast('延迟时间应为 1–10080 分钟', 'warning'); return }
     }
     saveBusy.current = true
     setSaving(true)
@@ -403,7 +412,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
       }
       setShowEditor(false)
       await load()
-      toast(taskForm.schedule_type === 'scheduled' ? '已预约，到点会自动开始' : '计划已开始发送', 'success')
+      toast(taskForm.schedule_type === 'after_previous' ? '已预约，等待上个计划结束后自动开始' : taskForm.schedule_type === 'scheduled' ? '已预约，到点会自动开始' : '计划已开始发送', 'success')
     } catch (e) { await load(); toast(String(e), 'error') }
     finally { saveBusy.current = false; setSaving(false) }
   }
@@ -430,6 +439,9 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   }
 
   const startAgain = async (task: Task) => {
+    if (task.status === 'scheduled' && !await confirm({
+      title: '提前开始发送？', message: `${task.schedule_type === 'after_previous' ? '原计划需等待上个计划结束及延迟时间' : `原预约时间为 ${task.scheduled_at}`}，确认后将现在开始投递。`, confirmLabel: '立即开始',
+    })) return
     // 已完成的重新发送、循环任务重新循环，都会从头投递，需要确认；停止后继续发送是跳过已投、无副作用，直接继续。
     if (task.status === 'completed' || (task.schedule_type === 'loop' && task.sent > 0)) {
       const ok = await confirm({
@@ -565,6 +577,10 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
         setForm={setForm}
         taskForm={taskForm}
         setTaskForm={setTaskForm}
+        previousTasks={tasks.filter(task => !task.manuscript_ids.includes(editing?.id ?? -1)
+          && task.id < ((editing && ['stopped', 'scheduled'].includes(latestTask(editing.id, tasks)?.status ?? '')) ? latestTask(editing.id, tasks)!.id : Infinity)).sort((a, b) => b.id - a.id)}
+        scheduledInput={scheduledInput}
+        setScheduledInput={setScheduledInput}
         saving={saving || attachmentImport.importing}
         onClose={() => void closeEditor()}
         onSaveDraft={() => void saveDraft()}
@@ -640,6 +656,9 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
                         {isWastePlan && <Badge tone={task ? taskTone[task.status] : 'neutral'} dot>{wasteLabel}</Badge>}
                       </div>
                       <small>{[m.category, ...(m.genres ?? []).slice(0, 2)].filter(Boolean).join(' · ') || '未填写分类'}</small>
+                      {task?.status === 'scheduled' && <small className="plan-scheduled-time">{task.schedule_type === 'after_previous'
+                        ? `等待「${tasks.find(parent => parent.id === task.after_task_id)?.name ?? '原计划'}」结束后 ${task.delay_minutes} 分钟${task.scheduled_at ? ` · 预计 ${task.scheduled_at}` : ''}`
+                        : `预约开始：${task.scheduled_at}`}</small>}
                     </>
                   )
                 },
@@ -693,6 +712,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
                     : task?.status === 'completed' || (task?.schedule_type === 'loop' && task.sent > 0) ? 'repeat'
                     : task?.status === 'stopped' && task.sent > 0 ? 'continue' : ''
                   const moreActions: PlanAction[] = [
+                    ...(task?.status === 'scheduled' ? [{ label: '取消预约', icon: Square, onClick: () => void control(task.id, 'stop') }] : []),
                     ...(active && task ? [{ label: '停止发送', icon: Square, onClick: () => void control(task.id, 'stop') }] : []),
                     { label: '复制计划', icon: Copy, onClick: () => openCopy(m) },
                     { label: '配置投稿邮箱', icon: Mail, onClick: () => openAccountFor(m), disabled: active },

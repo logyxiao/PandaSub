@@ -1,15 +1,17 @@
+import { useState } from 'react'
 import { ArrowLeft, BookOpen, Clock3, Copy, Eye, Mail, Send } from 'lucide-react'
 import { AccountPicker } from '../../components/AccountPicker'
 import { SendIntervalField } from '../../components/SendIntervalField'
-import { Button } from '../../components/ui'
+import { Button, Select } from '../../components/ui'
 import type { PlanEditorModel } from './usePlanEditor'
 export function PlanSendStep({ model }: { model: PlanEditorModel }) {
   const {
     sendCount, copyEditorList, enabledAccounts, selectedAccounts, taskForm, toggleAccount,
     form, sendIntervalTouched, setSendIntervalTouched, updateSendInterval, sendIntervalValid, minutes,
     orphans, overQuotaAccounts, ready, blockers, setStep, saving,
-    testing, testSend, onSaveAndSend,
+    testing, testSend, onSaveAndSend, setTaskForm, scheduledInput, setScheduledInput, scheduleValid, previousTasks,
   } = model
+  const [customDelay, setCustomDelay] = useState(() => ![30, 60, 120].includes(taskForm.delay_minutes ?? 30))
   return ((
     <section className="plan-step-3">
       <div className="plan-step-3-split">
@@ -33,11 +35,44 @@ export function PlanSendStep({ model }: { model: PlanEditorModel }) {
             <span className="plan-content-icon"><Clock3 size={20} strokeWidth={1.7} /></span>
             <div><h3>发送设置</h3><p>每封邮件发完后，随机等待一段时间再发下一封。</p></div>
           </div>
+          <div className="plan-schedule-field">
+            <label className="field">开始发送方式
+              <Select ariaLabel="开始发送方式" value={taskForm.schedule_type} disabled={saving}
+                options={[{ value: 'immediate', label: '立即发送' }, { value: 'scheduled', label: '定时开始发送' }, { value: 'after_previous', label: '上个计划结束后发送' }, ...(taskForm.schedule_type === 'loop' ? [{ value: 'loop', label: '循环本计划' }] : [])]}
+                onChange={value => setTaskForm(current => ({ ...current, schedule_type: value as typeof current.schedule_type, after_task_id: current.after_task_id ?? previousTasks[0]?.id ?? null, delay_minutes: current.delay_minutes || 30 }))} />
+            </label>
+            {taskForm.schedule_type === 'after_previous' && <>
+              <label className="field">等待哪个投稿计划
+                <Select ariaLabel="等待的投稿计划" value={taskForm.after_task_id ?? ''} disabled={saving} searchable
+                  options={[{ value: '', label: '请选择上个计划' }, ...previousTasks.map(task => ({ value: task.id, label: `${task.name}（#${task.id}）` }))]}
+                  onChange={value => setTaskForm(current => ({ ...current, after_task_id: value === '' ? null : Number(value) }))} />
+              </label>
+              <label className="field">结束后等待
+                <Select ariaLabel="结束后等待" value={customDelay ? 'custom' : taskForm.delay_minutes ?? 30} disabled={saving}
+                  options={[{ value: 30, label: '半小时' }, { value: 60, label: '1 小时' }, { value: 120, label: '2 小时' }, { value: 'custom', label: '自定义分钟数' }]}
+                  onChange={value => { setCustomDelay(value === 'custom'); setTaskForm(current => ({ ...current, delay_minutes: value === 'custom' ? 45 : Number(value) })) }} />
+              </label>
+              {customDelay && <label className="field">延迟分钟数
+                <input type="number" aria-label="延迟分钟数" min={1} max={10080} step={1} disabled={saving} value={taskForm.delay_minutes || ''}
+                  onChange={event => setTaskForm(current => ({ ...current, delay_minutes: Number(event.target.value) }))} />
+              </label>}
+              {!previousTasks.length && <p className="warn-text">还没有可等待的前序计划，请先创建一个其他投稿计划。</p>}
+              <p className="hint">从所选计划实际发送结束时开始计时，含手动停止或失败结束；暂停、尚未开始或取消预约不触发。循环计划需停止后才开始计时。请保持应用运行、电脑唤醒且联网。</p>
+            </>}
+            {taskForm.schedule_type === 'scheduled' && <>
+              <label className="field">开始时间（电脑本地时间）
+                <input type="datetime-local" aria-label="定时开始时间" step={60} value={scheduledInput} disabled={saving}
+                  aria-invalid={!!scheduledInput && !scheduleValid} onChange={event => setScheduledInput(event.target.value)} />
+              </label>
+              {scheduledInput && !scheduleValid && <p className="warn-text" role="alert">请选择晚于现在的有效时间。</p>}
+              <p className="hint">预约后到点自动开始，检查间隔约 15 秒。请保持应用运行、电脑唤醒且网络可用；退出或休眠期间错过的预约，会在恢复运行后开始。</p>
+            </>}
+          </div>
           <SendIntervalField fromSec={form.send_interval_from_sec} toSec={form.send_interval_to_sec}
             touched={sendIntervalTouched} onBlur={() => setSendIntervalTouched(true)} onChange={updateSendInterval} />
           <p className="plan-send-desc">
             {sendIntervalValid
-              ? `当前每封间隔 ${form.send_interval_from_sec}–${form.send_interval_to_sec} 秒，默认 100–240 秒。`
+              ? `当前每封间隔 ${form.send_interval_from_sec}–${form.send_interval_to_sec} 秒；保存后会作为下次新建计划的默认间隔。`
               : sendIntervalTouched
                 ? '请填写 1–86400 秒，且最短时间需小于或等于最长时间。'
                 : '完成两个时间输入后会校验发送区间。'}
@@ -75,7 +110,7 @@ export function PlanSendStep({ model }: { model: PlanEditorModel }) {
             {testing ? '发送中…' : '测试发送'}
           </Button>
           <Button variant="primary" disabled={saving || !ready} onClick={() => onSaveAndSend()}>
-            <Send size={15} />开始发送
+            <Send size={15} />{saving ? '保存中…' : ['scheduled', 'after_previous'].includes(taskForm.schedule_type) ? '预约发送' : '开始发送'}
           </Button>
         </div>
       </div>

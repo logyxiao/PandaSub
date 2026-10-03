@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../api'
 import { useToast } from '../../components/feedback'
 import { isValidEmail, parseRecipient } from '../../format'
-import type { Account, Editor, EditorGroup, EditorInput, MailTemplate, Manuscript, ManuscriptInput, TaskInput } from '../../types'
+import type { Account, Editor, EditorGroup, EditorInput, MailTemplate, Manuscript, ManuscriptInput, Task, TaskInput } from '../../types'
 import { emptyEditorListFilters, type EditorListFilters } from '../Editors'
 import {
   LENGTH_TAGS,
@@ -39,6 +39,9 @@ export type PlanEditorProps = {
   setForm: (next: ManuscriptInput | ((f: ManuscriptInput) => ManuscriptInput)) => void
   taskForm: TaskInput
   setTaskForm: (next: TaskInput | ((f: TaskInput) => TaskInput)) => void
+  previousTasks: Task[]
+  scheduledInput: string
+  setScheduledInput: (value: string) => void
   saving: boolean
   onClose: () => void
   onSaveDraft: () => void
@@ -53,7 +56,7 @@ const emptyEditor: EditorInput = {
 
 export function usePlanEditor({
   editing, editors, editorGroups, onReloadEditors, onReloadEditorGroups, onFavoriteChange, enabledAccounts,
-  form, setForm, taskForm, setTaskForm,
+  form, setForm, taskForm, setTaskForm, scheduledInput, setScheduledInput, previousTasks,
   saving, onClose, onSaveDraft, onSaveAndSend, onImportFile, onDefaultTemplatesChange,
 }: PlanEditorProps) {
 
@@ -239,12 +242,23 @@ export function usePlanEditor({
       ? { ...current, send_interval_from_sec: value }
       : { ...current, send_interval_to_sec: value })
   }
+  const [scheduleNow, setScheduleNow] = useState(Date.now)
+  useEffect(() => {
+    if (taskForm.schedule_type !== 'scheduled') return
+    setScheduleNow(Date.now())
+    const timer = window.setInterval(() => setScheduleNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [taskForm.schedule_type])
+  const scheduledTimestamp = new Date(scheduledInput).getTime()
+  const scheduleValid = taskForm.schedule_type === 'after_previous'
+    ? previousTasks.some(task => task.id === taskForm.after_task_id) && Number.isInteger(taskForm.delay_minutes) && taskForm.delay_minutes! >= 1 && taskForm.delay_minutes! <= 10080
+    : taskForm.schedule_type !== 'scheduled' || (Number.isFinite(scheduledTimestamp) && scheduledTimestamp > scheduleNow)
   const ready = Boolean(
     form.title.trim()
     && (fixedTemplate ? fixedTemplate.body.trim() : mailTemplates.some((item) => item.body.trim()))
     && sendCount > 0
     && selectedAccounts.length
-    && sendIntervalValid,
+    && sendIntervalValid && scheduleValid,
   )
 
   // 勾选变化写回 form.recipients
@@ -555,6 +569,7 @@ export function usePlanEditor({
     sendCount === 0 && '待发送的收件人',
     !selectedAccounts.length && '参与发送的邮箱',
     !sendIntervalValid && '有效的发送频率',
+    !scheduleValid && (taskForm.schedule_type === 'after_previous' ? '要等待的计划及有效延迟时间' : '晚于现在的开始时间'),
   ].filter(Boolean) as string[]
 
   const toggleAccount = (id: number) => {
@@ -611,7 +626,7 @@ export function usePlanEditor({
     savePlanAsGroup, toggleSelect, setListCount, setVisibleEditors, platformPeersOf, replacePlatformEditor,
     onFavoriteChange, openEditEditor, listFilters, setListFilters, setSelectedIds, visibleEditors,
     allResultsSelected, selectEditorResults, selectedResultPlatforms, deselectEditorResults, favoriteEditors, hasSelectedFavorite,
-    orphans, sendCount, copyEditorList, enabledAccounts, selectedAccounts, taskForm,
+    orphans, sendCount, copyEditorList, enabledAccounts, selectedAccounts, taskForm, setTaskForm, scheduledInput, setScheduledInput, previousTasks, scheduleValid,
     toggleAccount, sendIntervalTouched, setSendIntervalTouched, updateSendInterval, sendIntervalValid, minutes,
     overQuotaAccounts, ready, blockers, testing, testSend, onSaveAndSend,
     showPlanMembers, setShowPlanMembers, planMemberDraft, setGroupPlanIds, setPlanMemberDraft, showGroupForm,

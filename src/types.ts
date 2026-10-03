@@ -31,6 +31,8 @@ export interface AccountInput {
 }
 
 export interface Editor {
+  average_reply_seconds?: number | null
+  reply_sample_count?: number
   blocked_senders?: string[]
   id: number
   platform: string
@@ -216,7 +218,7 @@ export interface AcceptedWorkDocument {
 }
 
 export type TaskStatus = 'stopped' | 'scheduled' | 'running' | 'paused' | 'completed'
-export type ScheduleType = 'immediate' | 'scheduled' | 'loop'
+export type ScheduleType = 'immediate' | 'scheduled' | 'after_previous' | 'loop'
 
 export interface Task {
   id: number
@@ -226,6 +228,8 @@ export interface Task {
   status: TaskStatus
   schedule_type: ScheduleType
   scheduled_at: string | null
+  after_task_id?: number | null
+  delay_minutes?: number
   retry_max: number
   sent: number
   total: number
@@ -240,6 +244,8 @@ export interface TaskInput {
   account_ids: number[]
   schedule_type: ScheduleType
   scheduled_at: string | null
+  after_task_id?: number | null
+  delay_minutes?: number
   retry_max: number
 }
 
@@ -258,6 +264,8 @@ export interface TaskLog {
 }
 
 export interface Settings {
+  last_send_interval_from_sec?: number
+  last_send_interval_to_sec?: number
   default_retry_max: number
   anti_spam_mutation: boolean
   auto_start: boolean

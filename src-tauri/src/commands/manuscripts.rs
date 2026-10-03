@@ -409,6 +409,7 @@ fn write_manuscript(
     id: Option<i64>,
     prepared: PreparedManuscript,
 ) -> Result<i64, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let input = prepared.input;
     let sql = if id.is_some() {
         "UPDATE manuscripts SET title=:title,body=:body,content_type=:content_type,recipients=:recipients,
@@ -426,7 +427,7 @@ fn write_manuscript(
          :reader_emotion,:style,:genres,:excluded,:accounts,:interval_min,:interval_from,:interval_to,
          :subject,:templates,:fixed_template,CASE WHEN :file_data IS NULL THEN '' ELSE :file_name END,:file_data)"
     };
-    let changed = conn.execute(sql, rusqlite::named_params! {
+    let changed = tx.execute(sql, rusqlite::named_params! {
         ":id": id, ":title": input.title, ":body": input.body, ":content_type": input.content_type,
         ":recipients": prepared.recipients, ":sender_name": input.sender_name.trim(), ":word_count": input.word_count,
         ":category": input.category.trim(), ":reader_category": input.reader_category.trim(), ":reader_emotion": input.reader_emotion.trim(),
@@ -439,7 +440,11 @@ fn write_manuscript(
     if changed == 0 {
         return Err("稿件不存在，请刷新后重试".into());
     }
-    Ok(id.unwrap_or_else(|| conn.last_insert_rowid()))
+    let saved_id = id.unwrap_or_else(|| tx.last_insert_rowid());
+    tx.execute("INSERT INTO settings(key,value) VALUES('last_send_interval',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [serde_json::json!([input.send_interval_from_sec,input.send_interval_to_sec]).to_string()]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(saved_id)
 }
 
 #[tauri::command]
@@ -720,6 +725,25 @@ mod manuscript_write_tests {
                 .contains("不存在")
         );
     }
+    #[test]
+    fn successful_save_remembers_interval_and_failure_rolls_back_both() {
+        let conn = crate::db::test_database();
+        let id = write_manuscript(&conn,None,PreparedManuscript::new(input()).unwrap()).unwrap();
+        let saved = store::load_settings(&conn).unwrap();
+        assert_eq!((saved.last_send_interval_from_sec,saved.last_send_interval_to_sec),(111,222));
+        conn.execute_batch("CREATE TRIGGER fail_preference BEFORE UPDATE ON settings WHEN OLD.key='last_send_interval' BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
+        let mut updated = input(); updated.send_interval_from_sec=45; updated.send_interval_to_sec=90;
+        assert!(write_manuscript(&conn,Some(id),PreparedManuscript::new(updated.clone()).unwrap()).is_err());
+        assert_eq!(store::load_manuscript(&conn,id).unwrap().unwrap().send_interval_from_sec,111);
+        assert_eq!(store::load_settings(&conn).unwrap().last_send_interval_from_sec,111);
+        conn.execute_batch("DROP TRIGGER fail_preference;").unwrap();
+        write_manuscript(&conn,Some(id),PreparedManuscript::new(updated).unwrap()).unwrap();
+        // A stale general settings save cannot overwrite the remembered interval.
+        store::save_settings(&conn,&saved).unwrap();
+        let next = store::load_settings(&conn).unwrap();
+        assert_eq!((next.last_send_interval_from_sec,next.last_send_interval_to_sec),(45,90));
+    }
+
     #[test]
     fn invalid_manuscripts_are_rejected_before_database_write() {
         let mut draft = input();

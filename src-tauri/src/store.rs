@@ -269,6 +269,8 @@ fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
     let raw_rejected: String = r.get(5)?;
     let source: String = r.get(7)?;
     Ok(Editor {
+        average_reply_seconds: None,
+        reply_sample_count: 0,
         blocked_senders: Vec::new(),
         id: r.get(0)?,
         platform: r.get(1)?,
@@ -399,6 +401,37 @@ pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
     Ok(editors)
 }
 
+/// Derived from successful deliveries, one sample per delivery's first valid human reply.
+/// Keep this out of load_editors: the scheduler uses that lightweight path before each send.
+pub fn load_editors_with_reply_stats(conn: &Connection) -> Result<Vec<Editor>, String> {
+    let mut editors = load_editors(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT d.recipient, MIN(CAST(strftime('%s', r.received_at) AS INTEGER) - CAST(strftime('%s', d.sent_at) AS INTEGER))
+         FROM replies r JOIN deliveries d ON d.id=r.delivery_id
+         WHERE r.kind='human' AND r.account_id IS d.account_id
+           AND strftime('%s', d.sent_at) IS NOT NULL
+           AND strftime('%s', r.received_at) IS NOT NULL
+           AND CAST(strftime('%s', r.received_at) AS INTEGER) >= CAST(strftime('%s', d.sent_at) AS INTEGER)
+         GROUP BY d.id"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    let mut stats = std::collections::HashMap::<String, (f64, usize)>::new();
+    for row in rows {
+        let (recipient, seconds) = row.map_err(|e| e.to_string())?;
+        let entry = stats.entry(crate::editor_blocks::mailbox(&recipient)).or_default();
+        entry.0 += seconds as f64;
+        entry.1 += 1;
+    }
+    for editor in &mut editors {
+        if let Some((sum, count)) = stats.get(&editor.email.trim().to_lowercase()) {
+            editor.average_reply_seconds = Some(sum / *count as f64);
+            editor.reply_sample_count = *count;
+        }
+    }
+    Ok(editors)
+}
+
 pub fn load_editor_groups(conn: &Connection) -> Result<Vec<EditorGroup>, String> {
     let mut group_stmt = conn
         .prepare(
@@ -434,7 +467,7 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
         .prepare(
             "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
                     retry_max, sent, total,
-                    created_at, started_at, finished_at
+                    created_at, started_at, finished_at, after_task_id, delay_minutes
              FROM tasks WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -450,6 +483,8 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
                 status: r.get(4)?,
                 schedule_type: r.get(5)?,
                 scheduled_at: r.get(6)?,
+                after_task_id: r.get(13)?,
+                delay_minutes: r.get(14)?,
                 retry_max: r.get(7)?,
                 sent: r.get(8)?,
                 total: r.get(9)?,
@@ -476,7 +511,7 @@ fn load_task_list(conn: &Connection, filter: &str) -> Result<Vec<Task>, String> 
         .prepare(&format!(
             "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
                     retry_max, sent, total,
-                    created_at, started_at, finished_at
+                    created_at, started_at, finished_at, after_task_id, delay_minutes
              FROM tasks {filter} ORDER BY id DESC",
         ))
         .map_err(|e| e.to_string())?;
@@ -492,6 +527,8 @@ fn load_task_list(conn: &Connection, filter: &str) -> Result<Vec<Task>, String> 
                 status: r.get(4)?,
                 schedule_type: r.get(5)?,
                 scheduled_at: r.get(6)?,
+                after_task_id: r.get(13)?,
+                delay_minutes: r.get(14)?,
                 retry_max: r.get(7)?,
                 sent: r.get(8)?,
                 total: r.get(9)?,
@@ -525,6 +562,7 @@ pub fn prune_orphan_tasks(conn: &Connection) -> Result<(), String> {
             .filter(|id| existing.contains(id))
             .collect();
         if alive.is_empty() {
+            ensure_no_waiting_dependents(conn, task.id)?;
             conn.execute(
                 "UPDATE deliveries SET task_id = NULL WHERE task_id = ?1",
                 [task.id],
@@ -711,14 +749,26 @@ pub fn mark_task_running(conn: &Connection, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+pub fn resolve_relative_schedules(conn: &Connection) -> Result<(), String> {
+    conn.execute("UPDATE tasks SET scheduled_at=(
+        SELECT datetime(p.finished_at, '+' || tasks.delay_minutes || ' minutes') FROM tasks p
+        WHERE p.id=tasks.after_task_id AND p.status IN ('completed','stopped') AND p.finished_at IS NOT NULL)
+        WHERE schedule_type='after_previous' AND status='scheduled' AND scheduled_at IS NULL
+        AND after_task_id < id AND delay_minutes BETWEEN 1 AND 10080
+        AND EXISTS(SELECT 1 FROM tasks p WHERE p.id=tasks.after_task_id AND p.status IN ('completed','stopped') AND datetime(p.finished_at) IS NOT NULL)", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn mark_task_finished(conn: &Connection, id: i64, status: &str) -> Result<(), String> {
-    let now = now_str(conn)?;
-    conn.execute(
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let now = now_str(&tx)?;
+    tx.execute(
         "UPDATE tasks SET status = ?1, finished_at = ?2 WHERE id = ?3",
         params![status, now, id],
     )
     .map_err(|e| e.to_string())?;
-    Ok(())
+    resolve_relative_schedules(&tx)?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 pub fn increment_task_sent(conn: &Connection, id: i64) -> Result<(), String> {
@@ -768,10 +818,18 @@ pub fn load_settings(conn: &Connection) -> Result<Settings, String> {
         })
         .optional()
         .map_err(|e| e.to_string())?;
-    match raw {
-        Some(v) => serde_json::from_str(&v).map_err(|e| e.to_string()),
-        None => Ok(Settings::default()),
-    }
+    let mut settings: Settings = match raw {
+        Some(v) => serde_json::from_str(&v).map_err(|e| e.to_string())?,
+        None => Settings::default(),
+    };
+    let last: Option<String> = conn.query_row("SELECT value FROM settings WHERE key='last_send_interval'", [], |r| r.get(0))
+        .optional().map_err(|e| e.to_string())?;
+    let (from, to) = last.and_then(|raw| serde_json::from_str::<(i64,i64)>(&raw).ok())
+        .filter(|(from,to)| *from >= 1 && *to <= 86400 && from <= to)
+        .unwrap_or((crate::models::DEFAULT_SEND_INTERVAL_FROM_SEC, crate::models::DEFAULT_SEND_INTERVAL_TO_SEC));
+    settings.last_send_interval_from_sec = from;
+    settings.last_send_interval_to_sec = to;
+    Ok(settings)
 }
 
 pub fn save_settings(conn: &Connection, settings: &Settings) -> Result<(), String> {
@@ -1111,8 +1169,15 @@ fn refresh_idle_task_progress(conn: &Connection, task_id: i64) -> Result<(), Str
     Ok(())
 }
 
+fn ensure_no_waiting_dependents(conn: &Connection, id: i64) -> Result<(), String> {
+    let waiting: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM tasks WHERE after_task_id=?1 AND schedule_type='after_previous' AND status='scheduled' AND scheduled_at IS NULL)", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if waiting { return Err("还有投稿计划等待此计划结束，请先取消或修改后续预约".into()); }
+    Ok(())
+}
+
 pub fn delete_task_data(conn: &mut Connection, id: i64) -> Result<(), String> {
     ensure_task_resolved(conn, id)?;
+    ensure_no_waiting_dependents(conn, id)?;
     let transaction = conn.transaction().map_err(|e| e.to_string())?;
     transaction
         .execute(
@@ -1732,7 +1797,7 @@ mod tests {
                  CREATE TABLE tasks (
                     id INTEGER PRIMARY KEY, name TEXT NOT NULL, manuscript_ids TEXT NOT NULL,
                     account_ids TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'stopped',
-                    schedule_type TEXT NOT NULL DEFAULT 'immediate', scheduled_at TEXT,
+                    schedule_type TEXT NOT NULL DEFAULT 'immediate', scheduled_at TEXT, after_task_id INTEGER, delay_minutes INTEGER NOT NULL DEFAULT 30,
                     retry_max INTEGER NOT NULL DEFAULT 3, sent INTEGER NOT NULL DEFAULT 0,
                     total INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT '',
                     started_at TEXT, finished_at TEXT, run_id INTEGER NOT NULL DEFAULT 0
@@ -2534,5 +2599,58 @@ mod editor_batch_tests {
         assert_eq!(conn.query_row("SELECT editor_id FROM editor_group_members", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM replies", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(conn.query_row("SELECT recipients FROM manuscripts WHERE id=1", [], |r| r.get::<_, String>(0)).unwrap(), "[\"a@example.com\"]");
+    }
+}
+
+#[cfg(test)]
+mod editor_reply_time_tests {
+    use super::*;
+    #[test]
+    fn averages_first_human_reply_per_delivery_across_accounts_and_history() {
+        let conn = crate::db::test_database();
+        conn.execute_batch("INSERT INTO editors(id,email,name) VALUES(1,'editor@example.com','有回复'),(2,'none@example.com','无回复');
+          INSERT INTO deliveries(id,account_id,recipient,subject,message_id,sent_at) VALUES
+           (1,1,'编辑 <EDITOR@example.com>','稿件','d1','2026-10-01 08:00:00'),
+           (2,2,'editor@example.com','重发','d2','2026-10-02 08:00:00'),
+           (3,1,'editor@example.com','未回复','d3','2026-10-01 08:00:00'),
+           (4,1,'none@example.com','自动回执','d4','2026-10-01 08:00:00'),
+           (5,1,'editor@example.com','异常','d5','无效时间');
+          INSERT INTO replies(imap_uid,delivery_id,account_id,kind,received_at) VALUES
+           (1,1,1,'auto','2026-10-01 08:01:00'),
+           (2,1,1,'human','2026-10-01 10:00:00'),
+           (3,1,1,'human','2026-10-01 18:00:00'),
+           (4,1,1,'human','2026-10-01 10:00:00'),
+           (5,1,1,'human','2026-09-30 08:00:00'),
+           (6,1,1,'human','损坏时间'),
+           (7,2,2,'human','2026-10-02 14:00:00'),
+           (8,2,1,'human','2026-10-02 08:01:00'),
+           (9,3,1,'bounce','2026-10-01 08:01:00'),
+           (10,4,1,'auto','2026-10-01 08:01:00'),
+           (11,5,1,'human','2026-10-01 08:00:00'),
+           (12,NULL,1,'human','2026-10-01 08:01:00');").unwrap();
+        let editors = load_editors_with_reply_stats(&conn).unwrap();
+        let editor = editors.iter().find(|e| e.id == 1).unwrap();
+        assert_eq!(editor.reply_sample_count, 2);
+        assert_eq!(editor.average_reply_seconds, Some(4.0 * 3600.0));
+        let empty = editors.iter().find(|e| e.id == 2).unwrap();
+        assert_eq!(empty.average_reply_seconds, None);
+        assert_eq!(empty.reply_sample_count, 0);
+        // Reclassification updates the derived value without migrations or cached DB columns.
+        conn.execute("UPDATE replies SET kind='auto' WHERE delivery_id=1", []).unwrap();
+        let editor = load_editors_with_reply_stats(&conn).unwrap().into_iter().find(|e| e.id == 1).unwrap();
+        assert_eq!(editor.reply_sample_count, 1);
+        assert_eq!(editor.average_reply_seconds, Some(6.0 * 3600.0));
+        // A genuine zero-second reply counts; missing data must remain null instead.
+        conn.execute("INSERT INTO replies(imap_uid,delivery_id,account_id,kind,received_at) VALUES(99,4,1,'human','2026-10-01 08:00:00')", []).unwrap();
+        let editor = load_editors_with_reply_stats(&conn).unwrap().into_iter().find(|e| e.id == 2).unwrap();
+        assert_eq!(editor.reply_sample_count, 1);
+        assert_eq!(editor.average_reply_seconds, Some(0.0));
+    }
+
+    #[test]
+    fn scheduler_editor_lookup_does_not_require_reply_history() {
+        let conn = crate::db::test_database();
+        conn.execute_batch("DROP TABLE replies; DROP TABLE deliveries;").unwrap();
+        assert!(load_editors(&conn).is_ok());
     }
 }

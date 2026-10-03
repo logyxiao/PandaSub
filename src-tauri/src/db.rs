@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL DEFAULT 'stopped',
   schedule_type TEXT NOT NULL DEFAULT 'immediate',
   scheduled_at TEXT,
+  after_task_id INTEGER,
+  delay_minutes INTEGER NOT NULL DEFAULT 30,
   retry_max INTEGER NOT NULL DEFAULT 3,
   sent INTEGER NOT NULL DEFAULT 0,
   total INTEGER NOT NULL DEFAULT 0,
@@ -261,6 +263,10 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_fixed_mail_template_column(&connection)?;
     add_manuscript_send_interval_column(&connection)?;
     add_manuscript_send_interval_seconds_columns(&connection)?;
+    connection.execute("INSERT OR IGNORE INTO settings(key,value)
+        SELECT 'last_send_interval', printf('[%d,%d]',send_interval_from_sec,send_interval_to_sec)
+        FROM manuscripts WHERE send_interval_from_sec>=1 AND send_interval_to_sec<=86400 AND send_interval_from_sec<=send_interval_to_sec
+        ORDER BY updated_at DESC,id DESC LIMIT 1", []).map_err(|e| e.to_string())?;
     add_reply_accepted_column(&connection)?;
     ensure_columns(
         &connection,
@@ -544,6 +550,8 @@ fn migrate(connection: &Connection) -> Result<(), String> {
                 "schedule_type TEXT NOT NULL DEFAULT 'immediate'",
             ),
             ("scheduled_at", "scheduled_at TEXT"),
+            ("after_task_id", "after_task_id INTEGER"),
+            ("delay_minutes", "delay_minutes INTEGER NOT NULL DEFAULT 30"),
             ("retry_max", "retry_max INTEGER NOT NULL DEFAULT 3"),
             ("sent", "sent INTEGER NOT NULL DEFAULT 0"),
             ("total", "total INTEGER NOT NULL DEFAULT 0"),

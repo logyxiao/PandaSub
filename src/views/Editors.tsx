@@ -2,6 +2,7 @@ import { useBusyAction } from '../hooks/useBusyAction'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { MAX_ATTACHMENT_BYTES, MAX_EDITOR_GROUP_BYTES, readFileBytes } from '../lib/binaryIpc'
 import { useEditorListModel } from '../hooks/useEditorListModel'
+import { EditorReplyTime } from '../components/EditorReplyTime'
 import { EditorBlockBadge, EditorBlocksDialog } from '../components/EditorBlocks'
 import { useRequestGuard } from '../hooks/useRequestGuard'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -251,6 +252,12 @@ export function EditorsList({
             }}
           />
         ),
+      },
+      {
+        key: 'average_reply_seconds',
+        title: '平均回复时间',
+        width: 120,
+        render: (_value, editor) => <EditorReplyTime editor={editor} />,
       },
       {
         key: 'actions',

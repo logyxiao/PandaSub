@@ -43,7 +43,7 @@ pub async fn list_editors(
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        store::load_editors(&conn)
+        store::load_editors_with_reply_stats(&conn)
     })
     .await
     .map_err(|e| e.to_string())?

@@ -107,7 +107,7 @@ export const api = {
   setReplyRead: (id: number, isRead: boolean) => invoke<void>('set_reply_read', { id, isRead }),
   syncReplyReadFlags: (ids: number[]) => invoke<{ states: Array<{ id: number; is_read: boolean; read_synced: boolean }>; errors: Array<{ account_id: number; email: string; message: string }> }>('sync_reply_read_flags', { ids }),
   scanReplies: () => invoke<number>('scan_replies'),
-  reclassifyReplies: () => changesStats(invoke<number>('reclassify_replies')),
+  reclassifyReplies: () => editLibrary(changesStats(invoke<number>('reclassify_replies'))),
   stageAttachment: (bytes: Uint8Array, extension: string) => invokeBinary<{ token: string; word_count: number }>('stage_attachment', bytes, { extension }),
   releaseAttachment: (token: string) => invoke<void>('release_attachment', { token }),
   extractDocx: (data: number[]) => invoke<string>('extract_docx_text', { data }),
@@ -143,6 +143,7 @@ export const api = {
 function safeListen<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   return listen<T>(event, (e) => {
     if (event === 'log' || event === 'reply' || event === 'task') invalidateStats()
+    if (event === 'reply') editorCache.invalidate()
     if (event === 'log' && ['blacklist', 'editor_replacement'].includes((e.payload as TaskLog).category)) editorCache.invalidate()
     cb(e.payload)
   }).then((unlisten) => {

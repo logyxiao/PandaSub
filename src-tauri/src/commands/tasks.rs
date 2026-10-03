@@ -61,7 +61,7 @@ fn validate_task_input(conn: &Connection, input: &TaskInput) -> Result<(), Strin
     }
     if !matches!(
         input.schedule_type.as_str(),
-        "immediate" | "scheduled" | "loop"
+        "immediate" | "scheduled" | "after_previous" | "loop"
     ) {
         return Err("发送方式无效".into());
     }
@@ -71,6 +71,15 @@ fn validate_task_input(conn: &Connection, input: &TaskInput) -> Result<(), Strin
     let unique: std::collections::HashSet<_> = input.manuscript_ids.iter().collect();
     if unique.len() != input.manuscript_ids.len() {
         return Err("同一任务不能重复选择稿件".into());
+    }
+    if input.schedule_type == "after_previous" {
+        let parent = input.after_task_id.ok_or("请选择要等待的投稿计划")?;
+        if !(1..=10080).contains(&input.delay_minutes) { return Err("延迟时间应为 1–10080 分钟".into()); }
+        if input.scheduled_at.is_some() { return Err("跟随计划的开始时间由系统计算".into()); }
+        let predecessor = store::load_task(conn, parent)?.ok_or("要等待的计划已不存在")?;
+        if predecessor.manuscript_ids.iter().any(|id| input.manuscript_ids.contains(id)) {
+            return Err("不能等待同一稿件的计划，请选择其他投稿计划".into());
+        }
     }
     if input.schedule_type == "scheduled" {
         let at = input
@@ -135,7 +144,7 @@ pub fn create_task(
     state: State<'_, AppState>,
     input: TaskInput,
 ) -> Result<CreatedTask, String> {
-    let status = if input.schedule_type == "scheduled" {
+    let status = if matches!(input.schedule_type.as_str(), "scheduled" | "after_previous") {
         "scheduled"
     } else {
         "stopped"
@@ -146,8 +155,8 @@ pub fn create_task(
         ensure_no_manual_sends(&pending, &input.manuscript_ids)?;
         validate_task_input(&conn, &input)?;
         conn.execute(
-            "INSERT INTO tasks (name, manuscript_ids, account_ids, status, schedule_type, scheduled_at, retry_max)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO tasks (name, manuscript_ids, account_ids, status, schedule_type, scheduled_at, retry_max, after_task_id, delay_minutes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 input.name.trim(),
                 json!(input.manuscript_ids).to_string(),
@@ -155,7 +164,9 @@ pub fn create_task(
                 status,
                 input.schedule_type,
                 input.scheduled_at,
-                input.retry_max
+                input.retry_max,
+                if input.schedule_type == "after_previous" { input.after_task_id } else { None },
+                input.delay_minutes,
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -163,7 +174,7 @@ pub fn create_task(
     };
     // The insert has committed. Always return its ID, even if starting fails,
     // so a retry can update this task without depending on a list refresh.
-    let start_error = if input.schedule_type != "scheduled" {
+    let start_error = if !matches!(input.schedule_type.as_str(), "scheduled" | "after_previous") {
         start_task(app, state, id).err()
     } else {
         None
@@ -180,7 +191,7 @@ pub fn update_task(
 ) -> Result<(), String> {
     let handle = scheduler::try_reserve_task_handle(&state.tasks, id)?
         .ok_or("任务正在启动、运行或暂停，请先停止后再修改")?;
-    let next_status = if input.schedule_type == "scheduled" {
+    let next_status = if matches!(input.schedule_type.as_str(), "scheduled" | "after_previous") {
         "scheduled"
     } else {
         "stopped"
@@ -194,12 +205,15 @@ pub fn update_task(
             ensure_no_manual_sends(&pending, &old.manuscript_ids)?;
         }
         store::ensure_task_resolved(&conn, id)?;
+        if input.schedule_type == "after_previous" && input.after_task_id.is_some_and(|parent| parent >= id) {
+            return Err("只能等待比当前计划更早创建的计划，避免互相等待".into());
+        }
         validate_task_input(&conn, &input)?;
         let changed = conn
             .execute(
                 "UPDATE tasks SET name = ?1, manuscript_ids = ?2, account_ids = ?3,
                     status = ?4, schedule_type = ?5, scheduled_at = ?6, retry_max = ?7,
-                    finished_at = NULL
+                    finished_at = NULL, after_task_id = ?9, delay_minutes = ?10
                  WHERE id = ?8 AND status IN ('stopped', 'scheduled')",
                 rusqlite::params![
                     input.name.trim(),
@@ -210,6 +224,8 @@ pub fn update_task(
                     input.scheduled_at,
                     input.retry_max,
                     id,
+                    if input.schedule_type == "after_previous" { input.after_task_id } else { None },
+                    input.delay_minutes,
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -226,7 +242,7 @@ pub fn update_task(
         release_reserved_task(&state, id, &handle)?;
         return Err(error);
     }
-    if input.schedule_type == "scheduled" {
+    if matches!(input.schedule_type.as_str(), "scheduled" | "after_previous") {
         release_reserved_task(&state, id, &handle)?;
         return Ok(());
     }
@@ -510,19 +526,22 @@ pub fn resume_task(app: AppHandle, state: State<'_, AppState>, id: i64) -> Resul
 }
 
 #[tauri::command]
-pub fn stop_task(state: State<'_, AppState>, id: i64) -> Result<(), String> {
-    {
-        let registry = state.tasks.lock().map_err(|e| e.to_string())?;
-        if let Some(handle) = registry.get(&id) {
-            handle.stop();
+pub fn stop_task(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    // Keep reservation and status changes ordered with the scheduler's claim.
+    let registry = state.tasks.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    if let Some(handle) = registry.get(&id) {
+        handle.stop();
+        if store::load_task(&conn, id)?.is_some_and(|task| task.status != "scheduled") {
             return Ok(());
         }
     }
-    // 没有活动 worker（例如应用重启后遗留的假运行状态）：清掉状态而不是静默无操作。
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
     if let Some(task) = store::load_task(&conn, id)? {
-        if matches!(task.status.as_str(), "running" | "paused") {
+        if matches!(task.status.as_str(), "running" | "paused" | "scheduled") {
             store::set_task_status(&conn, id, "stopped")?;
+            if let Some(updated) = store::load_task(&conn, id)? {
+                let _ = app.emit("task", &updated);
+            }
         }
     }
     Ok(())
@@ -573,9 +592,32 @@ mod task_input_tests {
             account_ids: vec![1],
             schedule_type: "scheduled".into(),
             scheduled_at: Some("2096-02-29 12:30:00".into()),
+            after_task_id: None,
+            delay_minutes: 30,
             retry_max: 3,
         }
     }
+    #[test]
+    fn relative_schedule_requires_real_other_plan_and_valid_delay() {
+        let conn = crate::db::test_database();
+        conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'a@example.com','','localhost');
+          INSERT INTO manuscripts(id,title,body,recipients) VALUES(1,'后续稿件','正文','[\"editor@example.com\"]');
+          INSERT INTO tasks(id,name,manuscript_ids) VALUES(1,'前序计划','[2]');").unwrap();
+        let mut draft = input();
+        draft.schedule_type = "after_previous".into(); draft.scheduled_at = None; draft.after_task_id=Some(1);
+        assert!(validate_task_input(&conn,&draft).is_ok());
+        for delay in [0, -1, 10081] {
+            draft.delay_minutes=delay; assert!(validate_task_input(&conn,&draft).is_err());
+        }
+        draft.delay_minutes=60; draft.after_task_id=Some(999);
+        assert!(validate_task_input(&conn,&draft).is_err());
+        draft.after_task_id=Some(1); draft.scheduled_at=Some("2096-01-01 00:00:00".into());
+        assert!(validate_task_input(&conn,&draft).is_err());
+        draft.scheduled_at=None;
+        conn.execute("UPDATE tasks SET manuscript_ids='[1]'",[]).unwrap();
+        assert!(validate_task_input(&conn,&draft).is_err());
+    }
+
     #[test]
     fn scheduling_rejects_invalid_dates_modes_and_duplicate_manuscripts() {
         let conn = crate::db::test_database();
