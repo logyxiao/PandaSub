@@ -9,6 +9,8 @@ pub struct Account {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub sender_name: String,
+    #[serde(default)]
+    pub notes: String,
     pub provider: String,
     pub enabled: bool,
     pub last_sent_at: Option<String>,
@@ -33,6 +35,8 @@ pub struct AccountInput {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub sender_name: String,
+    #[serde(default)]
+    pub notes: String,
     pub provider: String,
     pub enabled: bool,
     #[serde(default)]
@@ -69,6 +73,9 @@ pub struct Manuscript {
     /// 计划指定的投稿邮箱（留空表示使用全部启用邮箱）。
     #[serde(default)]
     pub account_ids: Vec<i64>,
+    /// Distinct successful senders, populated only for the plan list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sent_account_ids: Vec<Option<i64>>,
     /// 旧版分钟档位，仅为旧数据和旧客户端兼容保留。
     #[serde(default = "default_send_interval_min")]
     pub send_interval_min: i64,
@@ -860,6 +867,13 @@ pub struct ReplyFlagSyncError {
 #[derive(Serialize, Debug, Default)]
 pub struct ReplyFlagSyncResult {
     pub states: Vec<ReplyReadState>,
+    pub errors: Vec<ReplyFlagSyncError>,
+}
+
+#[derive(Serialize, Debug, Default)]
+pub struct ReplyMarkReadResult {
+    pub states: Vec<ReplyReadState>,
+    pub failed: usize,
     pub errors: Vec<ReplyFlagSyncError>,
 }
 

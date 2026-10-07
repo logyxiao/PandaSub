@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
-TESTS = ['test-accepted-word-count-ui.py', 'test-plan-detail-editors-ui.py', 'test-editor-dialog-stability-ui.py', 'test-relative-schedule-ui.py', 'test-scheduled-send-ui.py', 'test-editor-reply-time-ui.py', 'test-inbox-batch-ui.py', 'test-paused-inbox-ui.py', 'test-editor-blocks-ui.py', 'test-workflow-ui.py', 'test-panda-ui.py', 'test-inbox-ui.py', 'test-inbox-preview-ui.py', 'test-accepted-ui.py',
+TESTS = ['test-mail-templates-ui.py', 'test-plan-mailboxes-ui.py', 'test-account-notes-selection-ui.py', 'test-inbox-read-all-ui.py', 'test-accepted-word-count-ui.py', 'test-plan-detail-editors-ui.py', 'test-editor-dialog-stability-ui.py', 'test-relative-schedule-ui.py', 'test-scheduled-send-ui.py', 'test-editor-reply-time-ui.py', 'test-inbox-batch-ui.py', 'test-paused-inbox-ui.py', 'test-editor-blocks-ui.py', 'test-workflow-ui.py', 'test-panda-ui.py', 'test-inbox-ui.py', 'test-inbox-preview-ui.py', 'test-accepted-ui.py',
          'test-optimization-ui.py', 'test-accepted-safety-ui.py', 'test-unread-ui.py', 'test-tray-inbox-ui.py', 'test-mail-sync-ui.py', 'test-mail-detail-ui.py', 'test-mail-performance-ui.py', 'test-mail-races-ui.py', 'test-plan-performance-ui.py', 'test-module-audit-ui.py', 'test-boundary-recovery-ui.py', 'test-mail-loading-and-dialog-ui.py', 'test-local-mail-and-confirm-ui.py']
 
 def main():

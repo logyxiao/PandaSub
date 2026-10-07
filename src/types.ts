@@ -4,6 +4,7 @@ export interface Account {
   smtp_host: string
   smtp_port: number
   sender_name: string
+  notes: string
   provider: string
   enabled: boolean
   last_sent_at: string | null
@@ -23,6 +24,7 @@ export interface AccountInput {
   smtp_host: string
   smtp_port: number
   sender_name: string
+  notes: string
   provider: string
   enabled: boolean
   imap_host: string
@@ -103,6 +105,7 @@ export interface Manuscript {
   genres: string[]
   excluded_types?: string[]
   account_ids: number[]
+  sent_account_ids?: Array<number | null>
   send_interval_min?: number
   send_interval_from_sec?: number
   send_interval_to_sec?: number

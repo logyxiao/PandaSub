@@ -12,6 +12,6 @@ export function serverPreset(email: string) {
   }
 }
 export function normalizeAccountForm(form: AccountInput): AccountInput {
-  return { ...form, email: form.email.trim(), sender_name: form.sender_name.trim(),
+  return { ...form, email: form.email.trim(), sender_name: form.sender_name.trim(), notes: (form.notes ?? '').trim(),
     smtp_host: form.smtp_host.trim(), imap_host: form.imap_host.trim(), provider: detectProvider(form.email) }
 }

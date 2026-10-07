@@ -1,12 +1,18 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
-export function EditorNotePreview({
-  note,
+export function TextDetailPreview({
+  text: note,
+  label,
+  heading,
+  className = 'library-note',
   onEdit,
 }: {
-  note: string
-  onEdit: () => void
+  text: string
+  label?: string
+  heading: string
+  className?: string
+  onEdit?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [position, setPosition] = useState({ left: 0, top: 0 })
@@ -85,8 +91,9 @@ export function EditorNotePreview({
   return (
     <>
       <button
+        type="button"
         ref={anchor}
-        className="library-note"
+        className={className}
         aria-describedby={open ? id : undefined}
         onMouseEnter={() => {
           hovered.current = true
@@ -100,11 +107,11 @@ export function EditorNotePreview({
         onBlur={closeSoon}
         onClick={() => {
           clearTimeout(closeTimer.current)
-          setOpen(false)
-          onEdit()
+          if (onEdit) { setOpen(false); onEdit() }
+          else keepOpen()
         }}
       >
-        {hasNote ? note.replace(/\s+/g, ' ').trim() : '待补充收稿备注'}
+        {label ?? (hasNote ? note.replace(/\s+/g, ' ').trim() : '待补充收稿备注')}
       </button>
       {open &&
         hasNote &&
@@ -124,11 +131,15 @@ export function EditorNotePreview({
               closeSoon()
             }}
           >
-            <strong>收稿要求与备注</strong>
+            <strong>{heading}</strong>
             <div>{note}</div>
           </div>,
           document.body,
         )}
     </>
   )
+}
+
+export function EditorNotePreview({ note, onEdit }: { note: string; onEdit: () => void }) {
+  return <TextDetailPreview text={note} heading="收稿要求与备注" onEdit={onEdit} />
 }

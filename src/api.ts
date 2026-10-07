@@ -105,6 +105,8 @@ export const api = {
   listRepliesPage: (kind: string, taskId: number | '', query: string, limit: number, offset: number, accountId: number | '' = '') =>
     invoke<{ items: Reply[]; total: number }>('list_replies_page', { kind: kind || null, taskId: taskId || null, query, limit, offset, accountId: accountId || null }),
   setReplyRead: (id: number, isRead: boolean) => invoke<void>('set_reply_read', { id, isRead }),
+  markRepliesRead: (kind: string, taskId: number | '', query: string, accountId: number | '') =>
+    invoke<{ states: Array<{ id: number; is_read: boolean; read_synced: boolean }>; failed: number; errors: Array<{ account_id: number; email: string; message: string }> }>('mark_replies_read', { kind: kind || null, taskId: taskId || null, query, accountId: accountId || null }),
   syncReplyReadFlags: (ids: number[]) => invoke<{ states: Array<{ id: number; is_read: boolean; read_synced: boolean }>; errors: Array<{ account_id: number; email: string; message: string }> }>('sync_reply_read_flags', { ids }),
   scanReplies: () => invoke<number>('scan_replies'),
   reclassifyReplies: () => editLibrary(changesStats(invoke<number>('reclassify_replies'))),

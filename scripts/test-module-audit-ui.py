@@ -88,6 +88,7 @@ with sync_playwright() as p:
  s.locator('.plan-desk input[type=file]').set_input_files({'name':'稿件.txt','mimeType':'text/plain','buffer':'有效的文稿'.encode()})
  s.get_by_role('button',name='下一步：选择编辑').click()
  s.get_by_role('button',name='下一步：选择邮箱').click()
+ s.get_by_role('checkbox',name='选择 fixture@example.com',exact=True).check()
  s.get_by_role('button',name='开始发送',exact=True).click()
  expect(s.get_by_text('Error: fixture create task failed',exact=True)).to_be_visible()
  s.evaluate('window.__taskRetry=true')

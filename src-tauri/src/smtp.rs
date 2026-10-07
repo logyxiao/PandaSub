@@ -440,6 +440,7 @@ mod tests {
             genres: vec![],
             excluded_types: vec![],
             account_ids: vec![],
+            sent_account_ids: vec![],
             send_interval_min: 3,
             send_interval_from_sec: 100,
             send_interval_to_sec: 240,

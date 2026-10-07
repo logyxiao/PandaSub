@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   smtp_host TEXT NOT NULL,
   smtp_port INTEGER NOT NULL DEFAULT 465,
   sender_name TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
   provider TEXT NOT NULL DEFAULT 'qq',
   enabled INTEGER NOT NULL DEFAULT 1,
   last_sent_at TEXT,
@@ -237,6 +238,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     ])?;
     migrate_accepted_review_status(&connection)?;
     add_account_imap_columns(&connection)?;
+    add_account_notes_column(&connection)?;
     add_manuscript_plan_columns(&connection)?;
     add_editor_enabled_column(&connection)?;
     add_editor_favorited_column(&connection)?;
@@ -629,6 +631,10 @@ fn table_lacks_column(connection: &Connection, table: &str, column: &str) -> boo
         )
         .unwrap_or(0);
     has == 0
+}
+
+fn add_account_notes_column(conn: &Connection) -> Result<(), String> {
+    ensure_columns(conn, "accounts", &[("notes", "notes TEXT NOT NULL DEFAULT ''")])
 }
 
 fn add_account_imap_columns(conn: &Connection) -> Result<(), String> {
@@ -1817,6 +1823,23 @@ mod reliability_tests {
     use super::*;
     use crate::{state::TaskHandle, store};
     use std::{collections::HashMap, sync::Arc};
+
+    #[test]
+    fn account_notes_upgrade_preserves_legacy_accounts_and_saved_notes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&SCHEMA.replacen("  notes TEXT NOT NULL DEFAULT '',\n", "", 1)).unwrap();
+        migrate_delivery_reliability(&conn).unwrap();
+        conn.execute("INSERT INTO accounts(email,password,smtp_host) VALUES('notes@example.com','secret','smtp.example.com')", []).unwrap();
+        add_account_notes_column(&conn).unwrap();
+        let account = store::load_accounts(&conn).unwrap().remove(0);
+        assert_eq!(account.notes, "");
+        assert_eq!(account.password, "secret");
+        conn.execute("UPDATE accounts SET notes=?1 WHERE id=?2", rusqlite::params!["短篇专用\n备用联系", account.id]).unwrap();
+        add_account_notes_column(&conn).unwrap();
+        assert_eq!(store::load_account(&conn, account.id).unwrap().unwrap().notes, "短篇专用\n备用联系");
+        conn.execute("UPDATE accounts SET notes='' WHERE id=?1", [account.id]).unwrap();
+        assert_eq!(store::load_enabled_account_configs(&conn).unwrap()[0].notes, "");
+    }
 
     #[test]
     fn legacy_pending_index_migrates_without_losing_unconfirmed_mail() {

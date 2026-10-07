@@ -359,6 +359,7 @@
 
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
 .toolbar-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.account-note { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 360px; }
 .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .filters > select, .filters > input {

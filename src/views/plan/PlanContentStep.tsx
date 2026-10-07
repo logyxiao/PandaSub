@@ -200,7 +200,7 @@ export function PlanContentStep({ model }: { model: PlanEditorModel }) {
               ) : (
                 <div className="plan-tpl-editor">
                   <label className="plan-tpl-name">模板名称
-                    <input value={activeTpl.name} onChange={(e) => updateActiveTpl({ name: e.target.value })} placeholder="例如：常规问候" />
+                    <input value={activeTpl.name} onChange={(e) => updateActiveTpl({ name: e.target.value })} placeholder="例如：轻轻敲门" />
                   </label>
                   <label className="plan-tpl-name">邮件主题
                     <input
@@ -217,7 +217,7 @@ export function PlanContentStep({ model }: { model: PlanEditorModel }) {
                       className="plan-body"
                       value={activeTpl.body}
                       onChange={(e) => updateActiveTpl({ body: e.target.value })}
-                      placeholder={'编辑老师您好：\n\n现将作品《{{作品名}}》投至贵处，请审阅。'}
+                      placeholder={'您好呀：\n\n带着《{{作品名}}》来投稿啦，全文在附件里。谢谢您抽空看看！'}
                     />
                   </div>
                   <p className="plan-tpl-hint">标题建议带 {'{{字数}}'} 和 {'{{类型}}'}（不含短篇 / 中短篇）。正文可用 {'{{作品名}}'} {'{{篇幅}}'} {'{{字数}}'} {'{{类型}}'}。没选类型时不会带上「类型：」。</p>

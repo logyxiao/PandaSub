@@ -6,12 +6,13 @@ import { Copy, FileX2, FileUp, Mail, MoreHorizontal, Pause, Pencil, Play, Plus, 
 import { createPortal } from 'react-dom'
 import { api, onLog, onTask } from '../api'
 import { AccountPicker } from '../components/AccountPicker'
+import { TextDetailPreview } from '../components/EditorNotePreview'
 import { SendIntervalField } from '../components/SendIntervalField'
 import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton } from '../components/ui'
 import { Table } from '../components/Table'
-import { formatTime, fromDbTime, isValidEmail, statusLabel, taskTone, toDbTime } from '../format'
+import { formatTime, fromDbTime, isValidEmail, providerName, statusLabel, taskTone, toDbTime } from '../format'
 import { useDebouncedSave } from '../hooks/useDebouncedSave'
 import { useNav } from '../nav'
 import type { Account, Editor, EditorGroup, MailTemplate, Manuscript, ManuscriptSummary, ManuscriptInput, Task, TaskInput } from '../types'
@@ -172,6 +173,8 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     return () => { sequence.current++ }
   }, [load])
   useEventSubscription(onTask, task => setTasks(prev => [task, ...prev.filter(item => item.id !== task.id)]))
+  useEventSubscription(onLog, () => { void load() }, 300,
+    log => !showEditor && log.category === 'send' && log.level === 'success' && log.manuscript_id != null)
   useEffect(() => {
     setChrome(showEditor)
     return () => setChrome(false)
@@ -182,6 +185,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     log => detailId !== undefined && log.manuscript_id === detailId)
 
   const enabledAccounts = accounts.filter((a) => a.enabled)
+  const accountsById = useMemo(() => new Map(accounts.map(account => [account.id, account])), [accounts])
 
   const taskByManuscript = useMemo(() => {
     const map = new Map<number, Task>()
@@ -262,7 +266,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     })
     setTaskForm({
       ...emptyTask,
-      account_ids: enabledAccounts.map((a) => a.id),
+      account_ids: [],
       retry_max: resources.settings.default_retry_max,
     })
     setScheduledInput('')
@@ -289,7 +293,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     setTaskForm({
       name: task?.name || m.title,
       manuscript_ids: [m.id],
-      account_ids: (m.account_ids?.length ? m.account_ids : task?.account_ids) ?? [],
+      account_ids: m.account_ids ?? task?.account_ids ?? [],
       schedule_type: task?.schedule_type ?? 'immediate',
       scheduled_at: task?.scheduled_at ?? null,
       after_task_id: task?.after_task_id ?? null, delay_minutes: task?.delay_minutes ?? 30,
@@ -319,7 +323,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
     })
     setTaskForm({
       ...emptyTask,
-      account_ids: (copied.account_ids?.length ? copied.account_ids : task?.account_ids) ?? enabledAccounts.map((a) => a.id),
+      account_ids: copied.account_ids ?? task?.account_ids ?? [],
       retry_max: task?.retry_max ?? resources.settings.default_retry_max ?? 3,
     })
     setScheduledInput('')
@@ -368,9 +372,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   const saveAndSend = async () => {
     if (attachmentImport.importing || saveBusy.current) return
     if (!enabledAccounts.length) { toast('请先添加并启用发件邮箱', 'warning'); return }
-    const selectedAccounts = taskForm.account_ids.length
-      ? enabledAccounts.filter((a) => taskForm.account_ids.includes(a.id))
-      : enabledAccounts
+    const selectedAccounts = enabledAccounts.filter((a) => taskForm.account_ids.includes(a.id))
     if (!selectedAccounts.length) { toast('请至少勾选一个参与发送的邮箱', 'warning'); return }
     const targetId = editing?.id ?? createdDraftId.current
     const current = targetId ? latestTask(targetId, tasks) : undefined
@@ -480,7 +482,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
 
   const planAccounts = (m: ManuscriptSummary) => {
     const task = latestTask(m.id, tasks)
-    return (m.account_ids?.length ? m.account_ids : task?.account_ids) ?? []
+    return m.account_ids ?? task?.account_ids ?? []
   }
 
   const openAccountFor = async (summary: ManuscriptSummary) => {
@@ -635,7 +637,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
           </div>
           <Table
             className="plans-table"
-            minWidth={850}
+            minWidth={900}
             rowKey="id"
             dataSource={visibleManuscripts}
             resetKey={`${filter}:${search}`}
@@ -667,9 +669,40 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
                 },
               },
               {
+                key: 'accounts',
+                title: '投稿邮箱',
+                width: 130,
+                className: 'plan-mailboxes-cell',
+                render: (_value, m) => {
+                  const task = taskByManuscript.get(m.id)
+                  const used = Boolean(m.sent_account_ids?.length)
+                  const configured = task ? (task.account_ids.length ? task.account_ids : enabledAccounts.map(account => account.id)) : m.account_ids
+                  const ids = [...new Set(used ? m.sent_account_ids! : configured)]
+                  if (!ids.length) return <span className="hint">未选择邮箱</span>
+                  return <div className="plan-mailboxes">
+                    {ids.map(id => {
+                      const account = id === null ? undefined : accountsById.get(id)
+                      const label = account ? account.sender_name.trim() || account.email : (id === null ? '历史邮箱信息缺失' : `邮箱已删除（#${id}）`)
+                      const details = account ? [
+                        `笔名：${account.sender_name.trim() || '未填写'}`,
+                        `邮箱：${account.email}`,
+                        `类型：${providerName[account.provider] ?? account.provider}`,
+                        `状态：${account.enabled ? '可用' : '已停用'}`,
+                        `今日发送：${account.sent_today ?? 0} 封`,
+                        `上次发送：${formatTime(account.last_sent_at)}`,
+                        `备注：${account.notes?.trim() || '未填写'}`,
+                      ].join('\n') : label
+                      return <div className="plan-mailbox" key={id ?? 'unknown'}>
+                        <TextDetailPreview text={details} label={label} heading="投稿邮箱信息" className="plan-mailbox-trigger" />
+                      </div>
+                    })}
+                  </div>
+                },
+              },
+              {
                 key: 'progress',
                 title: '进度',
-                width: 160,
+                width: 130,
                 render: (_value, m) => {
                   const task = taskByManuscript.get(m.id)
                   if (!task) return <span className="hint">草稿</span>
@@ -681,7 +714,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
               {
                 key: 'status',
                 title: '状态',
-                width: 92,
+                width: 82,
                 render: (_value, m) => {
                   const task = taskByManuscript.get(m.id)
                   return task

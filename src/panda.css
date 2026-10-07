@@ -648,6 +648,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus
 .plans-table .plan-list-title { max-width: 100%; }
 .plans-table .plan-list-title b { font-size: 13px; }
 .plans-table .plan-list-title + small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-mailboxes { display: grid; gap: 5px; min-width: 0; padding-block: 3px; }
+.plan-mailbox { min-width: 0; }
+.plan-mailbox-trigger { display: block; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--ink-2); font: inherit; font-size: 12px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+.plan-mailbox-trigger:hover { color: var(--brand-strong); }
 .plan-progress { display: grid; gap: 8px; width: 100%; max-width: 150px; }
 .plan-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; line-height: 1; }
 .plan-progress-head > span { color: var(--muted); font-size: 10.5px; white-space: nowrap; }

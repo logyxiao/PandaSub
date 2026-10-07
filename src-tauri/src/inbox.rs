@@ -1050,6 +1050,7 @@ mod tests {
             smtp_host: String::new(),
             smtp_port: 465,
             sender_name: String::new(),
+            notes: String::new(),
             provider: String::new(),
             enabled: true,
             last_sent_at: None,
@@ -1196,6 +1197,22 @@ mod budget_tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn bulk_seen_store_requires_verified_flags_and_preserves_other_flags() {
+        let response = b"* OK fixture\r\na1 OK login\r\na2 OK store\r\n* 1 FETCH (UID 7 FLAGS (\\Seen \\Flagged))\r\n* 2 FETCH (UID 8 FLAGS ())\r\na3 OK fetch\r\n";
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let mut client = imap::Client::new(Transcript {
+            input: std::io::Cursor::new(response.to_vec()), commands: commands.clone(),
+        });
+        client.read_greeting().unwrap();
+        let mut session = client.login("fixture", "").map_err(|e| e.0.to_string()).unwrap();
+        let states = store_seen_flags_session(&mut session, &[7, 8, 9]).unwrap();
+        assert_eq!(states, HashMap::from([(7, true)]));
+        let sent = String::from_utf8(commands.lock().unwrap().clone()).unwrap();
+        assert!(sent.contains("UID STORE 7,8,9 +FLAGS (\\Seen)"));
+        assert!(sent.contains("UID FETCH 7,8,9 (UID FLAGS)"));
     }
 
     #[test]
@@ -1592,6 +1609,51 @@ mod budget_tests {
     }
 }
 
+fn store_seen_flags_session<S: Read + Write>(
+    session: &mut imap::Session<S>,
+    uids: &[u32],
+) -> Result<HashMap<u32, bool>, String> {
+    if uids.is_empty() { return Ok(HashMap::new()); }
+    let uid_set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    session.uid_store(uid_set, "+FLAGS (\\Seen)").map_err(|e| e.to_string())?;
+    // A successful STORE alone does not prove that every requested UID exists.
+    let mut states = fetch_seen_flags_session(session, uids)?;
+    states.retain(|_, seen| *seen);
+    Ok(states)
+}
+
+pub(crate) fn mark_replies_read(
+    db: &Arc<Mutex<Connection>>,
+    ids: Vec<i64>,
+) -> Result<crate::models::ReplyMarkReadResult, String> {
+    mark_replies_read_with(db, ids, &|account, validity, uids, _| {
+        flags::with_session(account, validity, |session| store_seen_flags_session(session, uids))
+    })
+}
+
+fn mark_replies_read_with<F>(
+    db: &Arc<Mutex<Connection>>,
+    ids: Vec<i64>,
+    write: &F,
+) -> Result<crate::models::ReplyMarkReadResult, String>
+where
+    F: Fn(&Account, i64, &[u32], &[u32]) -> Result<HashMap<u32, bool>, String> + Sync,
+{
+    let mut result = crate::models::ReplyMarkReadResult::default();
+    for batch in ids.chunks(100) {
+        // Reuse namespace validation, revision guards and per-account error isolation.
+        let synced = sync_reply_flags_with(db, batch.to_vec(), write)?;
+        result.states.extend(synced.states);
+        for error in synced.errors {
+            if !result.errors.iter().any(|saved| saved.account_id == error.account_id && saved.message == error.message) {
+                result.errors.push(error);
+            }
+        }
+    }
+    result.failed = ids.len().saturating_sub(result.states.len());
+    Ok(result)
+}
+
 pub(crate) fn sync_reply_flags(
     db: &Arc<Mutex<Connection>>,
     ids: Vec<i64>,
@@ -1933,6 +1995,43 @@ mod flag_sync_result_tests {
             ).unwrap();
         }
         Arc::new(Mutex::new(conn))
+    }
+
+    #[test]
+    fn bulk_read_keeps_partial_successes_and_counts_unsyncable_mail() {
+        let db = database();
+        {
+            let conn = db.lock().unwrap();
+            for id in 7..=211 {
+                conn.execute("INSERT INTO replies(id,account_id,imap_uid,imap_uid_validity,kind,is_read,read_synced) VALUES(?1,1,?1,10,'human',0,1)", [id]).unwrap();
+            }
+            conn.execute("UPDATE replies SET imap_generation=9 WHERE id=6", []).unwrap();
+        }
+        let result = mark_replies_read_with(&db, (1..=211).collect(), &|account, _, uids, _| {
+            assert!(uids.len() <= 100);
+            if account.id == 2 { return Err("fixture-secret offline".into()); }
+            // UID 7 disappeared from the server; it must not be counted as read.
+            Ok(uids.iter().filter(|uid| **uid != 7).map(|uid| (*uid, true)).collect())
+        }).unwrap();
+        assert_eq!(result.states.len(), 208);
+        assert_eq!(result.failed, 3);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].message, "*** offline");
+        let conn = db.lock().unwrap();
+        for id in [2, 6, 7] {
+            assert!(!store::reply_flag_target(&conn, id).unwrap().unwrap().local_is_read);
+        }
+    }
+
+    #[test]
+    fn bulk_read_does_not_overwrite_a_newer_read_action() {
+        let db = database();
+        let result = mark_replies_read_with(&db, vec![1], &|_, _, _, _| {
+            store::set_reply_read(&db.lock().unwrap(), 1, false).unwrap();
+            Ok(HashMap::from([(1, true)]))
+        }).unwrap();
+        assert_eq!(result.failed, 1);
+        assert!(result.states.is_empty());
     }
 
     #[test]

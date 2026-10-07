@@ -787,8 +787,13 @@ export function EditorGroupsLibrary() {
       {!loading && !groups.length ? (
         <div className="panel">
           <EmptyState icon={FolderOpen} title="还没有编辑组"
-            desc="把常投的人收成一组，写计划时点一下就能整组选入。"
-            action={<Button size="sm" variant="primary" onClick={openNew}><Plus size={13} />新建编辑组</Button>} />
+            desc="把常投的人收成一组，写计划时点一下就能整组选入。也可以直接导入已有的编辑组。"
+            action={<div className="toolbar-actions">
+              <Button size="sm" variant="primary" disabled={mutation.busy} onClick={openNew}><Plus size={13} />新建编辑组</Button>
+              <Button size="sm" disabled={mutation.busy} onClick={() => groupFileRef.current?.click()}>
+                <Upload size={13} />{importing ? '导入中…' : '导入'}
+              </Button>
+            </div>} />
         </div>
       ) : (
         <div className="editor-group-workspace">

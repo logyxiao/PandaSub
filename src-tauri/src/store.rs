@@ -8,7 +8,7 @@ use crate::models::{
 const ACCOUNT_COLS: &str =
     "id, email, password, smtp_host, smtp_port, sender_name, provider, enabled,
                     last_sent_at,
-                    imap_host, imap_port, check_replies, imap_uid, created_at, imap_uid_validity, imap_generation";
+                    imap_host, imap_port, check_replies, imap_uid, created_at, imap_uid_validity, imap_generation, notes";
 
 fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     Ok(Account {
@@ -18,6 +18,7 @@ fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         smtp_host: r.get(3)?,
         smtp_port: r.get::<_, i64>(4)? as u16,
         sender_name: r.get(5)?,
+        notes: r.get(16)?,
         provider: r.get(6)?,
         enabled: r.get::<_, i64>(7)? != 0,
         last_sent_at: r.get(8)?,
@@ -76,6 +77,7 @@ fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
         genres: parse_list(&raw_genres),
         excluded_types: parse_list(&raw_excluded),
         account_ids: parse_required_list::<i64>(&raw_accounts, 18)?,
+        sent_account_ids: Vec::new(),
         send_interval_min: r.get(20)?,
         send_interval_from_sec: r.get(22)?,
         send_interval_to_sec: r.get(23)?,
@@ -232,7 +234,23 @@ pub fn load_manuscript_list(conn: &Connection, summary: bool) -> Result<Vec<Manu
     let mut stmt = conn.prepare(&format!("SELECT {columns} FROM manuscripts ORDER BY id DESC"))
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], map_manuscript).map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    let mut manuscripts = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    if summary && !manuscripts.is_empty() {
+        // One compact aggregate for the list; never load message bodies or full delivery history.
+        let mut senders = std::collections::HashMap::<i64, Vec<Option<i64>>>::new();
+        let mut stmt = conn.prepare("SELECT manuscript_id, account_id FROM deliveries WHERE manuscript_id IS NOT NULL GROUP BY manuscript_id, account_id ORDER BY manuscript_id, account_id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, account_id) = row.map_err(|e| e.to_string())?;
+            senders.entry(id).or_default().push(account_id);
+        }
+        for manuscript in &mut manuscripts {
+            manuscript.sent_account_ids = senders.remove(&manuscript.id).unwrap_or_default();
+        }
+    }
+    Ok(manuscripts)
 }
 
 /// 加载稿件的附件（文件名 + 内容），没有附件时返回 None。列表查询不带附件，仅发送时按需读取。
@@ -852,8 +870,50 @@ pub fn load_default_mail_templates(conn: &Connection) -> Result<Vec<MailTemplate
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    raw.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
-        .unwrap_or_else(|| Ok(Vec::new()))
+    let mut templates: Vec<MailTemplate> = raw.map(|value| serde_json::from_str(&value).map_err(|e| e.to_string()))
+        .unwrap_or_else(|| Ok(Vec::new()))?;
+    const UPGRADE_KEY: &str = "mail_templates.friendly_twenty.v1";
+    const COPY_UPGRADE_KEY: &str = "mail_templates.casual_copy.v2";
+    let expand = !setting_exists(conn, UPGRADE_KEY)?;
+    if !expand && setting_exists(conn, COPY_UPGRADE_KEY)? {
+        return Ok(templates);
+    }
+    #[derive(serde::Deserialize)]
+    struct Catalog {
+        presets: Vec<MailTemplate>,
+        legacy: Vec<MailTemplate>,
+        previous: Vec<MailTemplate>,
+    }
+    let catalog: Catalog = serde_json::from_str(include_str!("../../src/data/mail-template-catalog.json"))
+        .map_err(|e| e.to_string())?;
+    templates.retain(|item| !["t9", "t10"].contains(&item.id.as_str()) && !["初次投稿", "完整稿件"].contains(&item.name.trim()));
+    for item in &mut templates {
+        if let Some(preset) = catalog.presets.iter().find(|preset| preset.id == item.id) {
+            let previous: Vec<_> = catalog.legacy.iter().chain(&catalog.previous).filter(|old| old.id == item.id).collect();
+            if previous.iter().any(|old| item.body == old.body) { item.body = preset.body.clone(); }
+            if previous.iter().any(|old| item.name == old.name) { item.name = preset.name.clone(); }
+            if previous.iter().any(|old| item.subject == old.subject) { item.subject = preset.subject.clone(); }
+        }
+        // Keep user-written content, but do not address an uncertain editor by name.
+        item.body = item.body.replace("{{编辑昵称}}", "编辑老师").replace("{{收件人}}", "编辑老师");
+        for token in ["{{编辑昵称}}", "{{收件人}}"] {
+            for prefix in ["给", "致", ""] {
+                item.subject = item.subject.replace(&format!("{prefix}{token}"), "");
+            }
+        }
+        item.subject = item.subject.trim().trim_start_matches(['：', ':', '，', ',']).trim().to_string();
+    }
+    for preset in catalog.presets {
+        if !expand || templates.len() >= 20 { break; }
+        if !templates.iter().any(|item| item.id == preset.id) { templates.push(preset); }
+    }
+    // Upgrade only once: later user deletions must remain deleted.
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    save_default_mail_templates(&tx, &templates)?;
+    tx.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?1,'1')", [UPGRADE_KEY]).map_err(|e| e.to_string())?;
+    tx.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?1,'1')", [COPY_UPGRADE_KEY]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(templates)
 }
 
 pub fn save_default_mail_templates(
@@ -868,6 +928,71 @@ pub fn save_default_mail_templates(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod default_mail_template_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_defaults_have_twenty_templates_without_recipient_names() {
+        let conn = crate::db::test_database();
+        let templates = load_default_mail_templates(&conn).unwrap();
+        assert_eq!(templates.len(), 20);
+        let ids: std::collections::HashSet<_> = templates.iter().map(|item| &item.id).collect();
+        assert_eq!(ids.len(), 20);
+        for item in &templates {
+            for text in [&item.subject, &item.body] {
+                assert!(!text.contains("{{编辑昵称}}") && !text.contains("{{收件人}}"));
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_defaults_expand_once_preserving_custom_content_and_later_deletions() {
+        let conn = crate::db::test_database();
+        let catalog: serde_json::Value = serde_json::from_str(include_str!("../../src/data/mail-template-catalog.json")).unwrap();
+        let mut old: Vec<MailTemplate> = serde_json::from_value(catalog["legacy"].clone()).unwrap();
+        old[0].body = "{{编辑昵称}}，这是我自己写的投稿说明。".into();
+        old[0].subject = "给{{收件人}}：我的自定义主题".into();
+        old[0].name = "我的模板".into();
+        save_default_mail_templates(&conn, &old).unwrap();
+        let upgraded = load_default_mail_templates(&conn).unwrap();
+        assert_eq!(upgraded.len(), 20);
+        assert_eq!(upgraded[0].body, "编辑老师，这是我自己写的投稿说明。");
+        assert_eq!(upgraded[0].subject, "我的自定义主题");
+        assert_eq!(upgraded[0].name, "我的模板");
+        assert_eq!(upgraded[1].body, catalog["presets"][1]["body"].as_str().unwrap());
+        // A user may still deliberately remove templates after the one-time upgrade.
+        save_default_mail_templates(&conn, &upgraded[..3]).unwrap();
+        assert_eq!(load_default_mail_templates(&conn).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn casual_copy_refreshes_previous_defaults_without_restoring_deleted_templates() {
+        let conn = crate::db::test_database();
+        let catalog: serde_json::Value = serde_json::from_str(include_str!("../../src/data/mail-template-catalog.json")).unwrap();
+        let previous: Vec<MailTemplate> = serde_json::from_value(catalog["previous"].clone()).unwrap();
+        let mut saved = previous[..2].to_vec();
+        saved[1].body = "我自己写的投稿话术".into();
+        save_default_mail_templates(&conn, &saved).unwrap();
+        conn.execute("INSERT INTO settings(key,value) VALUES('mail_templates.friendly_twenty.v1','1')", []).unwrap();
+        let updated = load_default_mail_templates(&conn).unwrap();
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[0].body, "哈喽，来投稿啦🥺 《{{作品名}}》{{类型}}，麻烦看看！");
+        assert_eq!(updated[1].body, saved[1].body);
+        assert_eq!(load_default_mail_templates(&conn).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn invalid_saved_templates_are_reported_without_overwriting_them() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO settings(key,value) VALUES('default_mail_templates','broken json')", []).unwrap();
+        assert!(load_default_mail_templates(&conn).is_err());
+        assert!(!setting_exists(&conn, "mail_templates.friendly_twenty.v1").unwrap());
+        let saved: String = conn.query_row("SELECT value FROM settings WHERE key='default_mail_templates'", [], |row| row.get(0)).unwrap();
+        assert_eq!(saved, "broken json");
+    }
 }
 
 pub fn setting_exists(conn: &Connection, key: &str) -> Result<bool, String> {
@@ -1619,6 +1744,25 @@ pub fn query_replies(
     Ok(crate::models::ReplyPage { items, total })
 }
 
+/// Snapshot every matching unread mail, independent of the visible page.
+pub fn unread_reply_ids(
+    conn: &Connection,
+    kind: Option<&str>,
+    task_id: Option<i64>,
+    query: &str,
+    account_id: Option<i64>,
+) -> Result<Vec<i64>, String> {
+    let (filter, values) = reply_filter(kind, task_id, &query.trim().to_lowercase(), account_id);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id {REPLY_FROM} {filter} AND r.kind='human' AND r.is_read=0 AND r.read_synced=1 ORDER BY r.account_id,r.id"
+    )).map_err(|e| e.to_string())?;
+    let ids = stmt.query_map(rusqlite::params_from_iter(&values), |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
 pub fn load_replies(
     conn: &Connection,
     kind: Option<&str>,
@@ -2187,6 +2331,25 @@ pub fn delivery_summary_page(
 mod outbox_tests {
     use super::*;
     #[test]
+    fn plan_sender_summary_uses_distinct_successful_deliveries_including_manual_sends() {
+        let conn = fixture();
+        conn.execute("UPDATE manuscripts SET account_ids='[3]' WHERE id=10", []).unwrap();
+        conn.execute("INSERT INTO manuscripts(id,title,body,account_ids) VALUES(11,'草稿','','[]')", []).unwrap();
+        conn.execute_batch("INSERT INTO deliveries(task_id,account_id,manuscript_id,recipient,message_id) VALUES
+            (1,1,10,'a@example.com','m1'),(1,1,10,'b@example.com','m2'),
+            (NULL,2,10,'c@example.com','manual'),(1,NULL,10,'d@example.com','legacy'),
+            (1,99,10,'e@example.com','deleted');").unwrap();
+        // Pending/failed attempts must not be presented as successful senders.
+        begin_send_attempt(&conn, &SuccessfulDelivery { account_id: 3, ..attempt("pending") }).unwrap();
+        let summaries = load_manuscript_list(&conn, true).unwrap();
+        let sent = summaries.iter().find(|m| m.id == 10).unwrap();
+        assert_eq!(sent.sent_account_ids, vec![None, Some(1), Some(2), Some(99)]);
+        assert_eq!(sent.account_ids, vec![3]);
+        assert!(summaries.iter().find(|m| m.id == 11).unwrap().sent_account_ids.is_empty());
+        assert!(sent.body.is_empty());
+    }
+
+    #[test]
     fn summary_omits_large_content_but_detail_preserves_it() {
         let conn = crate::db::test_database();
         conn.execute("INSERT INTO manuscripts(title, body, mail_templates, file_name, file_data) VALUES (?1, ?2, ?3, 'draft.txt', X'6162')",
@@ -2436,6 +2599,26 @@ mod unread_reply_tests {
         conn.execute("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'one@example.com','','localhost'),(2,'two@example.com','','localhost')", []).unwrap();
         conn
     }
+    #[test]
+    fn bulk_read_snapshot_respects_filters_and_includes_every_page() {
+        let conn = fixture();
+        for uid in 1..=350 {
+            conn.execute("INSERT INTO replies(account_id,imap_uid,task_id,kind,is_read,read_synced,subject) VALUES (?1,?2,7,'human',0,1,'暂停收稿 Match')", params![if uid % 2 == 0 { 1 } else { 2 }, uid]).unwrap();
+        }
+        for (uid, kind, read, synced) in [(351,"auto",0,1),(352,"bounce",0,1),(353,"human",1,1),(354,"human",0,0)] {
+            conn.execute("INSERT INTO replies(account_id,imap_uid,kind,is_read,read_synced) VALUES(1,?1,?2,?3,?4)",params![uid,kind,read,synced]).unwrap();
+        }
+        let ids = unread_reply_ids(&conn, None, None, "", None).unwrap();
+        assert_eq!(ids.len(), 350);
+        assert_eq!(unread_reply_ids(&conn, Some("paused"), Some(7), " MATCH ", Some(2)).unwrap().len(), 175);
+        assert!(unread_reply_ids(&conn, None, Some(8), "", None).unwrap().is_empty());
+        assert!(unread_reply_ids(&conn, Some("auto"), None, "", None).unwrap().is_empty());
+        assert!(unread_reply_ids(&conn, None, None, "not found", None).unwrap().is_empty());
+        // Applying a snapshot must not skip rows as the unread result set shrinks.
+        for id in ids { set_reply_read(&conn, id, true).unwrap(); }
+        assert!(unread_reply_ids(&conn, Some("unread"), None, "", None).unwrap().is_empty());
+    }
+
     #[test]
     fn human_unread_count_covers_all_accounts_and_pages_without_auto_or_unknown_flags() {
         let conn = fixture();

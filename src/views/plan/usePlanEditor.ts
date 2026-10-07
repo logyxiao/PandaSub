@@ -222,7 +222,6 @@ export function usePlanEditor({
   const sendCount = recipients.filter((r) => isValidEmail(r)).length
 
   const selectedAccounts = useMemo(() => {
-    if (!taskForm.account_ids.length) return enabledAccounts
     return enabledAccounts.filter((account) => taskForm.account_ids.includes(account.id))
   }, [enabledAccounts, taskForm.account_ids])
   const sendIntervalValid = isValidSendIntervalRange(
@@ -574,7 +573,7 @@ export function usePlanEditor({
 
   const toggleAccount = (id: number) => {
     setTaskForm((f) => {
-      const current = f.account_ids.length ? f.account_ids : enabledAccounts.map((a) => a.id)
+      const current = f.account_ids
       const next = current.includes(id) ? current.filter((x) => x !== id) : [...current, id]
       return { ...f, account_ids: next }
     })

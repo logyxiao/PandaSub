@@ -15,7 +15,7 @@ import { accountTodayQuota } from './planShared'
 
 const emptyForm: AccountInput = {
   email: '', password: '', ...serverPreset(''),
-  sender_name: '', enabled: true, check_replies: true,
+  sender_name: '', notes: '', enabled: true, check_replies: true,
 }
 
 export function AccountsView() {
@@ -65,7 +65,7 @@ export function AccountsView() {
     setAutoServers([false])
     const next = [{
       email: a.email, password: '', smtp_host: a.smtp_host, smtp_port: a.smtp_port,
-      sender_name: a.sender_name, provider: a.provider, enabled: a.enabled,
+      sender_name: a.sender_name, notes: a.notes ?? '', provider: a.provider, enabled: a.enabled,
       imap_host: a.imap_host, imap_port: a.imap_port, check_replies: a.check_replies,
     }]
     baseline.current = JSON.stringify(next)
@@ -196,6 +196,7 @@ export function AccountsView() {
                     <>
                       <b>{a.email}</b>
                       <small>{a.sender_name || '未设笔名'}</small>
+                      {a.notes && <small className="account-note" title={a.notes}>备注：{a.notes}</small>}
                     </>
                   ),
                 },
@@ -290,6 +291,10 @@ export function AccountsView() {
                     <label className="field">笔名（可选）
                       <input value={form.sender_name} onChange={(e) => updateForm(index, { sender_name: e.target.value })} placeholder="留空则使用邮箱名称" /></label>
                   </div>
+                  <label className="field">备注（可选）
+                    <textarea rows={2} aria-label="备注（可选）" value={form.notes} onChange={(e) => updateForm(index, { notes: e.target.value })}
+                      placeholder="例如：短篇投稿专用、备用邮箱" />
+                  </label>
                   <details className="mail-server-settings">
                     <summary>服务器设置</summary>
                     <label className="check-line"><input type="checkbox" checked={autoServers[index] ?? false}

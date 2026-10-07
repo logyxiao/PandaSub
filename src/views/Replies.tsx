@@ -3,7 +3,7 @@ import { useEventSubscription } from '../hooks/useEventSubscription'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { mailIdentityKey } from '../lib/mailContentCache'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Heart, Inbox, Mail, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { Heart, Inbox, Mail, MailCheck, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { api, onReply, onInboxStatus } from '../api'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Pager, Select } from '../components/ui'
@@ -129,6 +129,8 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
     setItems(current => current.map(update))
   }, [])
   const [pendingReads, setPendingReads] = useState<Set<number>>(new Set())
+  const [markingRead, setMarkingRead] = useState(false)
+  const markReadLock = useRef(false)
   const readVersions = useRef(new Map<number, number>())
   const latestReads = useRef(new Map<number, { is_read: boolean; read_synced: boolean; identity: string }>())
   const openedInitialReply = useRef<Reply | undefined>(undefined)
@@ -170,7 +172,7 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
       if (next.items.length) {
         const syncVersions = new Map(readVersions.current)
         void flagQueue.current?.read(next.items.map((reply) => reply.id)).then(({ states, errors }) => {
-          if (seq !== requestSeq.current) return
+          if (seq !== requestSeq.current || markReadLock.current) return
           setReadNotice(errors.length ? `部分邮箱已读状态暂未同步：${errors.map(error => `${error.email}：${error.message}`).join('；')}。可刷新列表重试。` : '')
           const byId = new Map(states.map((state) => [state.id, state]))
           const applyState = (reply: Reply) => {
@@ -342,6 +344,7 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
   }
 
   const setReadState = useCallback(async (reply: Reply, isRead: boolean) => {
+    if (markReadLock.current) return
     if (reply.kind === 'auto' || (reply.read_synced && reply.is_read === isRead && !readWrites.current.has(reply.id))) return
     readVersions.current.set(reply.id, (readVersions.current.get(reply.id) ?? 0) + 1)
     latestReads.current.set(reply.id, { identity: mailIdentityKey(reply), is_read: isRead, read_synced: true })
@@ -378,6 +381,35 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
       }
     }
   }, [toast, kind])
+  const markAllRead = async () => {
+    if (markReadLock.current || readWrites.current.size || loading || query !== search || !total) return
+    markReadLock.current = true
+    setMarkingRead(true)
+    requestSeq.current++
+    try {
+      const result = await api.markRepliesRead(kind, taskFilter, search, accountFilter)
+      const states = new Map(result.states.map(state => [state.id, state]))
+      for (const state of result.states) {
+        readVersions.current.set(state.id, (readVersions.current.get(state.id) ?? 0) + 1)
+        latestReads.current.delete(state.id)
+      }
+      setItems(current => current.map(reply => states.has(reply.id) ? { ...reply, ...states.get(reply.id)! } : reply))
+      setPreview(current => current && states.has(current.id) ? { ...current, ...states.get(current.id)! } : current)
+      const count = result.states.length
+      if (result.failed) {
+        toast(`已标记 ${count} 封，${result.failed} 封未完成，请刷新后重试`, 'warning')
+        setReadNotice(result.errors.map(error => `${error.email}：${error.message}`).join('；') || '部分邮件状态已变化或无法同步，请刷新后重试。')
+      } else {
+        setReadNotice('')
+        toast(count ? `已将 ${count} 封邮件标为已读` : '当前筛选下没有未读邮件', count ? 'success' : 'info')
+      }
+    } catch (error) { toast(`一键已读失败：${String(error)}`, 'error') }
+    finally {
+      markReadLock.current = false
+      setMarkingRead(false)
+      await latestLoad.current()
+    }
+  }
   const openPreview = (reply: Reply, opener: HTMLButtonElement) => {
     previewOpener.current = opener
     setPreview(reply)
@@ -425,6 +457,11 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
             ]} />
         </div>
         <div className="toolbar-actions">
+          <Button disabled={markingRead || loading || pendingReads.size > 0 || query !== search || !total}
+            title="将当前账号和筛选条件下的全部未读邮件标为已读（包括其他分页）"
+            onClick={() => void markAllRead()}>
+            <MailCheck size={16} />{markingRead ? '正在标记…' : '一键已读'}
+          </Button>
           <IconButton title="刷新列表" onClick={() => void load()}><RefreshCw size={17} /></IconButton>
           <Button variant="ghost" disabled={reclassifying} onClick={() => void reclassify()}>
             {reclassifying ? '正在重判…' : '按当前规则重新判定'}
@@ -566,7 +603,7 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
             </div>
             <footer className="inbox-preview-foot">
               <span className="inbox-preview-footer-hint">{preview.kind === 'auto' ? '自动回复已默认阅读' : pendingReads.has(preview.id) ? '正在同步邮箱状态…' : preview.read_synced ? '已与邮箱同步' : '已读状态等待邮箱同步'}</span>
-              {preview.kind !== 'auto' && <Button variant="ghost" disabled={pendingReads.has(preview.id)} onClick={() => { void setReadState(preview, !preview.is_read); if (preview.is_read) closePreview() }}>
+              {preview.kind !== 'auto' && <Button variant="ghost" disabled={markingRead || pendingReads.has(preview.id)} onClick={() => { void setReadState(preview, !preview.is_read); if (preview.is_read) closePreview() }}>
                 {pendingReads.has(preview.id) ? '同步中…' : preview.is_read ? '标为未读' : '标为已读'}
               </Button>}
               <Button variant="primary" onClick={closePreview}>完成</Button>

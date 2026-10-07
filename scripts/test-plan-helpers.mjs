@@ -3,7 +3,8 @@ import { createServer } from 'vite'
 
 const server = await createServer({ server: { middlewareMode: true, watch: null }, appType: 'custom' })
 try {
-  const { groupPlanRecipients, isValidSendIntervalRange, matchingEditorGroupId, summarizeEditorGroup } = await server.ssrLoadModule('/src/views/planShared.ts')
+  const { groupPlanRecipients, isValidSendIntervalRange, matchingEditorGroupId, summarizeEditorGroup,
+    defaultMailTemplates, normalizeDefaultMailTemplates, hydrateMailTemplates, fillPlaceholders } = await server.ssrLoadModule('/src/views/planShared.ts')
   const editor = (id, email, enabled = true) => ({ id, name: `编辑${id}`, platform: '测试平台', email, enabled })
   const original = [editor(1, 'editor@example.com'), editor(2, 'EDITOR@example.com'),
     editor(3, 'disabled@example.com', false), editor(4, 'invalid'), editor(5, 'second@example.com')]
@@ -34,7 +35,43 @@ try {
   assert.deepEqual(summarizeEditorGroup([]).platformsLabel, '还没有成员')
   assert.equal(summarizeEditorGroup([editor(1, 'a@x.com'), { ...editor(2, 'b@x.com'), platform: '晋江' }]).count, 2)
 
-  console.log('PASS: group recipients, immutable source group, empty/invalid groups and interval validation')
+  const templates = defaultMailTemplates()
+  const { default: catalog } = await server.ssrLoadModule('/src/data/mail-template-catalog.json')
+  const legacyBefore = JSON.stringify(catalog.legacy)
+  const upgradedPool = hydrateMailTemplates(catalog.legacy, '', '')
+  assert.equal(upgradedPool.length, 20, 'opening an old built-in plan exposes the expanded pool')
+  assert.equal(JSON.stringify(catalog.legacy), legacyBefore, 'upgrade does not mutate saved input')
+  assert.equal(hydrateMailTemplates(upgradedPool.slice(0, 3), '', '').length, 3, 'later deliberate removals remain removed')
+  assert.equal(templates.length, 20)
+  assert.equal(new Set(templates.map(item => item.id)).size, 20)
+  assert.equal(normalizeDefaultMailTemplates().length, 20, 'no built-in template is discarded')
+  for (const template of templates) {
+    assert.ok(template.subject.includes('{{作品名}}') && template.subject.includes('{{字数}}') && template.subject.includes('{{类型}}'))
+    assert.doesNotMatch(template.subject + template.body, /编辑昵称|收件人|恳请|贵处|冒昧/)
+    for (const genres of [[], ['短篇', '甜宠']]) {
+      const extras = { wordCount: 10000, genres, category: '短篇' }
+      const text = fillPlaceholders(template.body, '不确定的编辑 <recipient@example.com>', '小熊来信', extras)
+      assert.match(text, /小熊来信/)
+      if (template.body.includes('{{字数}}')) assert.match(text, /10000字/)
+      assert.match(fillPlaceholders(template.subject, '', '小熊来信', { ...extras, asSubject: true }), /10000字/)
+      assert.doesNotMatch(text, /不确定的编辑|recipient@example.com|\{\{|类型[：:]\s*\n/)
+      assert.equal(text, fillPlaceholders(template.body, '', '小熊来信', extras), 'greeting never depends on the recipient name')
+    }
+  }
+  assert.equal(catalog.previous.length, 14)
+  for (const previous of catalog.previous) {
+    const expected = templates.find(item => item.id === previous.id)
+    assert.equal(hydrateMailTemplates([previous], '', '')[0].body, expected.body)
+    assert.equal(normalizeDefaultMailTemplates([previous])[0].body, expected.body)
+    const custom = { ...previous, body: '我自己写的投稿话术' }
+    assert.equal(hydrateMailTemplates([custom], '', '')[0].body, custom.body)
+  }
+  const personalized = [{id:'custom',name:'自定义',subject:'给{{收件人}}：{{作品名}}',body:'{{编辑昵称}}，您好。{{收件人}}请查收《{{作品名}}》。'}]
+  for (const cleaned of [normalizeDefaultMailTemplates(personalized), hydrateMailTemplates(personalized, '', ''), hydrateMailTemplates([], personalized[0].subject, personalized[0].body)]) {
+    assert.doesNotMatch(cleaned[0].subject + cleaned[0].body, /\{\{编辑昵称\}\}|\{\{收件人\}\}/)
+  }
+
+  console.log('PASS: group recipients, immutable source group, interval validation; 20 natural templates, recipient-independent greetings and legacy placeholder cleanup')
 } finally {
   await server.close()
 }

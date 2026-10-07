@@ -79,6 +79,28 @@ pub async fn set_reply_read(
 }
 
 #[tauri::command]
+pub async fn mark_replies_read(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: Option<String>,
+    task_id: Option<i64>,
+    query: Option<String>,
+    account_id: Option<i64>,
+) -> Result<crate::models::ReplyMarkReadResult, String> {
+    let db = state.db.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let ids = {
+            let conn = db.lock().map_err(|e| e.to_string())?;
+            store::unread_reply_ids(&conn, kind.as_deref(), task_id, query.as_deref().unwrap_or(""), account_id)?
+        };
+        crate::inbox::mark_replies_read(&db, ids)
+    }).await.map_err(|e| e.to_string())?;
+    // Earlier batches may have committed even if a later one failed.
+    let _ = app.emit("reply-read-change", ());
+    result
+}
+
+#[tauri::command]
 pub async fn sync_reply_read_flags(
     app: AppHandle,
     state: State<'_, AppState>,

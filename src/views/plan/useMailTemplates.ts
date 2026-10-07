@@ -45,7 +45,7 @@ export function useMailTemplates(form: ManuscriptInput, setForm: PlanEditorProps
       id: `tpl-${Date.now()}`,
       name: `模板 ${mailTemplates.length + 1}`,
       subject: '投稿：《{{作品名}}》+{{字数}}+{{类型}}',
-      body: '编辑老师您好：\n\n现将作品《{{作品名}}》投至贵处，恳请审阅。完整稿件已随信附上，谢谢。',
+      body: '您好呀：\n\n来投一篇《{{作品名}}》，共{{字数}}，全文放在附件里啦。\n\n谢谢您抽空看看，祝今天顺顺利利！',
     }
     writeTemplates([...mailTemplates, item], item.id, true)
     setActiveTplId(item.id)

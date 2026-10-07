@@ -1,3 +1,4 @@
+import mailTemplateCatalog from '../data/mail-template-catalog.json'
 import { isValidEmail, parseRecipient } from '../format'
 import type { Delivery, Editor, EditorGroup, MailTemplate, Manuscript, ManuscriptInput, Task } from '../types'
 
@@ -211,56 +212,7 @@ const OLD_DEFAULT_SUBJECTS = new Set([
   '《{{作品名}}》请您看看',
 ])
 
-export const DEFAULT_MAIL_TEMPLATES: MailTemplate[] = [
-  {
-    id: 't1',
-    name: '常规问候',
-    subject: '投稿：《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '编辑老师您好：\n\n现将作品《{{作品名}}》投至贵处，恳请审阅。\n\n篇幅：{{篇幅}}\n字数：{{字数}}\n类型：{{类型}}\n\n完整稿件已随信附上，感谢您的时间。',
-  },
-  {
-    id: 't2',
-    name: '书名开场',
-    subject: '《{{作品名}}》投稿+{{字数}}+{{类型}}',
-    body: '您好：\n\n现投稿作品《{{作品名}}》，篇幅为{{篇幅}}，共{{字数}}。\n类型：{{类型}}\n\n正文见附件，烦请审阅，谢谢。',
-  },
-  {
-    id: 't3',
-    name: '简短投稿',
-    subject: '《{{作品名}}》投稿+{{字数}}+{{类型}}',
-    body: '编辑老师您好，现投稿《{{作品名}}》，{{篇幅}}，共{{字数}}。稿件已附上，烦请查收。',
-  },
-  {
-    id: 't4',
-    name: '恳请审阅',
-    subject: '恳请审阅：《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '编辑老师您好：\n\n冒昧来信，现将作品《{{作品名}}》投稿至贵处。作品为{{篇幅}}，共{{字数}}，类型为{{类型}}。\n\n恳请审阅，若有修改建议，我会认真配合。\n\n祝工作顺利。',
-  },
-  {
-    id: 't5',
-    name: '附件说明',
-    subject: '投稿附件：《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '编辑老师您好：\n\n作品《{{作品名}}》已作为附件发送，正文不在邮件中重复粘贴。\n\n篇幅：{{篇幅}}\n字数：{{字数}}\n类型：{{类型}}\n\n烦请查收。',
-  },
-  {
-    id: 't6',
-    name: '轻松口吻',
-    subject: '投稿来了：《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '您好：\n\n投来一篇《{{作品名}}》，共{{字数}}，偏{{类型}}。全文放在附件里，方便时请帮忙看看，谢谢。',
-  },
-  {
-    id: 't7',
-    name: '类型自报',
-    subject: '《{{作品名}}》+{{字数}}+{{类型}}',
-    body: '编辑老师好：\n\n这篇是{{篇幅}}{{类型}}，《{{作品名}}》，{{字数}}。想问问贵处是否还收这类稿。附件里是全文。',
-  },
-  {
-    id: 't8',
-    name: '期待回复',
-    subject: '《{{作品名}}》请您看看+{{字数}}+{{类型}}',
-    body: '编辑老师您好：\n\n打扰了。作品《{{作品名}}》已附上，期待您的意见；若暂不合适，也完全理解。\n\n感谢阅读，祝工作顺利。',
-  },
-]
+export const DEFAULT_MAIL_TEMPLATES: MailTemplate[] = mailTemplateCatalog.presets
 
 export function ensureSubjectMeta(subject: string) {
   let next = subject.trim() || '投稿：《{{作品名}}》'
@@ -272,7 +224,7 @@ export function ensureSubjectMeta(subject: string) {
 export function upgradeMailSubject(item: MailTemplate) {
   const preset = DEFAULT_MAIL_TEMPLATES.find((entry) => entry.id === item.id)
   if (preset && OLD_DEFAULT_SUBJECTS.has(item.subject)) return preset.subject
-  return ensureSubjectMeta(item.subject)
+  return ensureSubjectMeta(item.subject.replace(/(?:给|致)?\{\{(?:编辑昵称|收件人)\}\}[，,:：\s]*/g, ''))
 }
 
 const DROPPED_MAIL_TEMPLATE_IDS = new Set(['t9', 't10'])
@@ -295,12 +247,14 @@ function removeDefaultEditorNickname(body: string) {
     .replaceAll('{{编辑昵称}} 您好，', '编辑老师您好，')
     .replaceAll('{{编辑昵称}}，', '编辑老师，')
     .replaceAll('{{编辑昵称}}', '编辑老师')
+    .replaceAll('{{收件人}}', '编辑老师')
 }
 
 export function normalizeDefaultMailTemplates(stored?: MailTemplate[]) {
   const source = stored?.length ? stored : defaultMailTemplates()
   const normalized = source
     .filter((item) => !isDroppedMailTemplate(item))
+    .map(upgradePreviousMailTemplate)
     .map((item, index) => ({
       ...item,
       id: item.id.trim() || `default-${index + 1}`,
@@ -311,23 +265,54 @@ export function normalizeDefaultMailTemplates(stored?: MailTemplate[]) {
   return normalized.length ? normalized : defaultMailTemplates()
 }
 
+function upgradePreviousMailTemplate(item: MailTemplate): MailTemplate {
+  const previous = mailTemplateCatalog.previous.find(old => old.id === item.id)
+  const preset = DEFAULT_MAIL_TEMPLATES.find(preset => preset.id === item.id)
+  if (!previous || !preset) return item
+  return { ...item,
+    body: item.body === previous.body ? preset.body : item.body,
+    name: item.name === previous.name ? preset.name : item.name,
+    subject: item.subject === previous.subject ? preset.subject : item.subject,
+  }
+}
+
 export function hydrateMailTemplates(
   stored: MailTemplate[] | undefined,
   subject: string,
   body: string,
 ): MailTemplate[] {
   if (stored?.length) {
-    const kept = stored
+    // Upgrade an old built-in pool when opening its editor, without rewriting a running plan.
+    const hasLegacyPreset = stored.some(item => mailTemplateCatalog.legacy.some(old => old.id === item.id && old.body === item.body))
+    const hasNewPreset = stored.some(item => DEFAULT_MAIL_TEMPLATES.some(preset => preset.id === item.id && !mailTemplateCatalog.legacy.some(old => old.id === item.id)))
+    let source = stored
+    if (hasLegacyPreset && !hasNewPreset) {
+      source = stored.map(item => {
+        const old = mailTemplateCatalog.legacy.find(old => old.id === item.id)
+        const preset = DEFAULT_MAIL_TEMPLATES.find(preset => preset.id === item.id)
+        return old && preset ? { ...item,
+          body: item.body === old.body ? preset.body : item.body,
+          name: item.name === old.name ? preset.name : item.name,
+          subject: item.subject === old.subject ? preset.subject : item.subject,
+        } : { ...item }
+      }).filter(item => !isDroppedMailTemplate(item))
+      for (const preset of DEFAULT_MAIL_TEMPLATES) {
+        if (source.length >= 20) break
+        if (!source.some(item => item.id === preset.id)) source.push({ ...preset })
+      }
+    }
+    const kept = source
       .filter((item) => !isDroppedMailTemplate(item))
-      .map((item) => ({ ...item, subject: upgradeMailSubject(item) }))
+      .map(upgradePreviousMailTemplate)
+      .map((item) => ({ ...item, subject: upgradeMailSubject(item), body: removeDefaultEditorNickname(item.body) }))
     if (kept.length) return kept
   }
   const defaults = defaultMailTemplates()
   if (subject.trim() || body.trim()) {
     defaults[0] = {
       ...defaults[0],
-      subject: subject.trim() || defaults[0].subject,
-      body: body.trim() || defaults[0].body,
+      subject: upgradeMailSubject({ ...defaults[0], subject: subject.trim() || defaults[0].subject }),
+      body: removeDefaultEditorNickname(body.trim()) || defaults[0].body,
     }
   }
   return defaults

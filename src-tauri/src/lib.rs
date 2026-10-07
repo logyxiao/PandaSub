@@ -196,6 +196,7 @@ pub fn run() {
             commands::unread_human_reply_count,
             commands::list_replies_page,
             commands::set_reply_read,
+            commands::mark_replies_read,
             commands::sync_reply_read_flags,
             commands::scan_replies,
             commands::get_inbox_status,

@@ -24,8 +24,8 @@ pub fn add_account(state: State<'_, AppState>, input: AccountInput) -> Result<i6
     let conn = db.transaction().map_err(|e| e.to_string())?;
     let id = store::reserve_account_id(&conn)?;
     conn.execute(
-        "INSERT INTO accounts (email, password, smtp_host, smtp_port, sender_name, provider, enabled, imap_host, imap_port, check_replies, id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO accounts (email, password, smtp_host, smtp_port, sender_name, provider, enabled, imap_host, imap_port, check_replies, id, notes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             input.email.trim(),
             input.password,
@@ -37,7 +37,8 @@ pub fn add_account(state: State<'_, AppState>, input: AccountInput) -> Result<i6
             imap_host,
             imap_port,
             input.check_replies as i64,
-            id
+            id,
+            input.notes.trim()
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -74,7 +75,7 @@ pub fn update_account(
     conn.execute(
         "UPDATE accounts SET email = ?1, password = ?2, smtp_host = ?3, smtp_port = ?4,
                 sender_name = ?5, provider = ?6, enabled = ?7,
-                imap_host = ?8, imap_port = ?9, check_replies = ?10
+                imap_host = ?8, imap_port = ?9, check_replies = ?10, notes = ?12
          WHERE id = ?11",
         rusqlite::params![
             input.email.trim(),
@@ -87,7 +88,8 @@ pub fn update_account(
             imap_host,
             imap_port,
             input.check_replies as i64,
-            id
+            id,
+            input.notes.trim()
         ],
     )
     .map_err(|e| e.to_string())?;
