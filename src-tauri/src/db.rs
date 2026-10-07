@@ -182,6 +182,7 @@ CREATE INDEX IF NOT EXISTS editor_group_members_editor ON editor_group_members(e
 CREATE INDEX IF NOT EXISTS editor_group_members_group_position ON editor_group_members(group_id, position);
 
 CREATE TABLE IF NOT EXISTS accepted_works (
+  word_count INTEGER NOT NULL DEFAULT 0,
   id INTEGER PRIMARY KEY,
   manuscript_id INTEGER UNIQUE,
   source TEXT NOT NULL CHECK(source IN ('plan','external')),
@@ -231,6 +232,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
         ("realized_share_cents", "realized_share_cents INTEGER NOT NULL DEFAULT 0"),
         ("monthly_settlements", "monthly_settlements TEXT NOT NULL DEFAULT '[]'"),
         ("per_thousand_cents", "per_thousand_cents INTEGER NOT NULL DEFAULT 0"),
+        ("word_count", "word_count INTEGER NOT NULL DEFAULT 0"),
         ("record_origin", "record_origin TEXT NOT NULL DEFAULT 'manual' CHECK(record_origin IN ('manual','historical_import'))"),
     ])?;
     migrate_accepted_review_status(&connection)?;
@@ -288,12 +290,37 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
     crate::editor_blocks::backfill(&connection)?;
+    // Existing plan records gain their known manuscript length; external counts stay unknown.
+    connection.execute("UPDATE accepted_works SET word_count=(SELECT word_count FROM manuscripts WHERE id=accepted_works.manuscript_id)
+        WHERE source='plan' AND word_count=0 AND EXISTS(SELECT 1 FROM manuscripts WHERE id=accepted_works.manuscript_id AND word_count>0)", []).map_err(|e| e.to_string())?;
     Ok(connection)
 }
 
 #[cfg(test)]
 mod accepted_review_migration_tests {
     use super::*;
+
+    #[test]
+    fn legacy_word_counts_backfill_only_linked_records_and_keep_snapshots() {
+        let path = std::env::temp_dir().join(format!("novelsub-accepted-count-{:032x}.sqlite", rand::random::<u128>()));
+        let conn = open_database(path.clone()).unwrap();
+        conn.execute_batch("INSERT INTO manuscripts(id,title,body,word_count) VALUES(1,'原稿','正文',12345);
+            INSERT INTO accepted_works(id,source,manuscript_id,title,deal_mode,per_thousand_cents)
+              VALUES(1,'plan',1,'原稿','guarantee_share',3000),(2,'external',NULL,'外部稿','guarantee_share',4000);
+            ALTER TABLE accepted_works DROP COLUMN word_count;").unwrap();
+        drop(conn);
+        let conn = open_database(path.clone()).unwrap();
+        let counts: Vec<i64> = conn.prepare("SELECT word_count FROM accepted_works ORDER BY id").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(counts, vec![12345, 0]);
+        assert_eq!(conn.query_row("SELECT guarantee_cents FROM accepted_works WHERE id=1", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        conn.execute("UPDATE manuscripts SET word_count=20000 WHERE id=1", []).unwrap();
+        drop(conn);
+        let conn = open_database(path.clone()).unwrap();
+        assert_eq!(conn.query_row("SELECT word_count FROM accepted_works WHERE id=1", [], |r| r.get::<_, i64>(0)).unwrap(), 12345);
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn old_review_constraint_migrates_without_losing_saved_manuscripts() {
@@ -317,6 +344,7 @@ mod accepted_review_migration_tests {
               VALUES (9, 12, 'plan', 'not_accepted', '原作品', '原稿.docx', X'010203', 'buyout', 120000, 45.5);",
         ).unwrap();
         ensure_columns(&conn, "accepted_works", &[
+            ("word_count", "word_count INTEGER NOT NULL DEFAULT 0"),
             ("sold_at", "sold_at TEXT NOT NULL DEFAULT ''"),
             ("realized_share_cents", "realized_share_cents INTEGER NOT NULL DEFAULT 0"),
             ("monthly_settlements", "monthly_settlements TEXT NOT NULL DEFAULT '[]'"),
@@ -324,12 +352,13 @@ mod accepted_review_migration_tests {
             ("record_origin", "record_origin TEXT NOT NULL DEFAULT 'manual' CHECK(record_origin IN ('manual','historical_import'))"),
         ]).unwrap();
         conn.execute("UPDATE accepted_works SET sold_at='2026-09-04', realized_share_cents=123,
-            per_thousand_cents=3000, record_origin='historical_import' WHERE id=9", []).unwrap();
+            per_thousand_cents=3000, word_count=12345, record_origin='historical_import' WHERE id=9", []).unwrap();
         migrate_accepted_review_status(&conn).unwrap();
         let row: (String, Vec<u8>, i64, f64) = conn.query_row(
             "SELECT review_status, file_data, price_cents, share_percent FROM accepted_works WHERE id=9",
             [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).unwrap();
+        assert_eq!(conn.query_row("SELECT word_count FROM accepted_works WHERE id=9", [], |r| r.get::<_, i64>(0)).unwrap(), 12345);
         assert_eq!(row, ("not_accepted".into(), vec![1, 2, 3], 120000, 45.5));
         let new_fields: (String, i64, i64, String) = conn.query_row(
             "SELECT sold_at, realized_share_cents, per_thousand_cents, record_origin FROM accepted_works WHERE id=9",
@@ -357,6 +386,7 @@ fn migrate_accepted_review_status(conn: &Connection) -> Result<(), String> {
           source TEXT NOT NULL CHECK(source IN ('plan','external')),
           review_status TEXT NOT NULL DEFAULT 'accepted' CHECK(review_status IN ('accepted','preliminary','final_rejected','not_accepted')),
           title TEXT NOT NULL,
+          word_count INTEGER NOT NULL DEFAULT 0,
           body TEXT NOT NULL DEFAULT '',
           file_name TEXT NOT NULL DEFAULT '',
           file_data BLOB,
@@ -382,11 +412,11 @@ fn migrate_accepted_review_status(conn: &Connection) -> Result<(), String> {
           (id, manuscript_id, source, review_status, title, body, file_name, file_data,
            accepted_at, sold_at, deal_mode, price_cents, guarantee_cents, per_thousand_cents,
            realized_share_cents, monthly_settlements, share_percent, sale_platform, buyer_editor, listing_platform,
-           article_url, notes, record_origin, created_at, updated_at)
+           article_url, notes, record_origin, created_at, updated_at, word_count)
         SELECT id, manuscript_id, source, review_status, title, body, file_name, file_data,
                accepted_at, sold_at, deal_mode, price_cents, guarantee_cents, per_thousand_cents,
                realized_share_cents, monthly_settlements, share_percent, sale_platform, buyer_editor, listing_platform,
-               article_url, notes, record_origin, created_at, updated_at
+               article_url, notes, record_origin, created_at, updated_at, word_count
         FROM accepted_works;
         DROP TABLE accepted_works;
         ALTER TABLE accepted_works_rebuilt RENAME TO accepted_works;

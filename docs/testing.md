@@ -118,3 +118,19 @@ Rust 用 20 封各约 1 MiB 的合成正文验证列表响应低于 20 KiB、正
 每次成功保存稿件（含草稿）在同一事务中记录最短/最长秒数到独立 settings.last_send_interval，失败时稿件和偏好同时回滚。普通设置保存不会覆盖该偏好。升级时从最近更新且间隔有效的稿件初始化；首次无记录时仍为 100–240 秒。新建使用上次保存值，编辑及复制已有计划保留该计划自身间隔。未保存修改不会影响下次默认值。
 
 回归：relative_schedule_counts_from_finish_and_freezes_deadline、relative_schedule_requires_real_other_plan_and_valid_delay、successful_save_remembers_interval_and_failure_rolls_back_both；`python3 scripts/run-ui-tests.py test-relative-schedule-ui.py test-scheduled-send-ui.py test-panda-ui.py` 覆盖前序默认选择、延迟选项及自定义输入、预约参数及回填、草稿间隔记忆和已有流程回归。测试只访问内存数据库和模拟 API，不执行实际投递。
+
+### 编辑详情删除标签后的弹窗位置
+
+编辑详情抽屉的遮罩使用 flex 贴右定位，抽屉禁止随内容缩放，避免原 grid 布局的内容宽度变化带动位置。旧版在删除首个收稿类型后已能复现横向位移（1280px 窗口下 x 从约 409px 变为 442px）；修复后右边界保持在视口右边缘。
+
+`python3 scripts/run-ui-tests.py test-editor-dialog-stability-ui.py test-panda-ui.py test-local-mail-and-confirm-ui.py`：Chromium/WebKit 连续删除全部收稿标签、操作嵌套标签弹窗、变更窗口大小、删除拒收类型、保存后重新打开，以及原编辑和焦点管理流程。使用模拟编辑资料，不修改用户编辑库。
+
+### 投稿记录添加编辑误报空库
+
+直接进入投稿计划的“记录 → 添加编辑”时，必须在展示详情前读取编辑库；不能依赖此前打开过投稿编辑向导。openDetail 并行读取稿件和最新编辑库，成功后统一更新详情状态，并沿用请求序号防止旧请求覆盖新选择。读取失败显示错误，不展示伪空库；每次重新打开强制刷新编辑缓存，支持外部导入后的本地数据。投稿列表首页仍不预加载编辑库。
+
+`python3 scripts/run-ui-tests.py test-plan-detail-editors-ui.py test-workflow-ui.py test-plan-performance-ui.py`：Chromium/WebKit 验证直接打开记录即可找到编辑、添加后写入收件人但不发送邮件、读取失败与重试、重新打开反映新增编辑且排除已在名单者，以及大列表加载回归。修复前同一测试可复现“0 位可选，编辑库还是空的”。全部使用模拟 API。
+
+千字计价回归：`test-accepted-pricing.mjs` 验证千字单价 × 总字数 ÷ 1000、到分四舍五入、手填保底总价优先、已结算分成累加、缺失字数和金额溢出。`test-accepted-word-count-ui.py` 在 Chromium/WebKit 中验证关联计划自动带入字数、外部文章手填字数、缺失字数提示、即时收益预览、保存后汇总及重开修改。过稿统计原有 UI 测试固定时钟，避免日期窗口随运行日期失效。
+
+Rust 验证关联稿件字数由数据库读取，保存后保留字数快照；外部字数保存、修改和范围校验；旧数据库自动补入关联稿件字数，不推测外部文章字数，且旧表重建不丢失字数字段。迁移测试仅使用临时数据库。

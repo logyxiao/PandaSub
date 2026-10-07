@@ -147,6 +147,7 @@ export type AcceptedReviewStatus = 'accepted' | 'preliminary' | 'final_rejected'
 export interface AcceptedMonthlySettlement { month: string; amount_cents: number }
 
 export interface AcceptedWork {
+  word_count?: number
   id: number
   manuscript_id: number | null
   source: 'plan' | 'external'
@@ -177,6 +178,7 @@ export interface AcceptedWork {
 export type AcceptedWorkSummary = Omit<AcceptedWork, 'body'>
 
 export interface AcceptedWorkInput {
+  word_count?: number
   manuscript_id: number | null
   source: 'plan' | 'external'
   review_status: AcceptedReviewStatus

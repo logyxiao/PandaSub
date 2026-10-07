@@ -1,7 +1,7 @@
 {
   "name": "novelsub",
   "private": true,
-  "version": "0.2.10",
+  "version": "0.2.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "release:publish": "node scripts/publish-release.mjs",
-    "test": "node scripts/test-plan-helpers.mjs && node scripts/test-group-member-picker.mjs && node scripts/test-runtime-progress.mjs && node scripts/test-debounced-save.mjs && node scripts/test-resource-cache.mjs && node scripts/test-editor-list-model.mjs && node scripts/test-binary-ipc.mjs && node scripts/test-update-flow.mjs && node scripts/test-latest-request-queue.mjs && node scripts/test-mail-request-queue.mjs",
+    "test": "node scripts/test-plan-helpers.mjs && node scripts/test-group-member-picker.mjs && node scripts/test-runtime-progress.mjs && node scripts/test-debounced-save.mjs && node scripts/test-resource-cache.mjs && node scripts/test-editor-list-model.mjs && node scripts/test-binary-ipc.mjs && node scripts/test-update-flow.mjs && node scripts/test-latest-request-queue.mjs && node scripts/test-mail-request-queue.mjs && node scripts/test-accepted-pricing.mjs",
     "test:ui": "python3 scripts/run-ui-tests.py",
     "release:local": "node scripts/publish-release.mjs --local",
     "test:release": "node scripts/test-local-release.mjs"

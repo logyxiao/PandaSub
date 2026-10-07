@@ -162,6 +162,8 @@ pub struct AcceptedMonthlySettlement {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AcceptedWork {
+    #[serde(default)]
+    pub word_count: i64,
     pub id: i64,
     pub manuscript_id: Option<i64>,
     pub source: String,
@@ -191,6 +193,8 @@ pub struct AcceptedWork {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AcceptedWorkInput {
+    #[serde(default)]
+    pub word_count: i64,
     pub manuscript_id: Option<i64>,
     pub source: String,
     #[serde(default = "default_accepted_review_status")]

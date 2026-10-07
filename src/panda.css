@@ -96,8 +96,8 @@
 .library-group-choices label { display: flex; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; }
 .library-group-choices small { margin-left: auto; color: var(--muted); }
 .editor-form-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
-.modal-backdrop:has(> .editor-drawer) { justify-content: flex-end; padding: 0; }
-.modal.editor-drawer { height: 100%; max-height: 100%; border-radius: 12px 0 0 12px; border: 0; }
+.modal-backdrop:has(> .editor-drawer) { display: flex; justify-content: flex-end; align-items: stretch; padding: 0; }
+.modal.editor-drawer { min-width: 0; flex-shrink: 0; height: 100%; max-height: 100%; border-radius: 12px 0 0 12px; border: 0; }
 .editor-drawer .modal-body { flex: 1; }
 .editor-drawer .field { font-size: 12px; }
 /* Replies: list and reader keep the current selection in context. */

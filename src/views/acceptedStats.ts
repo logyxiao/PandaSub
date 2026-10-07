@@ -1,3 +1,4 @@
+import { acceptedGuaranteeCents } from '../lib/acceptedPricing'
 import type { AcceptedWorkSummary } from '../types'
 
 export interface PlatformSaleRow {
@@ -69,7 +70,7 @@ export function summarizeAcceptedSales(works: AcceptedWorkSummary[], now = new D
     if (work.deal_mode === 'undecided') continue
     const platformShare = work.deal_mode === 'platform_share'
     const buyout = work.deal_mode === 'buyout'
-    const base = buyout ? work.price_cents : work.guarantee_cents
+    const base = buyout ? work.price_cents : acceptedGuaranteeCents(work)
     if (!platformShare && base <= 0 && !(work.deal_mode === 'guarantee_share' && work.per_thousand_cents > 0)) continue
     if (!platformShare && base <= 0) unpricedSoldCount++
     const share = buyout ? 0 : Math.max(0, work.realized_share_cents || 0)

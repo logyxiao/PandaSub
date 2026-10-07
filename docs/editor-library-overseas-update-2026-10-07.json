@@ -1,0 +1,233 @@
+{
+  "date": "2026-10-07",
+  "database": "/Users/to/Library/Application Support/com.novelsub.desktop/novelsub.sqlite",
+  "backup": "/Users/to/Library/Application Support/com.novelsub.desktop/backups/before-overseas-editors-20261007-014133.sqlite",
+  "entries": [
+    {
+      "source_id": 7276,
+      "local_id": 99,
+      "platform": "失控剧场",
+      "name": "可颂",
+      "email": "2414544452@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 1049,
+      "local_id": 122,
+      "platform": "希河科技",
+      "name": "肉丸",
+      "email": "523845106@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 6253,
+      "local_id": 322,
+      "platform": "GoodNovel",
+      "name": "-",
+      "email": "dpxs111@163.com",
+      "action": "added"
+    },
+    {
+      "source_id": 10281,
+      "local_id": 323,
+      "platform": "dreame",
+      "name": "大麦",
+      "email": "2945842403@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 2238,
+      "local_id": 324,
+      "platform": "初阅中文网",
+      "name": "云雀",
+      "email": "1956180379@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 1689,
+      "local_id": 40,
+      "platform": "乐阅文化",
+      "name": "勇旺",
+      "email": "512740225@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 1128,
+      "local_id": 272,
+      "platform": "黑岩",
+      "name": "锦鲤",
+      "email": "195525783@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 452,
+      "local_id": 103,
+      "platform": "奥诚云创",
+      "name": "盛川",
+      "email": "790773262@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 576,
+      "local_id": 325,
+      "platform": "九州海外",
+      "name": "烟烟",
+      "email": "3597405744@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 9006,
+      "local_id": 223,
+      "platform": "米月文化",
+      "name": "milky",
+      "email": "2589681978@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 5803,
+      "local_id": 11,
+      "platform": "MoboReader",
+      "name": "星雨",
+      "email": "1941699186@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 6489,
+      "local_id": 218,
+      "platform": "笔汇川",
+      "name": "米哟哟",
+      "email": "2703137794@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 1673,
+      "local_id": 110,
+      "platform": "娃娃书屋",
+      "name": "年华",
+      "email": "2026652338@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 4498,
+      "local_id": 187,
+      "platform": "炎旸",
+      "name": "砚白",
+      "email": "2091165788@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 413,
+      "local_id": 326,
+      "platform": "四季文学",
+      "name": "时艾",
+      "email": "3145616150@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 496,
+      "local_id": 41,
+      "platform": "九尾神狐",
+      "name": "白白",
+      "email": "1179458776@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 3025,
+      "local_id": 327,
+      "platform": "咪咕",
+      "name": "-",
+      "email": "1149815048@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 8596,
+      "local_id": 328,
+      "platform": "番茄",
+      "name": "花花",
+      "email": "106277767@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 2471,
+      "local_id": 329,
+      "platform": "四月天",
+      "name": "大红",
+      "email": "2728396631@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 3513,
+      "local_id": 49,
+      "platform": "九星文化",
+      "name": "老玖",
+      "email": "1150615858@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 5354,
+      "local_id": 330,
+      "platform": "读点",
+      "name": "猫猫",
+      "email": "1853917607@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 8394,
+      "local_id": 331,
+      "platform": "剧点",
+      "name": "沉秋",
+      "email": "1959857836@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 10426,
+      "local_id": 90,
+      "platform": "墨宝文化",
+      "name": "一只眠羊",
+      "email": "3601922570@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 7034,
+      "local_id": 14,
+      "platform": "Reelshort",
+      "name": "竹鸡",
+      "email": "2419057585@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 7394,
+      "local_id": 332,
+      "platform": "鲜阅读",
+      "name": "湘小月",
+      "email": "2102366434@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 2184,
+      "local_id": 245,
+      "platform": "财神工作室",
+      "name": "-",
+      "email": "402105197@qq.com",
+      "action": "updated"
+    },
+    {
+      "source_id": 8774,
+      "local_id": 333,
+      "platform": "Netshort",
+      "name": "九枝",
+      "email": "3099131796@qq.com",
+      "action": "added"
+    },
+    {
+      "source_id": 10450,
+      "local_id": 334,
+      "platform": "goodnovel",
+      "name": "无忧酒",
+      "email": "jinxq@rd-goodnovel.com",
+      "action": "added"
+    }
+  ],
+  "pending": [],
+  "completion_backup": "/Users/to/Library/Application Support/com.novelsub.desktop/backups/before-overseas-completion-20261007-014745.sqlite"
+}

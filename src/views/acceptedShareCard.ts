@@ -1,3 +1,4 @@
+import { acceptedGuaranteeCents } from '../lib/acceptedPricing'
 import type { AcceptedWorkSummary } from '../types'
 import type { AcceptedSalesSummary } from './acceptedStats'
 
@@ -130,7 +131,7 @@ export function drawAcceptedShareCard(
     ctx.font = '600 24px ' + dataFont
     const price = work.deal_mode === 'platform_share' ? '按月结算'
       : work.deal_mode === 'buyout' ? amount(work.price_cents)
-      : work.guarantee_cents > 0 ? amount(work.guarantee_cents) : amount(work.per_thousand_cents) + '/千字'
+      : acceptedGuaranteeCents(work) > 0 ? amount(acceptedGuaranteeCents(work)) : amount(work.per_thousand_cents) + '/千字'
     ctx.fillText(price, centers[3], y)
     ctx.font = '500 22px ' + sans
     ctx.fillText(work.deal_mode === 'buyout' ? '买断' : work.deal_mode === 'platform_share' ? '平台上架' : '保底＋分成', centers[4], y)
@@ -145,7 +146,7 @@ export function drawAcceptedShareCard(
       ctx.textAlign = 'left'
       ctx.fillStyle = c.muted
       ctx.font = '500 20px ' + sans
-      const note = work.guarantee_cents <= 0 ? '总价待核算' + (work.share_percent > 0 ? ' · 分成 ' + work.share_percent + '%' : ' · 比例待补')
+      const note = acceptedGuaranteeCents(work) <= 0 ? '总价待核算' + (work.share_percent > 0 ? ' · 分成 ' + work.share_percent + '%' : ' · 比例待补')
         : work.realized_share_cents > 0
         ? '分成 ' + work.share_percent + '% · 已结算 ' + money(work.realized_share_cents)
         : work.share_percent > 0 ? '分成 ' + work.share_percent + '%' : '分成比例待补'

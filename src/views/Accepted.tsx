@@ -11,6 +11,7 @@ import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton } from '../components/ui'
 import { Table } from '../components/Table'
 import type { AcceptedCandidate, AcceptedDealMode, AcceptedReviewStatus, AcceptedWork, AcceptedWorkSummary, AcceptedWorkInput, ManuscriptSummary } from '../types'
+import { acceptedGuaranteeCents, perThousandTotalCents } from '../lib/acceptedPricing'
 import { summarizeAcceptedSales } from './acceptedStats'
 import { drawAcceptedShareCard } from './acceptedShareCard'
 
@@ -40,7 +41,7 @@ const reviewLabel = (status: AcceptedReviewStatus) => reviewOptions.find(([value
 
 function emptyWork(source: 'plan' | 'external' = 'external'): AcceptedWorkInput {
   return {
-    manuscript_id: null, source, review_status: 'accepted', title: '', body: '', file_name: '', remove_file: false,
+    word_count: 0, manuscript_id: null, source, review_status: 'accepted', title: '', body: '', file_name: '', remove_file: false,
     accepted_at: today(), deal_mode: 'undecided', price_cents: 0, guarantee_cents: 0, per_thousand_cents: 0, realized_share_cents: 0,
     monthly_settlements: [],
     share_percent: 50, sale_platform: '', buyer_editor: '', listing_platform: '', article_url: '', notes: '',
@@ -48,6 +49,7 @@ function emptyWork(source: 'plan' | 'external' = 'external'): AcceptedWorkInput 
 }
 
 function saleLabel(work: AcceptedWorkSummary) {
+  const guarantee = acceptedGuaranteeCents(work)
   if (work.review_status === 'not_accepted') return <span className="hint">不计入卖出</span>
   if (work.review_status === 'preliminary') return <span className="hint">等待终审</span>
   if (work.review_status === 'final_rejected') return <span className="hint">终审未通过</span>
@@ -58,7 +60,7 @@ function saleLabel(work: AcceptedWorkSummary) {
   if (work.deal_mode === 'buyout' && work.price_cents <= 0) return <span className="hint">买断价待补</span>
   if (work.deal_mode === 'guarantee_share' && work.guarantee_cents <= 0 && work.per_thousand_cents <= 0) return <span className="hint">保底价待补</span>
   if (work.deal_mode === 'buyout') return <>买断 <strong>{yuan(work.price_cents)}</strong><small>{work.accepted_at || '日期待补'}</small></>
-  if (work.deal_mode === 'guarantee_share') return <>{work.guarantee_cents > 0 ? '保底' : '千字单价'} <strong>{yuan(work.guarantee_cents || work.per_thousand_cents)}{work.guarantee_cents ? '' : '/千字'}</strong><small>{work.share_percent > 0 ? `${work.share_percent}% 分成` : '分成比例待补'} · {work.accepted_at || '日期待补'}</small></>
+  if (work.deal_mode === 'guarantee_share') return <>{guarantee > 0 ? '保底' : '千字单价'} <strong>{yuan(guarantee || work.per_thousand_cents)}{guarantee ? '' : '/千字'}</strong><small>{work.share_percent > 0 ? `${work.share_percent}% 分成` : '分成比例待补'} · {work.accepted_at || '日期待补'}</small></>
   return <span className="hint">价格待定</span>
 }
 
@@ -177,7 +179,7 @@ export function AcceptedView() {
       attachmentImport.release()
       setEditing(work)
       const nextDraft = {
-        manuscript_id: work.manuscript_id, source: work.source, review_status: work.review_status,
+        word_count: work.word_count || 0, manuscript_id: work.manuscript_id, source: work.source, review_status: work.review_status,
         title: work.title, body: work.body,
         file_name: work.file_name, remove_file: false, accepted_at: work.accepted_at,
         deal_mode: work.deal_mode, price_cents: work.price_cents, guarantee_cents: work.guarantee_cents, per_thousand_cents: work.per_thousand_cents || 0,
@@ -210,16 +212,26 @@ export function AcceptedView() {
     } catch (error) { toast(String(error), 'error') }
   }
 
+  const draftWordCount = draft.source === 'plan'
+    ? editing?.word_count || manuscripts.find(item => item.id === draft.manuscript_id)?.word_count || 0
+    : draft.word_count || 0
+  const calculatedGuarantee = perThousandTotalCents(toCents(perThousandText) ?? -1, draftWordCount)
+  const draftGuarantee = toCents(guaranteeText) || calculatedGuarantee || 0
+
   const saveWork = async () => {
     if (savingRef.current) return
     if (attachmentImport.importing) { toast('请等待附件导入完成', 'warning'); return }
     if (draft.source === 'plan' && !draft.manuscript_id) { toast('请选择一份投稿计划', 'warning'); return }
     if (draft.source === 'external' && !draft.title.trim()) { toast('请填写作品名称', 'warning'); return }
+    if (!Number.isSafeInteger(draftWordCount) || draftWordCount < 0 || draftWordCount > 1_000_000_000) { toast('总字数应为 0–1000000000 的整数', 'warning'); return }
     const price = draft.deal_mode === 'buyout' ? toCents(priceText) : 0
     const guarantee = draft.deal_mode === 'guarantee_share' ? toCents(guaranteeText) : 0
     const perThousand = draft.deal_mode === 'guarantee_share' ? toCents(perThousandText) : 0
     const realizedShare = draft.deal_mode === 'guarantee_share' ? toCents(realizedShareText) : 0
     if (price === null || guarantee === null || perThousand === null || realizedShare === null) { toast('金额最多保留两位小数，且不能为负数', 'warning'); return }
+    if (perThousand && !guarantee && (!draftWordCount || calculatedGuarantee === null)) {
+      toast(!draftWordCount ? (draft.source === 'plan' ? '请先在投稿计划中补充文章字数，或填写保底总价' : '请填写总字数，以计算千字计价收入') : '按千字计算的金额过大', 'warning'); return
+    }
     const monthlySettlements = draft.deal_mode === 'platform_share' ? settlementRows.map((row) => ({ month: row.month, amount_cents: toCents(row.amount) })) : draft.monthly_settlements
     if (draft.deal_mode === 'platform_share') {
       if (!draft.listing_platform.trim()) { toast('请填写上架平台，例如知乎或番茄', 'warning'); return }
@@ -241,7 +253,7 @@ export function AcceptedView() {
     savingRef.current = true
     setSaving(true)
     try {
-      const input = { ...draft, price_cents: price, guarantee_cents: guarantee, per_thousand_cents: perThousand, realized_share_cents: realizedShare,
+      const input = { ...draft, word_count: draftWordCount, price_cents: price, guarantee_cents: guarantee, per_thousand_cents: perThousand, realized_share_cents: realizedShare,
         monthly_settlements: monthlySettlements as { month: string; amount_cents: number }[],
         share_percent: draft.deal_mode === 'guarantee_share' ? share : 50 }
       if (editing) await api.updateAcceptedWork(editing.id, input)
@@ -467,13 +479,20 @@ export function AcceptedView() {
             <button type="button" className={`accepted-mode-undecided${draft.deal_mode === 'undecided' ? ' on' : ''}`} aria-pressed={draft.deal_mode === 'undecided'}
               onClick={() => setDraft((current) => ({ ...current, deal_mode: 'undecided' }))}>暂未定价</button>
           </div>
+          <label className="field">总字数（字）<input type="number" aria-label="总字数（字）" min={0} max={1000000000} step={1}
+            readOnly={draft.source === 'plan'} value={draftWordCount || ''} placeholder={draft.source === 'plan' ? '请先选择已填写字数的稿件' : '例如 10000'}
+            onChange={event => setDraft(current => ({ ...current, word_count: Number(event.target.value) }))} /></label>
+          <p className="field-hint">{draft.source === 'plan' ? '自动使用关联稿件字数；已保存的过稿记录保留当时字数。' : '外部文章可自行填写总字数，用于千字计价。'}</p>
           {draft.deal_mode === 'buyout' && <label className="field">买断价格（元）<input type="text" inputMode="decimal" value={priceText} onChange={(event) => setPriceText(event.target.value)} placeholder="例如 5000" /></label>}
           {draft.deal_mode === 'guarantee_share' && <div className="accepted-form-grid">
             <label className="field">保底总价（元）<input type="text" inputMode="decimal" value={guaranteeText} onChange={(event) => setGuaranteeText(event.target.value)} placeholder="例如 3000；按千字计价可留空" /></label>
             <label className="field">千字单价（元）<input type="text" inputMode="decimal" value={perThousandText} onChange={(event) => setPerThousandText(event.target.value)} placeholder="例如 30；无千字单价可留空" /></label>
+            <p className="field-hint accepted-span-all" role="status" aria-label="千字计价收益预览">{toCents(guaranteeText) ? `使用保底总价：${yuan(draftGuarantee)}` : draftWordCount > 0 && (toCents(perThousandText) ?? 0) > 0 && calculatedGuarantee !== null
+              ? `按千字计算总价：${yuan(calculatedGuarantee)}（${draftWordCount.toLocaleString('zh-CN')} 字 × ${yuan(toCents(perThousandText)!)} ÷ 1000）`
+              : '填写千字单价和总字数后自动计算总价'}{draftGuarantee > 0 && `；计入总收益：${yuan(draftGuarantee + (toCents(realizedShareText) || 0))}`}</p>
             <label className="field">作者分成比例（%）<input type="number" min={0} max={100} step="0.1" value={shareText} onChange={(event) => setShareText(event.target.value)} /></label>
             <label className="field">已结算分成（元）<input type="text" inputMode="decimal" value={realizedShareText} onChange={(event) => setRealizedShareText(event.target.value)} placeholder="尚未结算可留空" /></label>
-            <p className="field-hint accepted-span-all">总价与千字单价至少填一项。只知道千字单价时仍计入卖出篇数，累计金额暂不估算；新记录作者分成默认 50%，历史记录的 0% 表示比例待补。</p>
+            <p className="field-hint accepted-span-all">总价与千字单价至少填一项。未填总价时，按千字单价 × 总字数 ÷ 1000 计算，四舍五入到分；填写总价后优先使用总价。分成比例不直接乘入保底金额，已结算分成另行累加。</p>
           </div>}
           {draft.deal_mode === 'platform_share' && <div className="accepted-settlements">
             <p className="field-hint">没有固定价格。作品计入平台上架篇数；每月拿到分成后，再记录当月实际收入。</p>

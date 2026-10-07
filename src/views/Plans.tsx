@@ -457,9 +457,12 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
   const openDetail = async (summary: ManuscriptSummary) => {
     const sequence = ++openSeq.current
     try {
-      const m = await api.getManuscript(summary.id)
+      // Records can be opened before the plan editor has ever loaded its resources.
+      // Refresh the library here so imports and local data changes are visible too.
+      const [m, nextEditors] = await Promise.all([api.getManuscript(summary.id), api.listEditors(true)])
       if (sequence !== openSeq.current) return
       if (!m) throw new Error('稿件已不存在，请刷新计划列表')
+      setEditors(nextEditors)
       setDetailRevision(v => v + 1); setDetail(m)
     } catch (error) { if (sequence === openSeq.current) toast(String(error), 'error') }
   }

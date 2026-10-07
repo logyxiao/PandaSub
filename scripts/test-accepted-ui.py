@@ -12,6 +12,7 @@ from accepted_ui_fixtures import ACCEPTED as EXTRA
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
     page = browser.new_page(viewport={'width': 1180, 'height': 760}, reduced_motion='reduce')
+    page.clock.set_fixed_time('2026-09-26T12:00:00+08:00')
     errors = []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.route('**/src/api.ts*', lambda route: route.fulfill(content_type='application/javascript', body=MOCK + EXTRA))
@@ -131,7 +132,7 @@ with sync_playwright() as playwright:
       const dates = ['2026-09-25','2026-09-19','2026-09-18','2026-08-27','2026-08-26',''];
       const works = dates.map((accepted_at, id) => ({ ...base, id, accepted_at }));
       works.push({ ...base, id: 6, accepted_at: '2026-09-25', deal_mode: 'guarantee_share',
-        price_cents: 0, guarantee_cents: 0, per_thousand_cents: 3000 });
+        price_cents: 0, guarantee_cents: 0, per_thousand_cents: 3000, word_count: 0 });
       const summary = summarizeAcceptedSales(works, new Date(2026, 8, 25));
       return { sold: summary.soldCount, undated: summary.undatedSoldCount,
         unpriced: summary.unpricedSoldCount,
@@ -217,9 +218,10 @@ with sync_playwright() as playwright:
     dialog.get_by_label('作品名称').fill('千字计价测试')
     dialog.get_by_role('button', name='保底加分成').click()
     dialog.get_by_label('千字单价（元）').fill('30')
+    dialog.get_by_label('总字数（字）',exact=True).fill('10000')
     dialog.get_by_role('button', name='保存最终过稿记录').click()
     page.get_by_role('textbox', name='搜索过稿作品').fill('千字计价测试')
-    expect(page.locator('.accepted-table tbody tr')).to_contain_text('¥30/千字')
+    expect(page.locator('.accepted-table tbody tr')).to_contain_text('¥300')
     page.get_by_role('textbox', name='搜索过稿作品').fill('')
     page.get_by_role('button', name='新增外部文章').first.click()
     dialog = page.get_by_role('dialog', name='核对作品结果')

@@ -14,13 +14,14 @@ use crate::store;
 const WORK_COLS: &str = "id, manuscript_id, source, title, body, file_name, \
     CASE WHEN file_data IS NOT NULL AND length(file_data) > 0 THEN 1 ELSE 0 END, \
     accepted_at, deal_mode, price_cents, guarantee_cents, share_percent, sale_platform, \
-    buyer_editor, listing_platform, article_url, notes, created_at, updated_at, review_status, sold_at, realized_share_cents, per_thousand_cents, record_origin, monthly_settlements";
+    buyer_editor, listing_platform, article_url, notes, created_at, updated_at, review_status, sold_at, realized_share_cents, per_thousand_cents, record_origin, monthly_settlements, word_count";
 
 fn map_work(row: &rusqlite::Row<'_>) -> rusqlite::Result<AcceptedWork> {
     let settlements_json: String = row.get(24)?;
     let monthly_settlements = serde_json::from_str(&settlements_json).map_err(|error|
         rusqlite::Error::FromSqlConversionFailure(24, rusqlite::types::Type::Text, Box::new(error)))?;
     Ok(AcceptedWork {
+        word_count: row.get(25)?,
         id: row.get(0)?,
         manuscript_id: row.get(1)?,
         source: row.get(2)?,
@@ -73,6 +74,13 @@ fn validate(input: &AcceptedWorkInput) -> Result<(), String> {
         "undecided" | "buyout" | "guarantee_share" | "platform_share"
     ) {
         return Err("价格模式无效".into());
+    }
+    if input.word_count < 0 || input.word_count > 1_000_000_000 {
+        return Err("总字数应为 0–1000000000 的整数".into());
+    }
+    if input.deal_mode == "guarantee_share" && input.guarantee_cents == 0 && input.per_thousand_cents > 0 {
+        let cents = (input.word_count as i128 * input.per_thousand_cents as i128 + 500) / 1000;
+        if cents > 9_007_199_254_740_991 { return Err("按千字计算的金额过大".into()); }
     }
     if input.price_cents < 0 || input.guarantee_cents < 0 || input.per_thousand_cents < 0 || input.realized_share_cents < 0 {
         return Err("金额不能为负数".into());
@@ -211,7 +219,11 @@ pub(crate) fn load_candidates(conn: &Connection) -> Result<Vec<AcceptedCandidate
     Ok(result)
 }
 
-pub(crate) fn create_work(conn: &Connection, input: AcceptedWorkInput) -> Result<i64, String> {
+pub(crate) fn create_work(conn: &Connection, mut input: AcceptedWorkInput) -> Result<i64, String> {
+    if input.source == "plan" {
+        input.word_count = conn.query_row("SELECT word_count FROM manuscripts WHERE id=?1", [input.manuscript_id], |r| r.get(0))
+            .optional().map_err(|e| e.to_string())?.ok_or("投稿计划不存在")?;
+    }
     validate(&input)?;
     let settlements_json = serde_json::to_string(&input.monthly_settlements).map_err(|error| error.to_string())?;
     let sold_at = if input.review_status == "accepted" && input.deal_mode != "undecided" {
@@ -256,8 +268,8 @@ pub(crate) fn create_work(conn: &Connection, input: AcceptedWorkInput) -> Result
     conn.execute(
         "INSERT INTO accepted_works (manuscript_id, source, title, body, file_name, file_data,
          accepted_at, deal_mode, price_cents, guarantee_cents, share_percent, sale_platform,
-         buyer_editor, listing_platform, article_url, notes, review_status, sold_at, realized_share_cents, per_thousand_cents, monthly_settlements)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+         buyer_editor, listing_platform, article_url, notes, review_status, sold_at, realized_share_cents, per_thousand_cents, monthly_settlements, word_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             input.manuscript_id,
             input.source,
@@ -279,7 +291,8 @@ pub(crate) fn create_work(conn: &Connection, input: AcceptedWorkInput) -> Result
             sold_at,
             input.realized_share_cents,
             input.per_thousand_cents,
-            settlements_json
+            settlements_json,
+            input.word_count,
         ],
     )
     .map_err(|e| {
@@ -295,8 +308,12 @@ pub(crate) fn create_work(conn: &Connection, input: AcceptedWorkInput) -> Result
 pub(crate) fn update_work(
     conn: &Connection,
     id: i64,
-    input: AcceptedWorkInput,
+    mut input: AcceptedWorkInput,
 ) -> Result<(), String> {
+    if input.source == "plan" {
+        input.word_count = conn.query_row("SELECT COALESCE(NULLIF(a.word_count,0),m.word_count,0) FROM accepted_works a LEFT JOIN manuscripts m ON m.id=a.manuscript_id WHERE a.id=?1", [id], |r| r.get(0))
+            .optional().map_err(|e| e.to_string())?.ok_or("过稿记录不存在")?;
+    }
     validate(&input)?;
     let settlements_json = serde_json::to_string(&input.monthly_settlements).map_err(|error| error.to_string())?;
     let sold_at = if input.review_status == "accepted" && input.deal_mode != "undecided" {
@@ -320,7 +337,7 @@ pub(crate) fn update_work(
              guarantee_cents=?4, share_percent=?5, sale_platform=?6, buyer_editor=?7,
              listing_platform=?8, article_url=?9, notes=?10, review_status=?11,
              sold_at=?12, realized_share_cents=?13, per_thousand_cents=?14, monthly_settlements=?15,
-             updated_at=datetime('now','localtime') WHERE id=?16",
+             word_count=?17, updated_at=datetime('now','localtime') WHERE id=?16",
             params![
                 input.accepted_at,
                 input.deal_mode,
@@ -337,7 +354,8 @@ pub(crate) fn update_work(
                 input.realized_share_cents,
                 input.per_thousand_cents,
                 settlements_json,
-                id
+                id,
+                input.word_count,
             ],
         )
     } else {
@@ -349,7 +367,7 @@ pub(crate) fn update_work(
              share_percent=?10, sale_platform=?11, buyer_editor=?12, listing_platform=?13,
              article_url=?14, notes=?15, review_status=?16,
              sold_at=?17, realized_share_cents=?18, per_thousand_cents=?19, monthly_settlements=?20,
-             updated_at=datetime('now','localtime') WHERE id=?21",
+             word_count=?22, updated_at=datetime('now','localtime') WHERE id=?21",
             params![
                 input.title.trim(),
                 input.body,
@@ -371,7 +389,8 @@ pub(crate) fn update_work(
                 input.realized_share_cents,
                 input.per_thousand_cents,
                 settlements_json,
-                id
+                id,
+                input.word_count,
             ],
         )
     }
@@ -743,6 +762,7 @@ mod tests {
 
     fn input(source: &str, manuscript_id: Option<i64>, title: &str) -> AcceptedWorkInput {
         AcceptedWorkInput {
+            word_count: 0,
             manuscript_id,
             source: source.into(),
             review_status: "accepted".into(),
@@ -766,6 +786,27 @@ mod tests {
             article_url: String::new(),
             notes: String::new(),
         }
+    }
+
+    #[test]
+    fn word_count_is_saved_for_external_and_captured_from_plan() {
+        let conn = crate::db::open_database(":memory:".into()).unwrap();
+        conn.execute("INSERT INTO manuscripts(id,title,body,word_count) VALUES(1,'真实稿件','正文',12345)",[]).unwrap();
+        let mut planned = input("plan",Some(1),""); planned.word_count=99999;
+        let id = create_work(&conn,planned.clone()).unwrap();
+        assert_eq!(load_works(&conn).unwrap()[0].word_count,12345);
+        conn.execute("UPDATE manuscripts SET word_count=20000 WHERE id=1",[]).unwrap();
+        update_work(&conn,id,planned).unwrap();
+        assert_eq!(load_works(&conn).unwrap()[0].word_count,12345);
+        let mut external=input("external",None,"外部千字价");
+        external.word_count=10000; external.guarantee_cents=0; external.per_thousand_cents=3000;
+        let id=create_work(&conn,external.clone()).unwrap();
+        let work=load_work_list(&conn,true).unwrap().into_iter().find(|w|w.id==id).unwrap();
+        assert_eq!(work.word_count,10000);assert_eq!(work.guarantee_cents,0);
+        external.word_count=12000;update_work(&conn,id,external.clone()).unwrap();
+        assert_eq!(load_works(&conn).unwrap().into_iter().find(|w|w.id==id).unwrap().word_count,12000);
+        external.word_count=-1;assert!(update_work(&conn,id,external.clone()).is_err());
+        external.word_count=1_000_000_001;assert!(create_work(&conn,external).is_err());
     }
 
     #[test]
