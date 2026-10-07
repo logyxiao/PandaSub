@@ -1,19 +1,19 @@
 {
-  "version": "0.2.11",
-  "notes": "修复过稿统计千字单价未计入总收益的问题\n关联稿件自动带入字数，外部文章支持手动填写总字数\n新增收益实时预览，手填总价优先，已结算分成另行累加\n修复投稿计划手动添加编辑时编辑库显示为空\n修复编辑详情删除收稿类型时弹窗向右偏移",
-  "pub_date": "2026-10-07T07:06:25.288Z",
+  "version": "0.2.12",
+  "notes": "收件箱新增一键已读\n编辑组支持空数据直接导入\n邮箱配置新增备注\n新建投稿计划默认不选邮箱\n计划列表显示投稿邮箱笔名，悬停查看完整信息\n邮件模板扩充至20套，新增轻松可爱话术，不带编辑姓名",
+  "pub_date": "2026-10-07T16:37:38.396Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkRSUnFJS1h5cGpzTnhFWU51VVdIdTNqR25TUGhXeW4xTmo1aXhTeGFRSEJiODZwQjl0dlAwL3pRc1NOMnBVRDVaQzE3N3ZjRlpudHdzL1k3ZEYxR3dJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMzU2NzU5CWZpbGU6cGFuZGFzdWItMC4yLjExLXdpbmRvd3MteDY0LXNldHVwLmV4ZQpNdVJTaWoxL1B4SlBKR1pYM3plOHdLVENsZnFxSzljdmltd1NjWjlnTjVlbGtRdDg5cnV5TjVTOFVMRVZWMVdCdS9nTzl4RXNwZVNFRm9veUdreDhDUT09Cg==",
-      "url": "https://pandasub.zhudot.com/releases/pandasub-0.2.11-windows-x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkpqYWh2U1dsYUtPczhFQkN1QXlESUZQOElydXZiYTZFNUl2dkRpMURvRUprMHE5YnlwdVRIbGE5d0lMNDU5VVlUVEtsU1UveVVJSzdmM0dybW4rR2drPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMzkxMDI5CWZpbGU6cGFuZGFzdWItMC4yLjEyLXdpbmRvd3MteDY0LXNldHVwLmV4ZQpnWWNPZUdUNnM3cHJQb25kc25mbk00Z05CcDZpZ0JHeWhRR2VTcDB3RkVsa20wVHFLdC8wMDA1c0FRZ2NBSmg1QTQrYUNWN1BEV0lwdEt1R3NJTWZDUT09Cg==",
+      "url": "https://pandasub.zhudot.com/releases/pandasub-0.2.12-windows-x64-setup.exe"
     },
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkRLZCtJeUh1Lzl0Z1hTV1hUL1E4OUZ3SHNhUHU5dG1CVTdHRlhjVitkcTJYd0lyTmJWWTVVVXhXS2tlYmpZYm5nS0FxZTBwYlU0QkE4cjBnT29kelFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMzU2NzU5CWZpbGU6cGFuZGFzdWItMC4yLjExLWRhcndpbi11bml2ZXJzYWwuYXBwLnRhci5negplWVlTT0pad0N3Z3B2Vjg2aVE4MFZCNGtqbkNxakRTUCt4L1JPcUxGY1pnMHp3SGRyY0lINHRtdnBkQTIxbWdnRkdWSkp4VXlxQ3BGOCtjSFRPdGpDZz09Cg==",
-      "url": "https://pandasub.zhudot.com/releases/pandasub-0.2.11-darwin-universal.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkh3bzZlQVk0dUFiQXRjd0JxejRzVjN2NXdMZ29GZFZZYTNjUVQyQ0F5SHBmckNUT3F1cjdvWHNrS2tUb1RtMmwzYlp3enhPUjk3dmpGK2F3RmNjNUFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMzkxMDI5CWZpbGU6cGFuZGFzdWItMC4yLjEyLWRhcndpbi11bml2ZXJzYWwuYXBwLnRhci5nego5ZWt0WmErQlB2eGZJVENlT0Q0WFZpeGZWZFVtNUNMYTNSRFBaZEJLb3FQQ1dOUDdjc2lqejRGWitDZzBaVFE1QTVTam50MmVpRUwxWHR0WStZNmdEZz09Cg==",
+      "url": "https://pandasub.zhudot.com/releases/pandasub-0.2.12-darwin-universal.app.tar.gz"
     },
     "darwin-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkRLZCtJeUh1Lzl0Z1hTV1hUL1E4OUZ3SHNhUHU5dG1CVTdHRlhjVitkcTJYd0lyTmJWWTVVVXhXS2tlYmpZYm5nS0FxZTBwYlU0QkE4cjBnT29kelFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMzU2NzU5CWZpbGU6cGFuZGFzdWItMC4yLjExLWRhcndpbi11bml2ZXJzYWwuYXBwLnRhci5negplWVlTT0pad0N3Z3B2Vjg2aVE4MFZCNGtqbkNxakRTUCt4L1JPcUxGY1pnMHp3SGRyY0lINHRtdnBkQTIxbWdnRkdWSkp4VXlxQ3BGOCtjSFRPdGpDZz09Cg==",
-      "url": "https://pandasub.zhudot.com/releases/pandasub-0.2.11-darwin-universal.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSNXNLeU9PUVNoZkh3bzZlQVk0dUFiQXRjd0JxejRzVjN2NXdMZ29GZFZZYTNjUVQyQ0F5SHBmckNUT3F1cjdvWHNrS2tUb1RtMmwzYlp3enhPUjk3dmpGK2F3RmNjNUFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxMzkxMDI5CWZpbGU6cGFuZGFzdWItMC4yLjEyLWRhcndpbi11bml2ZXJzYWwuYXBwLnRhci5nego5ZWt0WmErQlB2eGZJVENlT0Q0WFZpeGZWZFVtNUNMYTNSRFBaZEJLb3FQQ1dOUDdjc2lqejRGWitDZzBaVFE1QTVTam50MmVpRUwxWHR0WStZNmdEZz09Cg==",
+      "url": "https://pandasub.zhudot.com/releases/pandasub-0.2.12-darwin-universal.app.tar.gz"
     }
   }
 }
