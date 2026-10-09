@@ -2,35 +2,69 @@
 
 [中文](README.md)
 
-Panda Submission (NovelSub) is a local desktop submission tool for fiction writers. It brings sender accounts, editor contacts, manuscripts, submission plans, delivery logs, and editor replies into one workspace.
+Panda Submission (NovelSub) is a local desktop submission tool for fiction writers. It brings sender accounts, editor contacts, manuscripts, submission plans, delivery logs, editor replies, and acceptance earnings into one workspace.
 
 **Completely free and open source**: [https://github.com/logyxiao/PandaSub](https://github.com/logyxiao/PandaSub). Data is stored locally in SQLite, while submission tasks run in the Tauri background process.
 
 <p align="center">
   <img src="docs/preview.png" alt="Panda Submission preview" width="880" />
   <br />
-  <em>熊猫投稿</em>
+  <em>Current dashboard · All manuscripts, addresses, replies, and amounts shown are fictional</em>
 </p>
 
 
 ## Features
 
-- **Sender account management**: Configure QQ, 163, and other SMTP accounts with authorization codes, pen names, and daily limits.
-- **Editor library**: Ships with built-in short-story contacts. Filter by work type; import or export Excel/CSV.
-- **Submission plans**: Edit manuscript metadata, message subject, body, recipients, and schedule in one workflow.
-- **Per-plan account selection**: Choose exactly which enabled sender accounts participate in each submission plan.
-- **Custom random pacing**: Set a minimum and maximum delay in seconds for each submission plan; every interval is randomized within that range.
-- **Scheduling modes**: Send immediately, at a specified time, or repeatedly.
-- **Delivery safeguards**: Hourly and daily account limits, rate-limit cooldowns, retries, pause, resume, and stop controls.
-- **Delivery logs**: Track each message, filter by plan or result, and export to Excel.
-- **Reply monitoring**: Check inboxes over IMAP and classify human replies, automated replies, and bounces.
-- **Background execution**: Tasks can continue from the system tray after the main window is closed.
+| Page | Capabilities |
+| --- | --- |
+| Dashboard | Follow active plans, items needing attention, 7/30-day delivery and human-reply trends, and recent mail. |
+| Accounts | Manage SMTP/IMAP accounts, pen names, notes, sending limits, connection tests, and bulk account setup. Includes server presets for QQ, 163, 126, and Yeah. |
+| Editors & groups | Filter by accepted/excluded genres, platform, favorites, availability, and sender blocks. Edit contacts inline, view average human response time and sample counts, import/export Excel or CSV, and maintain reusable groups across pages. |
+| Plans | Prepare manuscript attachments and mail, choose recipients and sender accounts, then schedule delivery. Save drafts, copy plans, and inspect delivery details. Built-in mail templates support fixed or random selection; edits become defaults for new plans. |
+| Delivery logs | Search by plan, result, and mailbox; inspect failures and export Excel. Pause, resume, stop, or retry delivery. |
+| Inbox | Read ordinary mail and submission replies across accounts. Classify human replies, automated replies, and bounces; use a side-by-side preview, HTML/plain text, collapsed quotations, saved attachments, search, and synchronized read state. Mark all results in the current filter as read. |
+| Acceptance | Review original mail and record preliminary approval, final acceptance, final rejection, or non-acceptance. Handle false positives, add external works, view/export manuscripts, track buyouts, guarantees plus royalties, per-thousand-character pricing and monthly settlements, and export achievement images. |
+| Submission statistics | Review deliveries, human replies, acceptance replies, and failures by date range and day/week/month. |
+| Settings | Switch between monochrome and bamboo-green themes; configure inbox checks, startup and tray behavior, backups, manual cache cleanup, storage usage, and application updates. |
 
-## Automatic Submission Pace
+The inbox can filter messages mentioning paused submissions and bulk pause, enable, or delete matching editor contacts across pages. **Pausing blocks subsequent deliveries; deleting a contact does not remove recipients from existing plans.** Average editor response time uses the first valid human reply after each successful delivery and includes a sample count.
 
-After each message is sent, the app waits for a random duration within the plan's configured range. New plans default to **100–240 seconds**, and both bounds can be customized.
+Automatic acceptance detection prompts a manual review. Preliminary approval is separate from final acceptance. Recorded earnings reflect entered prices and settled royalties, not automatically verified payments.
 
-Messages are sent sequentially. Account-level hourly and daily limits and cooldown rules still apply.
+## Screenshots
+
+These are current React pages rendered with isolated fictional data. No personal database, real submissions, correspondence, addresses, or earnings are used.
+
+### Submission plans
+
+![Submission plans and delivery progress](docs/screenshots/plans.png)
+
+### Editor library
+
+![Editor contacts, genres, and average response times](docs/screenshots/editors.png)
+
+### Inbox
+
+![Fictional incoming messages and side-by-side mail preview](docs/screenshots/inbox.png)
+
+### Acceptance tracking
+
+![Review outcomes, sales channels, and recorded earnings](docs/screenshots/accepted.png)
+
+## Getting Started
+
+1. Download an installer from [GitHub Releases](https://github.com/logyxiao/PandaSub/releases), or run from source below.
+2. Add a sender account and SMTP/IMAP authorization code, then test its connection.
+3. Review editor contacts and create reusable groups.
+4. Create a plan with a manuscript, mail templates, recipients, sender accounts, sending interval, and start time.
+5. Follow deliveries on the dashboard, read feedback in the inbox, and manually record outcomes and earnings in Acceptance.
+
+## Sending Pace & Scheduling
+
+- Each message is followed by a random delay within the plan's configured bounds. The first default is **100–240 seconds**. Successfully saving a plan or draft remembers its interval for new plans; existing plans retain their own values.
+- New plans can start immediately, at a specified local time, or after another plan finishes plus a delay of 30/60/120 minutes or a custom interval. Pausing the preceding plan does not start the countdown; an existing looping plan must be stopped first.
+- Scheduled tasks are checked approximately every 15 seconds. **Keep the app running, the computer awake, and the network available.** Missed schedules start after execution resumes. Closing the window can keep tasks running in the system tray, depending on settings.
+- Messages are sent sequentially with account limits, cooldowns, and retry safeguards. Explicit recipient-side sender blocks are recorded per mailbox pair; eligible automated tasks can seek a replacement editor on the same platform.
 
 ## Tech Stack
 
@@ -45,7 +79,7 @@ Messages are sent sequentially. Account-level hourly and daily limits and cooldo
 
 ## Requirements
 
-- Node.js 20 or later
+- Node.js 20.19+ or 22.12+ (a compatible LTS release is recommended)
 - npm
 - Rust stable
 - macOS: Xcode Command Line Tools
@@ -72,6 +106,34 @@ npm run dev
 ```
 
 The frontend-only mode cannot access SQLite, SMTP, IMAP, or other Tauri APIs.
+
+## Checks & Screenshot Updates
+
+```bash
+npm test
+python3 -m pip install -r scripts/requirements-ui.txt
+python3 -m playwright install chromium webkit
+npm run test:ui
+
+# Run selected UI checks
+python3 scripts/run-ui-tests.py test-inbox-preview-ui.py test-accepted-ui.py
+```
+
+The UI runner starts and stops an isolated Vite server. It mocks Tauri APIs without reading user databases, connecting to mailboxes, or sending mail. Coverage includes plans, editor management, mail previews and read state, scheduling, acceptance, pricing, and narrow layouts. See [testing details (Chinese)](docs/testing.md).
+
+To refresh the README images, start a frontend-only server:
+
+```bash
+npm run dev -- --host 127.0.0.1 --port 5179 --strictPort
+```
+
+Then run in another terminal:
+
+```bash
+NOVELSUB_TEST_URL=http://127.0.0.1:5179 python3 scripts/capture-readme.py
+```
+
+The capture script uses fictional in-memory records and blocks external network requests. It writes the dashboard to `docs/preview.png` and other views to `docs/screenshots/`. Do not replace these images with screenshots of personal accounts.
 
 ## Build
 
@@ -108,16 +170,18 @@ Configured bundle targets include macOS App/DMG and Windows NSIS.
 NovelSub/
 ├── src/                    # React frontend
 │   ├── components/         # Shared UI components
-│   ├── views/              # Dashboard, accounts, editors, plans, logs, replies, settings
+│   ├── views/              # Dashboard, plans, inbox, acceptance, statistics, settings
 │   ├── api.ts              # Tauri command wrappers
 │   └── types.ts            # Frontend types
 ├── src-tauri/              # Rust/Tauri backend
-│   ├── src/commands.rs     # Tauri commands
+│   ├── src/commands/       # Tauri commands grouped by domain
 │   ├── src/scheduler.rs    # Submission scheduler
 │   ├── src/smtp.rs         # SMTP delivery
 │   ├── src/imap.rs         # IMAP inbox scanning
 │   ├── src/db.rs           # SQLite schema and migrations
 │   └── tauri.conf.json     # Desktop application configuration
+├── scripts/                # Checks, privacy-safe screenshots, release tools
+├── docs/                   # Screenshots and testing documentation
 └── README.md
 ```
 
@@ -143,7 +207,7 @@ Default database location on macOS:
 ~/Library/Application Support/com.novelsub.desktop/novelsub.sqlite
 ```
 
-The database stores sender accounts, editor contacts, manuscripts, plans, task state, delivery logs, replies, and settings. Backups can be created from **Settings → Data & Backup**.
+The database stores sender accounts, editor contacts, manuscripts, plans, task state, delivery logs, replies and mail caches, acceptance records, manuscript copies, pricing, monthly settlements, and settings. Use **Settings → Backup & Storage** to create backups, inspect storage usage, and manually clean caches or old backups. Keep databases, mailbox settings, backups, and manuscript copies out of public repositories.
 
 ## Email Security
 
