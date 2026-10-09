@@ -186,11 +186,12 @@ pub(crate) fn load_candidates(conn: &Connection) -> Result<Vec<AcceptedCandidate
     let mut stmt = conn
         .prepare(
             "SELECT d.manuscript_id, m.title, r.received_at,
-                COALESCE(e.platform, ''), COALESCE(e.name, r.from_email)
+                COALESCE(e.platform, ''), COALESCE(e.name, r.from_email), r.id, COALESCE(a.email, '')
          FROM replies r
          JOIN deliveries d ON d.id = r.delivery_id
          JOIN manuscripts m ON m.id = d.manuscript_id
          LEFT JOIN editors e ON lower(e.email) = lower(r.from_email)
+         LEFT JOIN accounts a ON a.id = r.account_id
          WHERE r.accepted = 1 AND NOT EXISTS (
            SELECT 1 FROM accepted_works w WHERE w.manuscript_id = d.manuscript_id
          )
@@ -200,6 +201,8 @@ pub(crate) fn load_candidates(conn: &Connection) -> Result<Vec<AcceptedCandidate
     let rows = stmt
         .query_map([], |row| {
             Ok(AcceptedCandidate {
+                reply_id: row.get(5)?,
+                account_email: row.get(6)?,
                 manuscript_id: row.get(0)?,
                 title: row.get(1)?,
                 received_at: row.get(2)?,
@@ -451,6 +454,30 @@ pub async fn list_accepted_candidates(
     let conn = db.lock().map_err(|e| e.to_string())?;
     load_candidates(&conn)
     }).await.map_err(|e|e.to_string())?
+}
+
+#[tauri::command]
+pub async fn dismiss_accepted_candidate(
+    state: State<'_, AppState>, manuscript_id: i64, reply_id: i64,
+) -> Result<(), String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        dismiss_candidate(&conn, manuscript_id, reply_id)
+    }).await.map_err(|e| e.to_string())?
+}
+
+fn dismiss_candidate(conn: &Connection, manuscript_id: i64, reply_id: i64) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let changed = tx.execute("UPDATE replies SET accepted=0, acceptance_dismissed=1
+        WHERE id=?1 AND (accepted=1 OR acceptance_dismissed=1)
+        AND EXISTS (SELECT 1 FROM deliveries d WHERE d.id=replies.delivery_id AND d.manuscript_id=?2)
+        AND NOT EXISTS (SELECT 1 FROM accepted_works w WHERE w.manuscript_id=?2)", params![reply_id, manuscript_id])
+        .map_err(|e| e.to_string())?;
+    if changed == 0 { return Err("这条待核对结果已变化，请刷新后重试".into()); }
+    let body: String = tx.query_row("SELECT body FROM replies WHERE id=?1", [reply_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+    store::learn_acceptance_filter(&tx, &body)?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -832,8 +859,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load_candidates(&conn).unwrap().len(), 1);
+        conn.execute("INSERT INTO replies(id,delivery_id,from_email,subject,body,kind,accepted,received_at)
+            VALUES(2,1,'another@example.com','最新的核对邮件','很抱歉稿件未能过审，祝宝子早日过稿！','human',1,'2026-09-26 12:00:00')", []).unwrap();
+        let candidates = load_candidates(&conn).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].reply_id, 2);
+        let source = store::load_reply(&conn, candidates[0].reply_id).unwrap().unwrap();
+        assert_eq!(source.from_email, "another@example.com");
+        assert_eq!(source.subject, "最新的核对邮件");
+        assert!(source.body.contains("未能过审"));
+        assert!(store::load_reply(&conn, 99999).unwrap().is_none());
+        assert!(dismiss_candidate(&conn, 999, 2).is_err());
+        dismiss_candidate(&conn, 101, 2).unwrap();
+        dismiss_candidate(&conn, 101, 2).unwrap(); // Repeat clicks are harmless.
+        assert!(store::acceptance_is_filtered(&conn, "很抱歉稿件未能过审，祝宝子早日过稿！\n---原始邮件---\n另一本作品").unwrap());
+        assert_eq!(load_candidates(&conn).unwrap()[0].reply_id, 1);
+        store::update_reply_kind(&conn, 2, "human", "自动重判", true).unwrap();
+        assert!(!store::load_reply(&conn, 2).unwrap().unwrap().accepted);
+        assert!(store::load_reply(&conn, 2).unwrap().unwrap().body.contains("未能过审"));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM accepted_works", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        // Later genuine replies for the same manuscript remain reviewable.
+        conn.execute("INSERT INTO replies(id,delivery_id,kind,accepted,body,received_at) VALUES(3,1,'human',1,'终审通过','2026-09-27')", []).unwrap();
+        assert_eq!(load_candidates(&conn).unwrap()[0].reply_id, 3);
 
         let id = create_work(&conn, input("plan", Some(101), "ignored")).unwrap();
+        assert!(dismiss_candidate(&conn, 101, 3).is_err());
         assert!(load_candidates(&conn).unwrap().is_empty());
         assert!(create_work(&conn, input("plan", Some(101), "ignored")).is_err());
         let mut corrected = input("plan", Some(101), "ignored");

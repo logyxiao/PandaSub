@@ -207,6 +207,8 @@ export interface AcceptedWorkInput {
 }
 
 export interface AcceptedCandidate {
+  reply_id: number
+  account_email: string
   manuscript_id: number
   title: string
   received_at: string

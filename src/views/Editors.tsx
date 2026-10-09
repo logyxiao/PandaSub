@@ -893,6 +893,9 @@ export function EditorGroupsLibrary() {
                         <span className="editor-group-roster-tags">
                           {editor.work_type.slice(0, 2).map((type) => <span key={type}>{type}</span>)}
                         </span>
+                        <div className="editor-group-roster-reply">
+                          <EditorReplyTime editor={editor} label="平均回复" />
+                        </div>
                         <IconButton className={`favorite-toggle editor-star ${favored ? 'on' : ''}`}
                           title={favored ? '取消收藏' : '收藏'}
                           onClick={() => void toggleFavorite(editor)}>

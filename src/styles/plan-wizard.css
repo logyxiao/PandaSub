@@ -637,7 +637,7 @@
   .editor-group-rail { max-height: 280px; }
   .editor-group-detail-head { align-items: flex-start; flex-wrap: wrap; }
   .editor-group-detail-head .editor-group-actions { flex-wrap: wrap; justify-content: flex-end; }
-  .editor-group-roster-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .editor-group-roster-row { grid-template-columns: minmax(0, 1fr) 144px auto auto; }
   .editor-group-roster-tags { display: none; }
   .plan-editor-pick-nav { align-items: flex-start; }
   .plan-group-roster-head { flex-wrap: wrap; }

@@ -1,6 +1,7 @@
 """Shared accepted-work fixtures: all document and mail operations stay mocked."""
 ACCEPTED = r'''
 const acceptedWorks=[];
+const dismissedReplies=new Set();
 const manuscripts=[m,{...m,id:2,title:'初审通过的故事'},{...m,id:3,title:'误判的回复'}];
 const candidates=[
  {manuscript_id:1,title:'回归测试计划',received_at:'2026-09-25 12:00:00',sale_platform:'知乎盐选',buyer_editor:'编辑甲'},
@@ -8,13 +9,20 @@ const candidates=[
  {manuscript_id:3,title:'误判的回复',received_at:'2026-09-23 10:00:00',sale_platform:'平台丙',buyer_editor:'编辑丙'}
 ];
 window.__acceptedWorks=acceptedWorks;
+candidates.forEach((candidate,index)=>{candidate.reply_id=index+1;candidate.account_email='fixture@example.com'});
+functions.getReply=id=>({...replies[0],id,subject:'核对邮件'+id,body:id===3?'很抱歉稿件未能过审，祝宝子早日过稿！':'稿件初审通过，请等待终审。'});
 m.file_name='原稿.docx';m.has_file=true;
 Object.assign(functions,{
   listManuscripts:(summary)=>manuscripts.map(item=>({...item,...(summary?{body:undefined,mail_templates:undefined}:{})})),
   getManuscript:(id)=>manuscripts.find(item=>item.id===id),
   listAcceptedWorks:(summary)=>acceptedWorks.map(w=>({...w,...(summary?{body:undefined}:{})})),
   getAcceptedWork:id=>({...acceptedWorks.find(w=>w.id===id)}),
-  listAcceptedCandidates:()=>candidates.filter(c=>!acceptedWorks.some(w=>w.manuscript_id===c.manuscript_id)),
+  listAcceptedCandidates:()=>candidates.filter(c=>!dismissedReplies.has(c.reply_id)&&!acceptedWorks.some(w=>w.manuscript_id===c.manuscript_id)),
+  dismissAcceptedCandidate:async(manuscriptId,replyId)=>{
+    if(window.__failDismiss)throw new Error('fixture 保存失败');
+    if(window.__slowDismiss)await new Promise(resolve=>window.__finishDismiss=resolve);
+    dismissedReplies.add(replyId);
+  },
   addAcceptedWork:input=>{
     const source=manuscripts.find(item=>item.id===input.manuscript_id);
     const work={...input,id:acceptedWorks.length+1,title:input.source==='plan'?source.title:input.title,
@@ -37,4 +45,3 @@ Object.assign(functions,{
   extractDocx:()=> '这是发送的 Word 文稿。\n第二段。',
 });
 '''
-

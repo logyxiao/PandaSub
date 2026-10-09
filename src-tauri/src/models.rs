@@ -246,6 +246,8 @@ fn default_accepted_review_status() -> String {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AcceptedCandidate {
+    pub reply_id: i64,
+    pub account_email: String,
     pub manuscript_id: i64,
     pub title: String,
     pub received_at: String,

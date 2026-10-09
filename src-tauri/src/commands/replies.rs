@@ -6,6 +6,15 @@ use crate::store;
 // ---------- Replies ----------
 
 #[tauri::command]
+pub async fn get_reply(state: State<'_, AppState>, id: i64) -> Result<Option<crate::models::Reply>, String> {
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        store::load_reply(&conn, id)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn list_replies_page(
     state: State<'_, AppState>,
     kind: Option<String>,
@@ -164,7 +173,7 @@ fn reclassify_history(
     loop {
         let batch = {
             let conn = db.lock().map_err(|e| e.to_string())?;
-            let mut stmt = conn.prepare("SELECT id,kind,reason,accepted,delivery_id,from_email,subject,body FROM replies WHERE id>?1 AND id<=?2 ORDER BY id LIMIT 250").map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT id,kind,reason,accepted,delivery_id,from_email,subject,body,acceptance_dismissed FROM replies WHERE id>?1 AND id<=?2 ORDER BY id LIMIT 250").map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map(rusqlite::params![cursor, upper], |row| {
                     Ok((
@@ -176,6 +185,7 @@ fn reclassify_history(
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
                         row.get::<_, String>(7)?,
+                        row.get::<_, bool>(8)?,
                     ))
                 })
                 .map_err(|e| e.to_string())?;
@@ -187,7 +197,7 @@ fn reclassify_history(
         }
         cursor = batch.last().unwrap().0;
         let mut updates = Vec::new();
-        for (id, kind, reason, accepted, delivery, from, subject, body) in batch {
+        for (id, kind, reason, accepted, delivery, from, subject, body, dismissed) in batch {
             // A prior bounce classification can rely solely on MIME/headers that older
             // records did not persist. Subject keyword edits must not erase that evidence.
             if kind == "bounce" {
@@ -203,8 +213,13 @@ fn reclassify_history(
                 &keywords,
             );
             let next_accepted = delivery.is_some()
+                && !dismissed
                 && result.kind == crate::classify::ReplyKind::Human
-                && crate::classify::body_suggests_accepted(&body);
+                && crate::classify::body_suggests_accepted(&body)
+                && {
+                    let conn = db.lock().map_err(|e| e.to_string())?;
+                    !store::acceptance_is_filtered(&conn, &body)?
+                };
             if result.kind.as_str() != kind || result.reason != reason || next_accepted != accepted
             {
                 updates.push((
@@ -215,6 +230,7 @@ fn reclassify_history(
                     result.kind.as_str(),
                     result.reason,
                     next_accepted,
+                    body,
                 ));
             }
         }
@@ -224,11 +240,13 @@ fn reclassify_history(
         let mut conn = db.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         {
-            let mut stmt = tx.prepare_cached("UPDATE replies SET read_revision=read_revision+1,kind=?1,reason=?2,accepted=?3,
+            let mut stmt = tx.prepare_cached("UPDATE replies SET read_revision=read_revision+1,kind=?1,reason=?2,
+                accepted=CASE WHEN acceptance_dismissed=1 THEN 0 ELSE ?3 END,
                 is_read=CASE WHEN ?1='auto' THEN 1 ELSE is_read END,
                 read_synced=CASE WHEN ?1='auto' AND is_read=0 THEN 0 ELSE read_synced END
                 WHERE id=?4 AND kind=?5 AND reason=?6 AND accepted=?7").map_err(|e| e.to_string())?;
-            for (id, old_kind, old_reason, old_accepted, kind, reason, accepted) in updates {
+            for (id, old_kind, old_reason, old_accepted, kind, reason, accepted, body) in updates {
+                let accepted = accepted && !store::acceptance_is_filtered(&tx, &body)?;
                 changed += stmt
                     .execute(rusqlite::params![
                         kind,
@@ -250,6 +268,21 @@ fn reclassify_history(
 #[cfg(test)]
 mod classification_tests {
     use super::*;
+    #[test]
+    fn reclassification_preserves_manual_false_positive_dismissal() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO replies(id,delivery_id,kind,body,accepted,acceptance_dismissed) VALUES
+            (1,1,'human','恭喜录用',0,1),(2,1,'human','恭喜录用',0,0)", []).unwrap();
+        store::learn_acceptance_filter(&conn, "稿件录用结果后续通知").unwrap();
+        conn.execute("INSERT INTO replies(id,delivery_id,kind,body,accepted) VALUES(3,1,'human','稿件录用结果后续通知',0)", []).unwrap();
+        let db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        reclassify_history(&db).unwrap();
+        assert!(!store::load_reply(&db.lock().unwrap(), 1).unwrap().unwrap().accepted);
+        assert!(store::load_reply(&db.lock().unwrap(), 2).unwrap().unwrap().accepted);
+        assert!(!store::load_reply(&db.lock().unwrap(), 3).unwrap().unwrap().accepted);
+        assert_eq!(reclassify_history(&db).unwrap(), 0);
+    }
+
     #[test]
     fn history_keeps_mime_bounces_and_processes_multiple_batches() {
         let conn = crate::db::test_database();

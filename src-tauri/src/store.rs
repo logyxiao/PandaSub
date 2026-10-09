@@ -10,6 +10,74 @@ const ACCOUNT_COLS: &str =
                     last_sent_at,
                     imap_host, imap_port, check_replies, imap_uid, created_at, imap_uid_validity, imap_generation, notes";
 
+pub const ACCEPTANCE_FILTER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS acceptance_filters (
+    body_key TEXT PRIMARY KEY, sample_body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);";
+
+pub fn acceptance_is_filtered(conn: &Connection, body: &str) -> Result<bool, String> {
+    let key = crate::classify::acceptance_template_key(body);
+    if key.is_empty() { return Ok(false); }
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM acceptance_filters WHERE body_key=?1)", [key], |row| row.get(0))
+        .map_err(|e| e.to_string())
+}
+
+pub fn clear_filtered_acceptance(conn: &Connection) -> Result<usize, String> {
+    let mut stmt = conn.prepare("SELECT body_key FROM acceptance_filters").map_err(|e| e.to_string())?;
+    let keys = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?
+        .collect::<Result<std::collections::HashSet<_>, _>>().map_err(|e| e.to_string())?;
+    if keys.is_empty() { return Ok(0); }
+    let mut stmt = conn.prepare("SELECT id,body FROM replies WHERE accepted=1").map_err(|e| e.to_string())?;
+    let replies = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    let mut changed = 0;
+    for (id, body) in replies {
+        if keys.contains(&crate::classify::acceptance_template_key(&body)) {
+            changed += conn.execute("UPDATE replies SET accepted=0 WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(changed)
+}
+
+pub fn learn_acceptance_filter(conn: &Connection, body: &str) -> Result<(), String> {
+    let key = crate::classify::acceptance_template_key(body);
+    if key.is_empty() { return Ok(()); }
+    conn.execute("INSERT OR IGNORE INTO acceptance_filters(body_key,sample_body) VALUES(?1,?2)",
+        params![key, crate::classify::unique_body(body)]).map_err(|e| e.to_string())?;
+    clear_filtered_acceptance(conn)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod acceptance_filter_tests {
+    use super::*;
+
+    #[test]
+    fn learned_template_filters_other_accounts_history_and_future_mail_without_touching_body() {
+        let conn = crate::db::test_database();
+        let body = "感谢来稿，录用结果另行通知。\n祝宝子早日过稿！";
+        let quoted = format!("{body}\n---原始邮件---\n作品甲，字数一万");
+        let other = "感谢来稿，录用结果另行通知。 祝宝子早日过稿！\nOn Tuesday wrote:\n作品乙";
+        conn.execute("INSERT INTO replies(id,account_id,imap_uid,body,kind,accepted) VALUES(1,1,1,?1,'human',1),(2,2,2,?2,'human',1),(3,2,3,'恭喜过稿，终审通过','human',1)", params![quoted, other]).unwrap();
+        learn_acceptance_filter(&conn, &quoted).unwrap();
+        learn_acceptance_filter(&conn, other).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM acceptance_filters", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert!(!load_reply(&conn, 1).unwrap().unwrap().accepted);
+        assert!(!load_reply(&conn, 2).unwrap().unwrap().accepted);
+        assert_eq!(load_reply(&conn, 1).unwrap().unwrap().body, quoted);
+        assert!(load_reply(&conn, 3).unwrap().unwrap().accepted);
+        let incoming = insert_reply(&conn,None,7,None,"editor@example.com","新书","",other,"human","",true,"future","",1,10,0,"",false).unwrap();
+        assert!(!incoming.accepted);
+        update_reply_kind(&conn, incoming.id, "human", "重判", true).unwrap();
+        assert!(!load_reply(&conn, incoming.id).unwrap().unwrap().accepted);
+        assert!(!acceptance_is_filtered(&conn, "恭喜过稿，终审通过").unwrap());
+        // Empty/quoted-only replies must never become a match-all rule.
+        learn_acceptance_filter(&conn, " \n> quoted text").unwrap();
+        assert!(!acceptance_is_filtered(&conn, "").unwrap());
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM acceptance_filters", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+}
+
 fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     Ok(Account {
         id: r.get(0)?,
@@ -1544,6 +1612,7 @@ pub fn insert_reply(
     received_at: &str,
     is_read: bool,
 ) -> Result<Reply, String> {
+    let accepted = accepted && !acceptance_is_filtered(conn, body)?;
     let read_synced = kind != "auto" || is_read;
     let is_read = is_read || kind == "auto";
     conn.execute(
@@ -1702,6 +1771,15 @@ fn reply_filter(
         ));
     }
     (format!("WHERE {}", clauses.join(" AND ")), values)
+}
+
+pub fn load_reply(conn: &Connection, id: i64) -> Result<Option<Reply>, String> {
+    conn.query_row(&format!("SELECT r.id, r.delivery_id, r.account_id, r.task_id, r.from_email, r.subject,
+        r.snippet, r.body, r.kind, r.reason, r.accepted, r.message_id, r.in_reply_to, r.imap_uid,
+        r.received_at, r.created_at, d.recipient, COALESCE(t.name, m.title, ''), r.imap_uid_validity,
+        r.imap_generation, r.is_read, r.read_synced, {PAUSED_REPLY}
+        {REPLY_FROM} WHERE r.id=?1"), [id], map_reply)
+        .optional().map_err(|e| e.to_string())
 }
 
 pub fn query_replies(
@@ -1917,8 +1995,13 @@ pub fn update_reply_kind(
     reason: &str,
     accepted: bool,
 ) -> Result<(), String> {
+    let accepted = if accepted {
+        let body: String = conn.query_row("SELECT body FROM replies WHERE id=?1", [id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        !acceptance_is_filtered(conn, &body)?
+    } else { false };
     conn.execute(
-        "UPDATE replies SET read_revision = read_revision + 1, kind = ?1, reason = ?2, accepted = ?3,
+        "UPDATE replies SET read_revision = read_revision + 1, kind = ?1, reason = ?2,
+         accepted = CASE WHEN acceptance_dismissed=1 THEN 0 ELSE ?3 END,
          is_read = CASE WHEN ?1 = 'auto' THEN 1 ELSE is_read END,
          read_synced = CASE WHEN ?1 = 'auto' AND is_read = 0 THEN 0 ELSE read_synced END WHERE id = ?4",
         params![kind, reason, accepted, id],
@@ -1975,6 +2058,7 @@ mod tests {
             )
             .unwrap();
         connection.execute_batch(crate::editor_blocks::SCHEMA).unwrap();
+        connection.execute_batch(ACCEPTANCE_FILTER_SCHEMA).unwrap();
         connection
     }
 

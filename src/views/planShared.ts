@@ -148,15 +148,23 @@ export function estimateAutoMinutes(count: number, fromSec: number, toSec: numbe
   return Math.max(1, Math.ceil(seconds / 60))
 }
 
+/** Pick valid recipients once per platform, using the library's favorite ordering. */
+export function groupPlanEditors(editors: Editor[]) {
+  const seenEmails = new Set<string>()
+  const seenPlatforms = new Set<string>()
+  return [...editors].sort(compareEditorsByFavorite).filter((editor) => {
+    const email = editor.email.trim().toLowerCase()
+    const platform = editorPlatformKey(editor)
+    if (!editor.enabled || !isValidEmail(email) || seenEmails.has(email) || seenPlatforms.has(platform)) return false
+    seenEmails.add(email)
+    seenPlatforms.add(platform)
+    return true
+  })
+}
+
 /** Build this plan's delivery list without changing the saved group. */
 export function groupPlanRecipients(editors: Editor[]) {
-  const seen = new Set<string>()
-  return editors.flatMap((editor) => {
-    const email = editor.email.trim().toLowerCase()
-    if (!editor.enabled || !isValidEmail(email) || seen.has(email)) return []
-    seen.add(email)
-    return [editorRecipient(editor)]
-  })
+  return groupPlanEditors(editors).map(editorRecipient)
 }
 
 export function summarizeEditorGroup(members: Editor[]) {

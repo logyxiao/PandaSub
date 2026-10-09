@@ -6,7 +6,8 @@ import { Button } from './ui'
 import { EditorTagFilter } from './EditorTagFilter'
 import type { EditorTagSelection } from './EditorTags'
 import { matchesEditorTags } from '../views/editorLibraryShared'
-import { compareEditorsByFavorite, isEditorFavorited, normalizeEditorTags } from '../views/planShared'
+import { compareEditorsByFavorite, editorPlatformKey, isEditorFavorited, normalizeEditorTags } from '../views/planShared'
+import { pickPlatformEditors } from '../lib/editorListModel'
 
 const MemberRow = memo(function MemberRow({ editor, chosen }: { editor: Editor; chosen: boolean }) {
   return (
@@ -70,8 +71,9 @@ function MemberList({ editors, chosen, onToggle, empty }: {
 }
 
 /** Search and tag filters apply to both panes without changing membership. */
-export function GroupMemberPicker({ editors, selectedIds, onChange, header }: {
+export function GroupMemberPicker({ editors, selectedIds, onChange, header, onePerPlatform = false }: {
   header?: ReactNode
+  onePerPlatform?: boolean
   editors: Editor[]
   selectedIds: ReadonlySet<number>
   onChange: (ids: Set<number>) => void
@@ -100,7 +102,17 @@ export function GroupMemberPicker({ editors, selectedIds, onChange, header }: {
   }, [filtered, selectedIds])
   const selectedCount = useMemo(() => normalized.reduce((count, editor) => count + Number(selectedIds.has(editor.id)), 0), [normalized, selectedIds])
   const filterKey = JSON.stringify([query, favoritedOnly, tags])
-  const add = (items: Editor[]) => onChange(new Set([...selectedIds, ...items.map((e) => e.id)]))
+  const add = (items: Editor[]) => {
+    if (!onePerPlatform) { onChange(new Set([...selectedIds, ...items.map((e) => e.id)])); return }
+    const picks = pickPlatformEditors(items.filter((editor) => editor.enabled && isValidEmail(editor.email)))
+    const platforms = new Set(picks.map(editorPlatformKey))
+    const next = new Set(selectedIds)
+    for (const editor of normalized) {
+      if (platforms.has(editorPlatformKey(editor))) next.delete(editor.id)
+    }
+    for (const editor of picks) next.add(editor.id)
+    onChange(next)
+  }
   const remove = (id: number) => {
     const next = new Set(selectedIds)
     next.delete(id)
@@ -139,7 +151,7 @@ export function GroupMemberPicker({ editors, selectedIds, onChange, header }: {
             </Button>
           </header>
           <MemberList key={`available-${filterKey}`} editors={available} chosen={false}
-            onToggle={(id) => onChange(new Set([...selectedIds, id]))} empty={empty(false)} />
+            onToggle={(id) => add(normalized.filter((editor) => editor.id === id))} empty={empty(false)} />
         </section>
         <section className="group-member-pane is-selected" aria-label="已选成员">
           <header className="group-member-heading">

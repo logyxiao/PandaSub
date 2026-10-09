@@ -1,8 +1,8 @@
 import { useRequestGuard } from '../hooks/useRequestGuard'
 import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { useAttachmentImport } from '../hooks/useAttachmentImport'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Download, FileCheck2, FileText, FolderOpen, Plus, RefreshCw, Search, Share2, Trash2 } from 'lucide-react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Download, FileCheck2, FileText, FolderOpen, Mail, Plus, RefreshCw, Search, Share2, Trash2 } from 'lucide-react'
 import { save as saveDialog } from '@tauri-apps/plugin-dialog'
 import logoUrl from '../assets/logo.png'
 import { api } from '../api'
@@ -10,10 +10,11 @@ import { Modal } from '../components/Modal'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton } from '../components/ui'
 import { Table } from '../components/Table'
-import type { AcceptedCandidate, AcceptedDealMode, AcceptedReviewStatus, AcceptedWork, AcceptedWorkSummary, AcceptedWorkInput, ManuscriptSummary } from '../types'
+import type { AcceptedCandidate, AcceptedDealMode, AcceptedReviewStatus, AcceptedWork, AcceptedWorkSummary, AcceptedWorkInput, ManuscriptSummary, Reply } from '../types'
 import { acceptedGuaranteeCents, perThousandTotalCents } from '../lib/acceptedPricing'
 import { summarizeAcceptedSales } from './acceptedStats'
 import { drawAcceptedShareCard } from './acceptedShareCard'
+const MailContent = lazy(() => import('../components/MailContent').then(module => ({ default: module.MailContent })))
 
 let shareLogoPromise: Promise<HTMLImageElement> | null = null
 function loadShareLogo() {
@@ -95,6 +96,23 @@ export function AcceptedView() {
   const [preview, setPreview] = useState<{ id: number; title: string; fileName: string; text: string; attachmentText: string; hasFile: boolean; articleUrl: string } | null>(null)
   const [previewing, setPreviewing] = useState<number | null>(null)
   const [openingSaved, setOpeningSaved] = useState(false)
+  const [dismissing, setDismissing] = useState<number | null>(null)
+  const dismissingRef = useRef(false)
+  const [candidateMail, setCandidateMail] = useState<{ candidate: AcceptedCandidate; reply: Reply | null; error: string } | null>(null)
+  const mailRequests = useRequestGuard()
+  const closeCandidateMail = () => { mailRequests.invalidate(); setCandidateMail(null) }
+  const openCandidateMail = async (candidate: AcceptedCandidate) => {
+    const request = mailRequests.begin()
+    setCandidateMail({ candidate, reply: null, error: '' })
+    try {
+      const reply = await api.getReply(candidate.reply_id)
+      if (!mailRequests.isCurrent(request)) return
+      if (!reply) throw new Error('对应邮件已不存在，请刷新待核对列表')
+      setCandidateMail({ candidate, reply, error: '' })
+    } catch (error) {
+      if (mailRequests.isCurrent(request)) setCandidateMail({ candidate, reply: null, error: String(error) })
+    }
+  }
   const [shareOpen, setShareOpen] = useState(false)
   const [shareZoomed, setShareZoomed] = useState(false)
   const [shareSaving, setShareSaving] = useState(false)
@@ -134,6 +152,20 @@ export function AcceptedView() {
   }, [listRequests])
   useEffect(() => { void load() }, [load])
 
+  const dismissCandidate = async (candidate: AcceptedCandidate) => {
+    if (dismissingRef.current) return
+    dismissingRef.current = true
+    setDismissing(candidate.reply_id)
+    try {
+      await api.dismissAcceptedCandidate(candidate.manuscript_id, candidate.reply_id)
+      listRequests.invalidate()
+      setCandidates(current => current.filter(item => item.reply_id !== candidate.reply_id))
+      await load()
+      toast('已记住这类误判回复，相同正文将不再提示过稿，原邮件已保留', 'success')
+    } catch (error) { toast(`标记误判失败：${String(error)}`, 'error') }
+    finally { dismissingRef.current = false; setDismissing(null) }
+  }
+
   const availableManuscripts = useMemo(() => {
     const used = new Set(works.map((work) => work.manuscript_id).filter((id) => id !== null))
     return manuscripts.filter((manuscript) => !used.has(manuscript.id) || manuscript.id === editing?.manuscript_id)
@@ -157,6 +189,7 @@ export function AcceptedView() {
   }, [shareOpen, summary, works, toast])
 
   const openNew = async (source: 'plan' | 'external', candidate?: AcceptedCandidate, reviewStatus: AcceptedReviewStatus = 'accepted') => {
+    if (dismissingRef.current) return
     if (!await allowLeave()) return
     editRequests.invalidate(); setEditingId(null)
     attachmentImport.release()
@@ -354,17 +387,20 @@ export function AcceptedView() {
       <div className="accepted-section-head"><div><h2>待核对的邮件结果</h2><p>自动识别可能只代表初审通过，也可能误判；请选择实际结果。</p></div><Badge tone="warning">{candidates.length} 篇待核对</Badge></div>
       <div className="accepted-candidate-list">
         {candidates.map((candidate) => <div className="accepted-candidate" key={candidate.manuscript_id}>
-          <div><strong>{candidate.title}</strong><small>{[candidate.sale_platform, candidate.buyer_editor, candidate.received_at.slice(0, 10)].filter(Boolean).join(' · ')}</small>
+          <div><button type="button" className="text-link" onClick={() => void openCandidateMail(candidate)}><strong>{candidate.title}</strong></button><small>{[candidate.sale_platform, candidate.buyer_editor, candidate.received_at.slice(0, 10)].filter(Boolean).join(' · ')}</small>
             {manuscripts.find((manuscript) => manuscript.id === candidate.manuscript_id)?.has_file && <span className="accepted-candidate-document">
               <button type="button" disabled={openingSaved} onClick={() => void openSavedDocument(candidate.manuscript_id, 'manuscript', false)}>打开 Word</button>
               <button type="button" disabled={openingSaved} onClick={() => void openSavedDocument(candidate.manuscript_id, 'manuscript', true)}>原稿文件夹</button>
             </span>}
           </div>
           <div className="accepted-candidate-actions">
-            <Button size="sm" variant="primary" onClick={() => openNew('plan', candidate, 'accepted')}>最终过稿</Button>
-            <Button size="sm" onClick={() => openNew('plan', candidate, 'preliminary')}>过初审</Button>
-            <Button size="sm" variant="subtle" onClick={() => openNew('plan', candidate, 'final_rejected')}>未过终审</Button>
-            <Button size="sm" variant="subtle" onClick={() => openNew('plan', candidate, 'not_accepted')}>未过</Button>
+            <Button size="sm" onClick={() => void openCandidateMail(candidate)}><Mail size={13} />查看邮件</Button>
+            <Button size="sm" variant="primary" disabled={dismissing !== null} onClick={() => openNew('plan', candidate, 'accepted')}>最终过稿</Button>
+            <Button size="sm" disabled={dismissing !== null} onClick={() => openNew('plan', candidate, 'preliminary')}>过初审</Button>
+            <Button size="sm" variant="subtle" disabled={dismissing !== null} onClick={() => openNew('plan', candidate, 'final_rejected')}>未过终审</Button>
+            <Button size="sm" variant="subtle" disabled={dismissing !== null} onClick={() => void dismissCandidate(candidate)}>
+              {dismissing === candidate.reply_id ? '处理中…' : '误判'}
+            </Button>
           </div>
         </div>)}
       </div>
@@ -515,6 +551,20 @@ export function AcceptedView() {
           </div>
         </div>
       </fieldset>
+    </Modal>}
+
+    {candidateMail && <Modal title="核对邮件" width={900} onClose={closeCandidateMail}
+      footer={<Button onClick={closeCandidateMail}>关闭</Button>}>
+      <p className="hint">{candidateMail.candidate.title} · 请根据原邮件确认结果，自动识别不代表最终过稿。</p>
+      {candidateMail.error ? <div className="notice notice-error" role="alert">{candidateMail.error}
+        <Button size="sm" onClick={() => void openCandidateMail(candidateMail.candidate)}>重试</Button>
+      </div> : candidateMail.reply ? <>
+        <h3>{candidateMail.reply.subject || '无主题'}</h3>
+        <p className="hint">发件人：{candidateMail.reply.from_email} · 收信时间：{candidateMail.reply.received_at}</p>
+        <Suspense fallback={<p role="status">正在加载邮件…</p>}>
+          <MailContent reply={candidateMail.reply} account={candidateMail.candidate.account_email || '原收件账号已删除'} />
+        </Suspense>
+      </> : <p role="status">正在加载邮件…</p>}
     </Modal>}
 
     {shareOpen && <Modal title="分享成交与上架记录" width={1040} className="accepted-share-modal" onClose={() => { if (!shareSaving) setShareOpen(false) }}

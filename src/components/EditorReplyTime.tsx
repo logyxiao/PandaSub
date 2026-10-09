@@ -10,12 +10,12 @@ function duration(seconds: number) {
   return `${days} 天${hours % 24 ? ` ${hours % 24} 小时` : ''}`
 }
 
-export function EditorReplyTime({ editor }: { editor: Editor }) {
+export function EditorReplyTime({ editor, label }: { editor: Editor; label?: string }) {
   const seconds = editor.average_reply_seconds
   const count = editor.reply_sample_count ?? 0
   const available = count > 0 && seconds != null && Number.isFinite(seconds) && seconds >= 0
   return <div className="editor-reply-time" title="按本机历史记录，每次成功发送至首次人工回复计算平均值；自动回复、退信、未回复及异常时间不计入。">
-    <span>{available ? duration(seconds) : '暂无数据'}</span>
+    <span>{label && `${label}：`}{available ? duration(seconds) : '暂无数据'}</span>
     <small>{available ? `基于 ${count} 次投递` : '暂无有效人工回复'}</small>
   </div>
 }

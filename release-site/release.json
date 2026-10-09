@@ -1,26 +1,20 @@
 {
-  "version": "0.2.12",
-  "date": "2026-10-08",
+  "version": "0.2.13",
+  "date": "2026-10-10",
   "notes": [
-    "收件箱新增一键已读",
-    "编辑组支持空数据直接导入",
-    "邮箱配置新增备注",
-    "新建投稿计划默认不选邮箱",
-    "计划列表显示投稿邮箱笔名，悬停查看完整信息",
-    "邮件模板扩充至20套，新增轻松可爱话术，不带编辑姓名"
+    "编辑组成员显示平均回复时间及有效投递次数",
+    "选择编辑组投递时同平台只选一位，优先收藏编辑，临时名单支持同平台替换"
   ],
   "downloads": {
     "windows": {
       "label": "64 位版",
-      "detail": "Windows 10 / 11 · 64 位 · 6.0 MB",
-      "url": "releases/pandasub-0.2.12-windows-x64-setup.exe",
-      "sha256": "e8cb22d9c6e62884e925662723cb673290d4f5296026131d3f29fc6e3f2a2a2f"
+      "detail": "Windows 10 / 11 · 64 位",
+      "url": "releases/pandasub-0.2.13-windows-x64-setup.exe"
     },
     "macos": {
       "label": "通用版",
-      "detail": "Apple 芯片 / Intel · macOS 11 及以上 · 23 MB",
-      "url": "releases/pandasub-0.2.12-macos-universal.dmg",
-      "sha256": "2bfb044e42cb2ad61e97b2a2d4cb27e9f8e9ac1485bd0c9784ca63b4bee1e51f"
+      "detail": "Apple 芯片 / Intel · macOS 11 及以上",
+      "url": "releases/pandasub-0.2.13-macos-universal.dmg"
     }
   }
 }

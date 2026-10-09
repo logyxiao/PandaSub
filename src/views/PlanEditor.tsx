@@ -61,8 +61,8 @@ export function PlanEditor(props: PlanEditorProps) {
               setShowPlanMembers(false)
             }}>用于这次计划</Button>
           </>}>
-          <p className="hint">只改这次投稿，不会动原来的编辑组。</p>
-          <GroupMemberPicker editors={editors} selectedIds={planMemberDraft} onChange={setPlanMemberDraft} />
+          <p className="hint">同平台只选一位；选择另一位会替换原选择。只改这次投稿，不会动原来的编辑组。</p>
+          <GroupMemberPicker editors={editors} selectedIds={planMemberDraft} onChange={setPlanMemberDraft} onePerPlatform />
         </Modal>
       )}
 

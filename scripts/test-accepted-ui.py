@@ -53,15 +53,14 @@ with sync_playwright() as playwright:
     dialog = page.get_by_role('dialog', name='核对作品结果')
     expect(dialog.get_by_role('group', name='核对结果').get_by_role('button', name='过初审')).to_have_attribute('aria-pressed', 'true')
     dialog.get_by_role('button', name='保存过初审记录').click()
-    page.locator('.accepted-candidate').filter(has_text='误判的回复').get_by_role('button', name='未过', exact=True).click()
-    dialog = page.get_by_role('dialog', name='核对作品结果')
-    expect(dialog.get_by_role('group', name='核对结果').get_by_role('button', name='未过稿')).to_have_attribute('aria-pressed', 'true')
-    dialog.get_by_role('button', name='保存未过稿记录').click()
+    page.locator('.accepted-candidate').filter(has_text='误判的回复').get_by_role('button', name='误判', exact=True).click()
+    expect(page.get_by_role('dialog')).to_have_count(0)
+    expect(page.get_by_role('alertdialog')).to_have_count(0)
     expect(page.locator('.accepted-candidate')).to_have_count(0)
-    assert page.evaluate("window.__acceptedWorks.map(w=>w.review_status)") == ['accepted','preliminary','not_accepted']
+    assert page.evaluate("window.__acceptedWorks.map(w=>w.review_status)") == ['accepted','preliminary']
     assert page.locator('.accepted-summary > div').all_text_contents()[0].startswith('近 7 天新增成交 / 上架1')
     assert page.locator('.accepted-summary > div').all_text_contents()[1].startswith('近 30 天新增成交 / 上架1')
-    expect(page.locator('.accepted-review-totals')).to_contain_text('初审通过 2 篇 · 最终过稿 1 篇 · 未过终审 0 篇 · 未过稿 1 篇')
+    expect(page.locator('.accepted-review-totals')).to_contain_text('初审通过 2 篇 · 最终过稿 1 篇 · 未过终审 0 篇 · 未过稿 0 篇')
 
     first_row = page.locator('.accepted-table tbody tr').filter(has_text='回归测试计划')
     first_row.get_by_role('button', name='打开文稿所在文件夹').click()
@@ -87,8 +86,8 @@ with sync_playwright() as playwright:
     dialog.get_by_label('卖家上架平台').fill('知乎')
     dialog.screenshot(path='/tmp/novelsub-accepted-form.png')
     dialog.get_by_role('button', name='保存最终过稿记录').click()
-    expect(page.locator('.accepted-table tbody tr')).to_have_count(4)
-    assert page.evaluate('window.__acceptedWorks[3].price_cents') == 500000
+    expect(page.locator('.accepted-table tbody tr')).to_have_count(3)
+    assert page.evaluate("window.__acceptedWorks.find(w=>w.title==='外部上架小说').price_cents") == 500000
     expect(page.locator('.accepted-sales-table tbody tr')).to_have_count(2)
     assert page.locator('.accepted-summary > div').all_text_contents()[0].startswith('近 7 天新增成交 / 上架2')
     expect(page.locator('.accepted-summary > div').last).to_contain_text('¥8,200.5')
@@ -165,8 +164,8 @@ with sync_playwright() as playwright:
     dialog = page.get_by_role('dialog', name='编辑核对记录 · 外部上架小说')
     dialog.get_by_label('文章正文').fill('修订后的正文。')
     dialog.get_by_role('button', name='保存最终过稿记录').click()
-    expect(page.locator('.accepted-table tbody tr')).to_have_count(4)
-    assert page.evaluate('window.__acceptedWorks[3].body') == '修订后的正文。'
+    expect(page.locator('.accepted-table tbody tr')).to_have_count(3)
+    assert page.evaluate("window.__acceptedWorks.find(w=>w.title==='外部上架小说').body") == '修订后的正文。'
     row = page.locator('.accepted-table tbody tr').filter(has_text='外部上架小说')
     row.get_by_role('button', name='查看文稿').click()
     expect(page.get_by_role('dialog', name='文稿 · 外部上架小说')).to_contain_text('修订后的正文。')
@@ -176,7 +175,7 @@ with sync_playwright() as playwright:
     dialog.get_by_role('group', name='核对结果').get_by_role('button', name='未过终审').click()
     dialog.get_by_role('button', name='保存未过终审记录').click()
     expect(page.locator('.accepted-summary > div').nth(0).locator('strong')).to_have_text('2')
-    expect(page.locator('.accepted-review-totals')).to_contain_text('未过终审 1 篇 · 未过稿 1 篇')
+    expect(page.locator('.accepted-review-totals')).to_contain_text('未过终审 1 篇 · 未过稿 0 篇')
     page.get_by_role('textbox', name='搜索过稿作品').fill('外部上架')
     expect(page.locator('.accepted-table tbody tr')).to_have_count(1)
     page.get_by_role('textbox', name='搜索过稿作品').fill('')
@@ -185,7 +184,7 @@ with sync_playwright() as playwright:
     expect(page.locator('.accepted-table tbody tr').filter(has_text='初审通过的故事')).to_have_count(1)
     page.get_by_role('group', name='核对状态筛选').get_by_role('button', name='未过稿').click()
     expect(page.locator('.accepted-table tbody tr')).to_have_count(1)
-    expect(page.locator('.accepted-table tbody tr').filter(has_text='误判的回复')).to_have_count(1)
+    expect(page.locator('.accepted-table tbody tr').filter(has_text='误判的回复')).to_have_count(0)
 
     page.evaluate("""() => {
       const base = window.__acceptedWorks[0];

@@ -14,6 +14,7 @@ import {
   editorRecipient, editorWorkTypeOptions, estimateAutoMinutes,
   fillPlaceholders,
   groupMatchingByPlatform,
+  groupPlanEditors,
   groupPlanRecipients,
   isEditorFavorited,
   isLengthTag,
@@ -66,7 +67,10 @@ export function usePlanEditor({
   const [step, setStep] = useState(1)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set())
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
-  const [groupPlanIds, setGroupPlanIds] = useState<Set<number>>(new Set())
+  const [groupPlanSelection, setGroupPlanIds] = useState<Set<number>>(new Set())
+  const groupPlanIds = useMemo(() => new Set(groupPlanEditors(
+    editors.filter((editor) => groupPlanSelection.has(editor.id)),
+  ).map((editor) => editor.id)), [editors, groupPlanSelection])
   const [showPlanMembers, setShowPlanMembers] = useState(false)
   const [planMemberDraft, setPlanMemberDraft] = useState<Set<number>>(new Set())
   const [orphans, setOrphans] = useState<string[]>([])
@@ -321,12 +325,13 @@ export function usePlanEditor({
     const pick = groupPicks.find((item) => item.group.id === groupId)
     if (!pick?.members.length) return
     const selected = selectedGroupId === groupId
+    const picks = groupPlanEditors(pick.members)
     setSelectedGroupId(selected ? null : groupId)
-    setGroupPlanIds(new Set(selected ? [] : pick.members.map((editor) => editor.id)))
+    setGroupPlanIds(new Set(selected ? [] : picks.map((editor) => editor.id)))
     toast(
       selected
-        ? `已取消“${pick.group.name}”的 ${pick.members.length} 位编辑`
-        : `已选“${pick.group.name}”的 ${pick.members.length} 位编辑`,
+        ? `已取消“${pick.group.name}”的选择`
+        : `已选“${pick.group.name}”的 ${picks.length} 位编辑，同平台只选一位`,
       'info',
     )
   }

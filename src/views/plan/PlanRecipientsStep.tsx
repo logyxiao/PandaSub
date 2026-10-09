@@ -78,7 +78,7 @@ export function PlanRecipientsStep({ model }: { model: PlanEditorModel }) {
                   <div className="plan-group-roster-head">
                     <div>
                       <b>这次将投给 {groupPlanIds.size} 位</b>
-                      <p>有效邮箱 {recipients.length} 个。临时增减只影响这次，不会改原组。</p>
+                      <p>有效邮箱 {recipients.length} 个，同平台只选一位。临时增减只影响这次，不会改原组。</p>
                     </div>
                     <Button size="sm" onClick={openPlanMembers}>调整名单</Button>
                     <Button size="sm" variant="ghost" disabled={!groupPlanIds.size} onClick={savePlanAsGroup}>存成新组</Button>
@@ -100,7 +100,7 @@ export function PlanRecipientsStep({ model }: { model: PlanEditorModel }) {
                   )}
                 </div>
               ) : (
-                <p className="plan-group-choice-hint">点选一个组，名单会复制到这次计划。之后临时加减人不会改原组。</p>
+                <p className="plan-group-choice-hint">点选一个组，每个平台选一位，优先选收藏编辑。之后临时加减人不会改原组。</p>
               )}
             </div>
           ) : (

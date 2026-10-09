@@ -3,11 +3,11 @@ import { createServer } from 'vite'
 
 const server = await createServer({ server: { middlewareMode: true, watch: null }, appType: 'custom' })
 try {
-  const { groupPlanRecipients, isValidSendIntervalRange, matchingEditorGroupId, summarizeEditorGroup,
+  const { groupPlanEditors, groupPlanRecipients, isValidSendIntervalRange, matchingEditorGroupId, summarizeEditorGroup,
     defaultMailTemplates, normalizeDefaultMailTemplates, hydrateMailTemplates, fillPlaceholders } = await server.ssrLoadModule('/src/views/planShared.ts')
   const editor = (id, email, enabled = true) => ({ id, name: `编辑${id}`, platform: '测试平台', email, enabled })
   const original = [editor(1, 'editor@example.com'), editor(2, 'EDITOR@example.com'),
-    editor(3, 'disabled@example.com', false), editor(4, 'invalid'), editor(5, 'second@example.com')]
+    editor(3, 'disabled@example.com', false), editor(4, 'invalid'), { ...editor(5, 'second@example.com'), platform: '另一平台' }]
   const before = JSON.stringify(original)
   const recipients = groupPlanRecipients(original)
   assert.equal(recipients.length, 2, 'case-insensitive duplicate, disabled and invalid addresses are skipped')
@@ -16,6 +16,25 @@ try {
   assert.equal(JSON.stringify(original), before, 'building a plan never modifies the group')
   assert.deepEqual(groupPlanRecipients([]), [])
   assert.deepEqual(groupPlanRecipients([editor(1, 'x', false)]), [])
+  const platformGroup = [
+    editor(1, 'first@example.com'),
+    { ...editor(2, 'favorite@example.com'), platform: ' 测试平台 ', favorited: true },
+    { ...editor(3, 'disabled@example.com', false), platform: '第三平台', favorited: true },
+    { ...editor(4, 'invalid'), platform: '第三平台' },
+    { ...editor(5, 'valid@example.com'), platform: '第三平台' },
+    { ...editor(6, 'FIRST@example.com'), platform: '测试平台' },
+    { ...editor(7, 'unknown1@example.com'), platform: '' },
+    { ...editor(8, 'unknown2@example.com'), platform: '' },
+  ]
+  const platformBefore = JSON.stringify(platformGroup)
+  const picks = groupPlanEditors(platformGroup)
+  assert.equal(picks.length, 4, 'one valid editor per known platform; unassigned platforms remain separate')
+  assert.ok(picks.some(e => e.id === 2), 'favorite wins over another editor at the same trimmed platform')
+  assert.ok(picks.some(e => e.id === 5), 'invalid and disabled peers do not hide a valid recipient')
+  assert.equal(groupPlanRecipients(platformGroup).length, picks.length)
+  assert.equal(JSON.stringify(platformGroup), platformBefore, 'platform deduplication preserves the saved group')
+  assert.equal(groupPlanEditors([{ ...editor(1, 'same@example.com'), platform: '甲' },
+    { ...editor(2, 'SAME@example.com'), platform: '乙' }]).length, 1, 'shared mailboxes are still deduplicated')
   assert.equal(isValidSendIntervalRange(100, 240), true)
   assert.equal(isValidSendIntervalRange(240, 100), false)
   assert.equal(isValidSendIntervalRange(0, 240), false)

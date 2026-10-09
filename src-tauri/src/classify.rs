@@ -76,18 +76,25 @@ pub fn classify_with_keywords(mail: &IncomingMail, keywords: &[String]) -> Class
 /// 人工回复正文是否包含「过稿」信号：审核通过、初审、过稿、录用等。
 /// 先排除「未通过 / 没过」等否定表达，避免「初审未通过」被误判。
 pub fn body_suggests_accepted(body: &str) -> bool {
-    let body = body.to_lowercase();
+    let body = unique_body(body).to_lowercase();
     if body.contains("未通过")
         || body.contains("没有通过")
         || body.contains("未过")
         || body.contains("没过")
+        || body.contains("未能过审")
+        || body.contains("未能通过")
+        || body.contains("没有过审")
+        || body.contains("不予录用")
+        || body.contains("不予采用")
     {
         return false;
     }
     const KEYS: &[&str] = &[
         "审核通过",
         "过稿",
-        "初审",
+        "初审通过",
+        "过初审",
+        "通过初审",
         "复审通过",
         "终审通过",
         "三审通过",
@@ -95,7 +102,12 @@ pub fn body_suggests_accepted(body: &str) -> bool {
         "采用",
         "签约通过",
     ];
-    KEYS.iter().any(|k| body.contains(k))
+    body.split(['\n', '。', '！', '!', '？', '?', '；', ';']).any(|sentence| {
+        let sentence = sentence.trim();
+        // A closing wish such as "祝宝子早日过稿" is not a decision on this manuscript.
+        !(sentence.starts_with('祝') && !sentence.starts_with("祝贺")) && !sentence.contains("早日过稿")
+            && KEYS.iter().any(|key| sentence.contains(key))
+    })
 }
 
 fn header_present(headers: &[(String, String)], name: &str) -> bool {
@@ -137,7 +149,7 @@ fn is_bounce(
     SUBJ.iter().any(|k| subject.contains(k)) || body.contains("diagnostic-code")
 }
 
-fn unique_body(body: &str) -> String {
+pub(crate) fn unique_body(body: &str) -> String {
     let mut lines = Vec::new();
     for line in body.lines() {
         let t = line.trim();
@@ -160,6 +172,12 @@ fn unique_body(body: &str) -> String {
         lines.push(t);
     }
     lines.join("\n").trim().to_string()
+}
+
+/// Match the complete reply template, not a broad keyword such as "过稿".
+pub(crate) fn acceptance_template_key(body: &str) -> String {
+    unique_body(body).replace("&nbsp;", "").replace("&#160;", "")
+        .chars().filter(|ch| !ch.is_whitespace() && !matches!(ch, '\u{200b}' | '\u{feff}')).collect()
 }
 
 #[cfg(test)]
@@ -316,6 +334,22 @@ mod tests {
             "您的作品被录用",
         ] {
             assert!(body_suggests_accepted(text), "应识别为过稿: {text}");
+        }
+    }
+
+    #[test]
+    fn rejection_wishes_and_quoted_mail_are_not_acceptance() {
+        for body in [
+            "感谢作者大大的来稿，很抱歉稿件未能过审 (＞﹏＜)，期待下次来稿呀～\n祝宝子早日过稿！\n---原始邮件---\n正文",
+            "祝宝子早日过稿！",
+            "祝宝宝本本过稿！",
+            "稿件未能通过审核，祝早日过稿。",
+            "稿件正在初审，请等待。",
+            "暂不合适。\n---原始邮件---\n期待过稿，感谢录用。",
+            "暂不合适。\n> 恭喜过稿",
+        ] { assert!(!body_suggests_accepted(body), "{body}"); }
+        for body in ["祝贺稿件审核通过", "恭喜过稿！祝写作顺利。", "这篇过初审了，请加联系方式。", "审核通过。\n---原始邮件---\n上次未通过"] {
+            assert!(body_suggests_accepted(body), "{body}");
         }
     }
 

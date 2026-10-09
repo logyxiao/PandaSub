@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS replies (
   is_read INTEGER NOT NULL DEFAULT 0,
   read_synced INTEGER NOT NULL DEFAULT 0,
   read_revision INTEGER NOT NULL DEFAULT 0,
+  acceptance_dismissed INTEGER NOT NULL DEFAULT 0,
   received_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -225,6 +226,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
         .execute_batch(SCHEMA)
         .map_err(|e| e.to_string())?;
     connection.execute_batch(crate::editor_blocks::SCHEMA).map_err(|e| e.to_string())?;
+    connection.execute_batch(crate::store::ACCEPTANCE_FILTER_SCHEMA).map_err(|e| e.to_string())?;
     ensure_columns(&connection, "accepted_works", &[(
         "review_status", "review_status TEXT NOT NULL DEFAULT 'accepted' CHECK(review_status IN ('accepted','preliminary','final_rejected','not_accepted'))",
     )])?;
@@ -279,6 +281,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
             ("is_read", "is_read INTEGER NOT NULL DEFAULT 0"),
             ("read_synced", "read_synced INTEGER NOT NULL DEFAULT 0"),
             ("read_revision", "read_revision INTEGER NOT NULL DEFAULT 0"),
+            ("acceptance_dismissed", "acceptance_dismissed INTEGER NOT NULL DEFAULT 0"),
         ],
     )?;
     migrate_delivery_reliability(&connection)?;
@@ -286,6 +289,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_runtime_query_indexes(&connection)?;
     repair_orphan_relations(&connection)?;
     reclassify_autoreply_history(&connection)?;
+    crate::store::clear_filtered_acceptance(&connection)?;
     crate::store::normalize_auto_reply_reads(&connection)?;
     connection.execute("CREATE INDEX IF NOT EXISTS replies_unread_human ON replies(id) WHERE kind='human' AND is_read=0 AND read_synced=1", []).map_err(|e| e.to_string())?;
     connection
@@ -1813,6 +1817,7 @@ pub(crate) fn test_database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(SCHEMA).unwrap();
     conn.execute_batch(crate::editor_blocks::SCHEMA).unwrap();
+    conn.execute_batch(crate::store::ACCEPTANCE_FILTER_SCHEMA).unwrap();
     migrate_delivery_reliability(&conn).unwrap();
     add_runtime_query_indexes(&conn).unwrap();
     conn
