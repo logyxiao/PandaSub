@@ -54,6 +54,9 @@ pub struct Manuscript {
     pub body: String,
     pub content_type: String,
     pub recipients: Vec<String>,
+    /// Group picks are fixed for this plan, including blocked recipients.
+    #[serde(default)]
+    pub lock_recipients: bool,
     pub sender_name: String,
     #[serde(default)]
     pub word_count: i64,
@@ -117,6 +120,8 @@ pub struct ManuscriptInput {
     pub body: String,
     pub content_type: String,
     pub recipients: Vec<String>,
+    #[serde(default)]
+    pub lock_recipients: bool,
     pub sender_name: String,
     #[serde(default)]
     pub word_count: i64,
@@ -420,14 +425,18 @@ impl Default for Settings {
     }
 }
 
-const EDITOR_DROPPED_TAGS: &[&str] = &["小程序", "知乎风", "番茄风"];
+const EDITOR_DROPPED_TAGS: &[&str] = &["小程序", "番茄风"];
 pub const EDITOR_SOURCE_INITIAL: &str = "初始数据";
 pub const EDITOR_SOURCE_MANUAL: &str = "手动数据";
 pub const EDITOR_SOURCE_IMPORT: &str = "导入数据";
+pub const EDITOR_SOURCE_EXTERNAL: &str = "外部导入";
 
 pub fn normalize_editor_source(value: &str) -> String {
     match value.trim() {
-        EDITOR_SOURCE_INITIAL | EDITOR_SOURCE_MANUAL | EDITOR_SOURCE_IMPORT => {
+        EDITOR_SOURCE_INITIAL
+        | EDITOR_SOURCE_MANUAL
+        | EDITOR_SOURCE_IMPORT
+        | EDITOR_SOURCE_EXTERNAL => {
             value.trim().to_string()
         }
         _ => EDITOR_SOURCE_MANUAL.to_string(),
@@ -938,6 +947,12 @@ mod tests {
                 "现言"
             ]
         );
+    }
+
+    #[test]
+    fn reviewed_zhihu_style_is_preserved() {
+        let tags = ["知乎风", "知乎风", "小程序", "番茄风"].map(str::to_string);
+        assert_eq!(normalize_editor_work_types(&tags), ["知乎风"]);
     }
 
     #[test]

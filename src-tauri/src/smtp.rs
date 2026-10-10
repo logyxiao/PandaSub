@@ -431,6 +431,7 @@ mod tests {
             body: "旧正文".into(),
             content_type: "text/plain".into(),
             recipients: vec![],
+            lock_recipients: false,
             sender_name: String::new(),
             word_count: 0,
             category: String::new(),

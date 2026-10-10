@@ -50,8 +50,8 @@ export const GENRES = [
   '全员背叛', '言情', '性转', '耽美', '百合', '同人', '死人文学', '系统', '女强', '信息差',
   '散文', '童话', '诗歌',
 ]
-export const SOURCES = ['初始数据', '手动数据', '导入数据'] as const
-const DROPPED_EDITOR_TAGS = new Set(['小程序', '知乎风', '番茄风'])
+export const SOURCES = ['初始数据', '手动数据', '导入数据', '外部导入'] as const
+const DROPPED_EDITOR_TAGS = new Set(['小程序', '番茄风'])
 
 export function normalizeEditorTags<T extends Pick<Editor, 'work_type'> & Partial<Pick<Editor, 'rejected_types'>>>(editor: T): T {
   const work_type: string[] = []
@@ -148,7 +148,7 @@ export function estimateAutoMinutes(count: number, fromSec: number, toSec: numbe
   return Math.max(1, Math.ceil(seconds / 60))
 }
 
-/** Pick valid recipients once per platform, using the library's favorite ordering. */
+/** Normalize an already chosen list without drawing again. */
 export function groupPlanEditors(editors: Editor[]) {
   const seenEmails = new Set<string>()
   const seenPlatforms = new Set<string>()
@@ -162,9 +162,47 @@ export function groupPlanEditors(editors: Editor[]) {
   })
 }
 
+/** Draw once when a group is used; favorites form the entire pool when available. */
+export function randomGroupPlanEditors(editors: Editor[]) {
+  const groups = new Map<string, Editor[]>()
+  const seenEmails = new Set<string>()
+  for (const editor of [...editors].sort(compareEditorsByFavorite)) {
+    const email = editor.email.trim().toLowerCase()
+    if (!editor.enabled || !isValidEmail(email) || seenEmails.has(email)) continue
+    seenEmails.add(email)
+    const platform = editorPlatformKey(editor)
+    const peers = groups.get(platform) ?? []
+    peers.push(editor)
+    groups.set(platform, peers)
+  }
+  return [...groups.values()].map((peers) => {
+    const favorites = peers.filter(isEditorFavorited)
+    const pool = favorites.length ? favorites : peers
+    return pool[Math.floor(Math.random() * pool.length)]
+  })
+}
+
 /** Build this plan's delivery list without changing the saved group. */
 export function groupPlanRecipients(editors: Editor[]) {
   return groupPlanEditors(editors).map(editorRecipient)
+}
+
+/** Append one editor per platform while keeping the plan's existing recipients. */
+export function additionalPlanEditors(candidates: Editor[], recipients: readonly string[], library: readonly Editor[]) {
+  const emails = new Set(recipients.map(raw => parseRecipient(raw).email.trim().toLowerCase()))
+  const platforms = new Set<string>()
+  for (const editor of library) {
+    if (emails.has(editor.email.trim().toLowerCase())) platforms.add(editorPlatformKey(editor).toLocaleLowerCase())
+  }
+  return groupPlanEditors(candidates.filter(editor =>
+    !emails.has(editor.email.trim().toLowerCase()) &&
+    !platforms.has(editorPlatformKey(editor).toLocaleLowerCase()),
+  )).filter(editor => {
+    const platform = editorPlatformKey(editor).toLocaleLowerCase()
+    if (platforms.has(platform)) return false
+    platforms.add(platform)
+    return true
+  })
 }
 
 export function summarizeEditorGroup(members: Editor[]) {
@@ -345,6 +383,7 @@ export function createEmptyManuscript(templates?: MailTemplate[]): ManuscriptInp
   const mail_templates = normalizeDefaultMailTemplates(templates)
   return {
     title: '', body: mail_templates[0].body, content_type: 'text/plain', recipients: [], sender_name: '',
+    lock_recipients: false,
     word_count: 0, category: '', reader_emotion: '', style: '',
     genres: [], excluded_types: [], account_ids: [], send_interval_min: 3,
     send_interval_from_sec: DEFAULT_SEND_INTERVAL_FROM_SEC, send_interval_to_sec: DEFAULT_SEND_INTERVAL_TO_SEC,
@@ -429,6 +468,7 @@ export function toInput(m: Manuscript): ManuscriptInput {
   )
   return {
     title: m.title, body: m.body, content_type: m.content_type, recipients: m.recipients,
+    lock_recipients: Boolean(m.lock_recipients),
     sender_name: m.sender_name, word_count: m.word_count, category: m.category,
     reader_emotion: m.reader_emotion, style: m.style,
     genres: m.genres ?? [], excluded_types: m.excluded_types ?? [], account_ids: m.account_ids ?? [],

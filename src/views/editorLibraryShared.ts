@@ -2,6 +2,17 @@ import type { Editor, EditorInput } from '../types'
 import { isValidEmail } from '../format'
 
 export type TagMatchMode = 'any' | 'all'
+export function editorFilterTagOptions(candidates: readonly Pick<Editor, 'work_type'>[]) {
+  const counts = new Map<string, number>()
+  for (const editor of candidates) {
+    for (const tag of new Set(editor.work_type.map(tag => tag.trim()).filter(Boolean))) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1)
+    }
+  }
+  return [...counts].map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'))
+}
+
 export function splitEditorTags(value: string): string[] {
   return [
     ...new Set(

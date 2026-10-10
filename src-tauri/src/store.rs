@@ -122,7 +122,7 @@ const MANUSCRIPT_COLS: &str = "id, title, body, content_type, recipients, sender
     word_count, category, reader_category, reader_emotion, style, genres, subject, file_name,
     created_at, updated_at, (file_data IS NOT NULL AND length(file_data) > 0), excluded_types, account_ids,
     mail_templates, send_interval_min, fixed_mail_template_id,
-    send_interval_from_sec, send_interval_to_sec";
+    send_interval_from_sec, send_interval_to_sec, lock_recipients";
 
 fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
     let raw_recipients: String = r.get(4)?;
@@ -136,6 +136,7 @@ fn map_manuscript(r: &rusqlite::Row<'_>) -> rusqlite::Result<Manuscript> {
         body: r.get(2)?,
         content_type: r.get(3)?,
         recipients: parse_required_list(&raw_recipients, 4)?,
+        lock_recipients: r.get::<_, i64>(24)? != 0,
         sender_name: r.get(5)?,
         word_count: r.get(6)?,
         category: r.get(7)?,
@@ -1417,6 +1418,42 @@ pub fn delete_manuscript_data(conn: &mut Connection, id: i64) -> Result<(), Stri
     transaction.commit().map_err(|e| e.to_string())
 }
 
+/// Added recipients reopen the latest completed task without resetting its round.
+pub fn refresh_completed_task_recipients(conn: &Connection, task_id: i64) -> Result<bool, String> {
+    let Some(task) = load_task(conn, task_id)? else { return Ok(false) };
+    if task.status != "completed" || task.schedule_type == "loop" {
+        return Ok(false);
+    }
+    let mut targets = std::collections::HashSet::new();
+    let mut delivered = std::collections::HashSet::new();
+    for manuscript_id in &task.manuscript_ids {
+        let latest: Option<i64> = conn.query_row(
+            "SELECT MAX(id) FROM tasks WHERE EXISTS (SELECT 1 FROM json_each(tasks.manuscript_ids) WHERE value=?1)",
+            [manuscript_id], |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        if latest != Some(task_id) { return Ok(false); }
+        let raw: String = conn.query_row("SELECT recipients FROM manuscripts WHERE id=?1", [manuscript_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let recipients: Vec<String> = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        for raw in recipients {
+            let email = crate::smtp::parse_recipient(&raw).1.trim().to_lowercase();
+            if !email.is_empty() { targets.insert((*manuscript_id, email)); }
+        }
+    }
+    let total = targets.len() as i64;
+    if total <= task.total { return Ok(false); }
+    for manuscript_id in &task.manuscript_ids {
+        for email in delivered_emails_for_task_manuscript(conn, task_id, *manuscript_id)? {
+            delivered.insert((*manuscript_id, email.trim().to_lowercase()));
+        }
+    }
+    let sent = targets.intersection(&delivered).count() as i64;
+    if sent == total { return Ok(false); }
+    // Retain this round and its delivery history; starting a stopped task skips sent targets.
+    conn.execute("UPDATE tasks SET status='stopped', sent=?1, total=?2, finished_at=NULL WHERE id=?3 AND status='completed'",
+        params![sent, total, task_id]).map(|changed| changed > 0).map_err(|e| e.to_string())
+}
+
 /// Returns recipients delivered manually or by this task for this manuscript.
 /// Delivery history still associated with other tasks must not make a new task skip recipients.
 pub fn delivered_emails_for_task_manuscript(
@@ -2013,6 +2050,25 @@ pub fn update_reply_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_editor_source_survives_save_and_load() {
+        let conn = crate::db::test_database();
+        let input = crate::models::EditorInput {
+            platform: "测试平台".into(),
+            name: "测试编辑".into(),
+            email: "external-source@example.com".into(),
+            work_type: vec!["短篇".into(), "女频".into()],
+            rejected_types: Vec::new(),
+            notes: String::new(),
+        };
+        upsert_editor(&conn, &input, crate::models::EDITOR_SOURCE_EXTERNAL).unwrap();
+        let editors = load_editors(&conn).unwrap();
+        let editor = editors.iter().find(|e| e.email == input.email).unwrap();
+        assert_eq!(editor.source, "外部导入");
+        assert_eq!(editor.work_type, input.work_type);
+        assert!(editor.notes.is_empty());
+    }
 
     fn test_connection() -> Connection {
         let connection = Connection::open_in_memory().unwrap();

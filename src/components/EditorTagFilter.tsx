@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Check, Search } from 'lucide-react'
 import type { Editor } from '../types'
-import { matchesEditorTags } from '../views/editorLibraryShared'
+import { editorFilterTagOptions, matchesEditorTags } from '../views/editorLibraryShared'
 import { Button } from './ui'
 import {
   EditorTagDialog,
@@ -13,7 +13,6 @@ import {
 /** Shared tag filtering for the editor library, member pickers and submission plans. */
 export function EditorTagFilter({
   candidates,
-  tags,
   value,
   onChange,
   beforeChange,
@@ -30,17 +29,7 @@ export function EditorTagFilter({
   allowMatchModeChange?: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const options = useMemo(() => {
-    const counts = new Map<string, number>()
-    candidates.forEach((editor) =>
-      new Set(editor.work_type).forEach((tag) =>
-        counts.set(tag, (counts.get(tag) ?? 0) + 1),
-      ),
-    )
-    return [...new Set([...tags, ...counts.keys()])]
-      .map((label) => ({ label, count: counts.get(label) ?? 0 }))
-      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'zh'))
-  }, [candidates, tags])
+  const options = useMemo(() => editorFilterTagOptions(candidates), [candidates])
   const previewCount = customPreviewCount ?? ((selection: EditorTagSelection) =>
     candidates.filter((editor) =>
       matchesEditorTags(

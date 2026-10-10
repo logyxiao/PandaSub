@@ -16,6 +16,7 @@ import {
   groupMatchingByPlatform,
   groupPlanEditors,
   groupPlanRecipients,
+  randomGroupPlanEditors,
   isEditorFavorited,
   isLengthTag,
   isValidSendIntervalRange,
@@ -268,10 +269,11 @@ export function usePlanEditor({
   useEffect(() => {
     const next = recipients
     setForm((f) => {
-      if (f.recipients.length === next.length && f.recipients.every((item, i) => item === next[i])) return f
-      return { ...f, recipients: next }
+      const lockRecipients = Boolean(f.lock_recipients || (editorPickMode === 'groups' && next.length > 0))
+      if (f.lock_recipients === lockRecipients && f.recipients.length === next.length && f.recipients.every((item, i) => item === next[i])) return f
+      return { ...f, recipients: next, lock_recipients: lockRecipients }
     })
-  }, [recipients, setForm])
+  }, [recipients, editorPickMode, setForm])
 
   // 邮箱勾选随计划持久化：写回 form.account_ids，保存草稿/发送时一并入库。
   useEffect(() => {
@@ -325,7 +327,7 @@ export function usePlanEditor({
     const pick = groupPicks.find((item) => item.group.id === groupId)
     if (!pick?.members.length) return
     const selected = selectedGroupId === groupId
-    const picks = groupPlanEditors(pick.members)
+    const picks = selected ? [] : randomGroupPlanEditors(pick.members)
     setSelectedGroupId(selected ? null : groupId)
     setGroupPlanIds(new Set(selected ? [] : picks.map((editor) => editor.id)))
     toast(
@@ -376,7 +378,7 @@ export function usePlanEditor({
       await onReloadEditorGroups()
       if (createdId) {
         setSelectedGroupId(createdId)
-        setGroupPlanIds(new Set(editor_ids))
+        setGroupPlanIds(new Set(randomGroupPlanEditors(editors.filter((editor) => groupMemberIds.has(editor.id))).map((editor) => editor.id)))
       }
       setShowGroupForm(false)
       toast(editingGroup ? '编辑组已更新' : '编辑组已创建并选中', 'success')
@@ -445,7 +447,9 @@ export function usePlanEditor({
   // 标签变了就按匹配结果补齐勾选：每个平台一位，已经换过的人还在。返回上一步会保留筛选。
   const goToStep2 = () => {
     if (pickKeyRef.current !== matchKey) {
-      setSelectedIds((prev) => mergeEditorSelectionByPlatform(editors, prev, form.genres, excluded))
+      if (!form.lock_recipients) {
+        setSelectedIds((prev) => mergeEditorSelectionByPlatform(editors, prev, form.genres, excluded))
+      }
       setListFilters(emptyEditorListFilters(form.genres, excluded))
       pickKeyRef.current = matchKey
     }

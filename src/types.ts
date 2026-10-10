@@ -97,6 +97,7 @@ export interface Manuscript {
   body: string
   content_type: string
   recipients: string[]
+  lock_recipients?: boolean
   sender_name: string
   word_count: number
   category: string
@@ -125,6 +126,7 @@ export interface ManuscriptInput {
   body: string
   content_type: string
   recipients: string[]
+  lock_recipients?: boolean
   sender_name: string
   word_count: number
   category: string

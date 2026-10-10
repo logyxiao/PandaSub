@@ -3,8 +3,13 @@ import { createServer } from 'vite'
 
 const server = await createServer({ server: { middlewareMode: true, watch: null }, appType: 'custom' })
 try {
-  const { groupPlanEditors, groupPlanRecipients, isValidSendIntervalRange, matchingEditorGroupId, summarizeEditorGroup,
-    defaultMailTemplates, normalizeDefaultMailTemplates, hydrateMailTemplates, fillPlaceholders } = await server.ssrLoadModule('/src/views/planShared.ts')
+  const { groupPlanEditors, groupPlanRecipients, randomGroupPlanEditors, toInput, isValidSendIntervalRange, matchingEditorGroupId, summarizeEditorGroup,
+    defaultMailTemplates, normalizeDefaultMailTemplates, hydrateMailTemplates, fillPlaceholders,
+    normalizeEditorTags, editorMatchesPlan } = await server.ssrLoadModule('/src/views/planShared.ts')
+  const reviewedStyle = { enabled: true, work_type: ['知乎风', '知乎风', '小程序'], rejected_types: ['知乎风', '番茄风'] }
+  assert.deepEqual(normalizeEditorTags(reviewedStyle).work_type, ['知乎风'])
+  assert.deepEqual(normalizeEditorTags(reviewedStyle).rejected_types, ['知乎风'])
+  assert.equal(editorMatchesPlan({ enabled: true, work_type: ['知乎风'] }, ['知乎风']), true)
   const editor = (id, email, enabled = true) => ({ id, name: `编辑${id}`, platform: '测试平台', email, enabled })
   const original = [editor(1, 'editor@example.com'), editor(2, 'EDITOR@example.com'),
     editor(3, 'disabled@example.com', false), editor(4, 'invalid'), { ...editor(5, 'second@example.com'), platform: '另一平台' }]
@@ -36,6 +41,38 @@ try {
   assert.equal(groupPlanEditors([{ ...editor(1, 'same@example.com'), platform: '甲' },
     { ...editor(2, 'SAME@example.com'), platform: '乙' }]).length, 1, 'shared mailboxes are still deduplicated')
   assert.equal(isValidSendIntervalRange(100, 240), true)
+  const randomGroup = [
+    editor(1, 'ordinary@example.com'),
+    { ...editor(2, 'favorite1@example.com'), favorited: true },
+    { ...editor(3, 'favorite2@example.com'), favorited: true },
+    { ...editor(4, 'disabled@example.com', false), favorited: true },
+    { ...editor(5, 'invalid'), favorited: true },
+    { ...editor(6, 'normal1@example.com'), platform: '另一平台' },
+    { ...editor(7, 'normal2@example.com'), platform: '另一平台' },
+    { ...editor(8, 'disabled2@example.com', false), platform: '另一平台', favorited: true },
+    { ...editor(9, ' FAVORITE1@example.com '), favorited: true },
+  ]
+  const randomBefore = JSON.stringify(randomGroup)
+  const realRandom = Math.random
+  try {
+    Math.random = () => 0
+    const first = randomGroupPlanEditors(randomGroup)
+    assert.deepEqual(first.map(e => e.id), [2, 6], 'only valid favorites are eligible when available')
+    Math.random = () => 0.999
+    const second = randomGroupPlanEditors(randomGroup)
+    assert.deepEqual(second.map(e => e.id), [3, 7], 'both favorites and all usable nonfavorites can be drawn on the next use')
+    const fixed = groupPlanRecipients(second)
+    Math.random = () => { throw new Error('fixed recipients must not draw again') }
+    assert.deepEqual(groupPlanRecipients(second), fixed)
+    const reopened = toInput({ recipients: fixed, lock_recipients: true, subject: '', body: '' })
+    assert.deepEqual(reopened.recipients, fixed)
+    assert.equal(reopened.lock_recipients, true)
+    assert.deepEqual(randomGroupPlanEditors([]), [])
+    assert.deepEqual(randomGroupPlanEditors([editor(1, 'invalid')]), [])
+  } finally {
+    Math.random = realRandom
+  }
+  assert.equal(JSON.stringify(randomGroup), randomBefore, 'drawing leaves group membership unchanged')
   assert.equal(isValidSendIntervalRange(240, 100), false)
   assert.equal(isValidSendIntervalRange(0, 240), false)
   assert.equal(isValidSendIntervalRange(1.5, 240), false)

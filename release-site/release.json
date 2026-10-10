@@ -1,22 +1,22 @@
 {
-  "version": "0.2.13",
-  "date": "2026-10-10",
+  "version": "0.2.14",
+  "date": "2026-10-11",
   "notes": [
-    "编辑组成员显示平均回复时间及有效投递次数",
-    "选择编辑组投递时同平台只选一位，优先收藏编辑，临时名单支持同平台替换"
+    "每次选用编辑组投稿时，同平台随机选择一位可用编辑；有收藏编辑时只从可用收藏中随机选择，没有收藏时从全部可用编辑中随机选择",
+    "抽选结果保存为本次投稿名单；切换步骤、重新打开草稿、发送及重试时不再重新抽选，手动调整只影响本次计划",
+    "编辑组投稿遇到拉黑或编辑停用时跳过并记录原因，不再自动更换同平台编辑",
+    "兼容已有投稿计划和数据库，保留原有编辑组成员"
   ],
   "downloads": {
     "windows": {
       "label": "64 位版",
-      "detail": "Windows 10 / 11 · 64 位 · 6.0 MB",
-      "url": "releases/pandasub-0.2.13-windows-x64-setup.exe",
-      "sha256": "707fef939838e6f99e89e47fb508e4f79bb372448d2b7463d6185040c2c79088"
+      "detail": "Windows 10 / 11 · 64 位",
+      "url": "releases/pandasub-0.2.14-windows-x64-setup.exe"
     },
     "macos": {
       "label": "通用版",
-      "detail": "Apple 芯片 / Intel · macOS 11 及以上 · 23 MB",
-      "url": "releases/pandasub-0.2.13-macos-universal.dmg",
-      "sha256": "226df4f8c3144268cca06c5e3924fabdecccbbd15dad074f30942a58eaef6290"
+      "detail": "Apple 芯片 / Intel · macOS 11 及以上",
+      "url": "releases/pandasub-0.2.14-macos-universal.dmg"
     }
   }
 }

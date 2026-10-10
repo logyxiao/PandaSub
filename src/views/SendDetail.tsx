@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Inbox, Plus, RotateCcw, Search, X } from 'lucide-react'
 import { api } from '../api'
 import { Modal } from '../components/Modal'
 import { Table } from '../components/Table'
+import { EditorTagFilter } from '../components/EditorTagFilter'
+import type { EditorTagSelection } from '../components/EditorTags'
 import { useConfirm, useToast } from '../components/feedback'
 import { Badge, Button, EmptyState, IconButton, Pager } from '../components/ui'
-import { formatTime, parseRecipient } from '../format'
+import { formatTime, isValidEmail, parseRecipient } from '../format'
 import { useNav } from '../nav'
 import type { Account, DeliverySummaryPage, PendingSend, Editor, Manuscript } from '../types'
 import { EditorIdentity, EditorTagsPop, EditorTypeChips, moreRect } from './Editors'
-import { editorRecipient, compareEditorsByFavorite, normalizeEditorTags, toInput } from './planShared'
+import { additionalPlanEditors, editorRecipient, compareEditorsByFavorite, normalizeEditorTags, toInput } from './planShared'
+import { matchesEditorTags } from './editorLibraryShared'
 
 interface DetailRow {
   order: number
@@ -45,6 +48,9 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
   const [filter, setFilter] = useState<'all' | 'sent' | 'unsent'>('all')
   const [showPicker, setShowPicker] = useState(false)
   const [pickQuery, setPickQuery] = useState('')
+  const [pickTags, setPickTags] = useState<EditorTagSelection>({ included: [], excluded: [], match: 'any' })
+  const [savingRecipients, setSavingRecipients] = useState(false)
+  const savingRecipientsRef = useRef(false)
   const [resending, setResending] = useState<string | null>(null)
   const [more, setMore] = useState<{ key: string; top: number; left: number; width: number; workTypes: string[]; rejectedTypes: string[] } | null>(null)
 
@@ -102,7 +108,7 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
       latestId: summary.latest_id, lastSentAt: summary.last_sent_at, latestRecipient: summary.latest_recipient }] : []
   }), [rows, result])
   const sentCount = result?.sent_total
-  const busy = locked || resending !== null || loading || Boolean(error) || pending.length > 0 || resolving
+  const busy = locked || resending !== null || loading || Boolean(error) || pending.length > 0 || resolving || savingRecipients
   const changed = () => { setRefresh(v => v + 1); onChanged() }
   const resolvePending = async (attempt: PendingSend, sent: boolean) => {
     if (locked || resending !== null || resolving || loading) return
@@ -127,11 +133,11 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
 
   // 添加编辑：编辑库中还没进这个计划的编辑。
   const existingEmails = useMemo(
-    () => new Set(recipients.map((r) => parseRecipient(r).email.toLowerCase())),
+    () => new Set(recipients.map((r) => parseRecipient(r).email.trim().toLowerCase())),
     [recipients],
   )
   const candidates = useMemo(
-    () => editors.filter((e) => !existingEmails.has(e.email.toLowerCase())),
+    () => editors.map(normalizeEditorTags).filter((e) => e.enabled && isValidEmail(e.email.trim()) && !existingEmails.has(e.email.trim().toLowerCase())),
     [editors, existingEmails],
   )
   const filteredCandidates = useMemo(() => {
@@ -144,20 +150,26 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
   }, [candidates, pickQuery])
 
   const pickerRows = useMemo(
-    () => filteredCandidates.map(normalizeEditorTags).sort(compareEditorsByFavorite),
-    [filteredCandidates],
+    () => filteredCandidates.filter(e => matchesEditorTags(e, pickTags.included, pickTags.excluded, pickTags.match)).sort(compareEditorsByFavorite),
+    [filteredCandidates, pickTags],
   )
+  const pickerTypes = useMemo(() => [...new Set(candidates.flatMap(e => e.work_type))], [candidates])
+  const bulkPicks = useMemo(() => additionalPlanEditors(pickerRows, recipients, editors), [pickerRows, recipients, editors])
 
-  useEffect(() => { setMore(null) }, [query, filter, pickQuery])
+  useEffect(() => { setMore(null) }, [query, filter, pickQuery, pickTags])
 
   const mutateRecipients = async (next: string[], okMsg: string) => {
-    if (next.length === recipients.length) return
+    if (next.length === recipients.length || savingRecipientsRef.current) return false
+    savingRecipientsRef.current = true
+    setSavingRecipients(true)
     try {
       await api.updateManuscript(manuscript.id, { ...toInput(manuscript), recipients: next })
       setRecipients(next)
       toast(okMsg, 'success')
       changed()
-    } catch (e) { toast(String(e), 'error') }
+      return true
+    } catch (e) { toast(String(e), 'error'); return false }
+    finally { savingRecipientsRef.current = false; setSavingRecipients(false) }
   }
 
   const removeRecipient = (email: string) => {
@@ -186,11 +198,13 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
     finally { setResending(null); setRefresh(v => v + 1) }
   }
 
-  const addEditor = (editor: Editor) => {
+  const addEditors = async (additions: Editor[], batch = false) => {
     if (busy) { toast('请等待当前发送结束后再修改收件人', 'warning'); return }
-    void mutateRecipients([...recipients, editorRecipient(editor)], '已加入计划，将按新顺序发送')
-    setShowPicker(false)
-    setPickQuery('')
+    const picks = batch ? additionalPlanEditors(additions, recipients, editors) : additions.filter(e => !existingEmails.has(e.email.trim().toLowerCase()))
+    if (!picks.length) return
+    const saved = await mutateRecipients([...recipients, ...picks.map(editorRecipient)],
+      batch ? `已添加 ${picks.length} 位编辑，同平台只添加一位` : '已加入计划，将按新顺序发送')
+    if (saved) { setShowPicker(false); setPickQuery(''); setPickTags({ included: [], excluded: [], match: 'any' }) }
   }
 
   const manualSend = async (row: DetailRow) => {
@@ -256,12 +270,17 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
               <Search size={14} />
               <input value={pickQuery} onChange={(e) => setPickQuery(e.target.value)} placeholder="搜索姓名、平台、邮箱或备注" />
             </label>
-            <span className="hint">{pickerRows.length} 位可选</span>
+            <span className="hint">{pickerRows.length} 位匹配 · 去重后可添加 {bulkPicks.length} 位</span>
+            <Button size="sm" variant="primary" disabled={busy || !bulkPicks.length} onClick={() => void addEditors(pickerRows, true)}>
+              {savingRecipients ? '添加中…' : `批量添加 ${bulkPicks.length} 位`}
+            </Button>
           </div>
+          <EditorTagFilter candidates={filteredCandidates} tags={pickerTypes} value={pickTags} onChange={setPickTags} beforeChange={() => !busy} />
+          <p className="hint">批量添加时每个平台只选一位，优先收藏；计划中已有的平台会跳过。</p>
           <Table
             rowKey="id"
             dataSource={pickerRows}
-            resetKey={pickQuery}
+            resetKey={JSON.stringify([pickQuery, pickTags])}
             pagination={{ pageSize: 6, pageSizeOptions: [6, 10, 20], hideOnSinglePage: true }}
             empty={editors.length
               ? '编辑库中没有可添加的编辑（或都已在这个计划里）。'
@@ -308,7 +327,7 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
                 width: 72,
                 render: (_value, e) => (
                   <div className="row-actions">
-                    <Button size="sm" onClick={() => addEditor(e)}>添加</Button>
+                    <Button size="sm" disabled={busy} onClick={() => void addEditors([e])}>添加</Button>
                   </div>
                 ),
               },

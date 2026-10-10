@@ -81,7 +81,9 @@ export function PlanSendStep({ model }: { model: PlanEditorModel }) {
             <p className="warn-text">最短间隔低于 30 秒，可能更容易触发邮箱发送频率限制。</p>
           )}
           <div className="plan-send-review">
-            <p className="plan-send-desc">自动投递遇到编辑拉黑时，会保持发件邮箱不变，尝试同平台未发现拉黑记录的可用编辑；无可用编辑则跳过。替换详情会在界面提示并写入发送记录。</p>
+            <p className="plan-send-desc">{form.lock_recipients
+              ? '本次名单已固定，发送时不再更换编辑。遇到拉黑或编辑停用时跳过，并记录原因。'
+              : '自动投递遇到编辑拉黑时，会保持发件邮箱不变，尝试同平台未发现拉黑记录的可用编辑；无可用编辑则跳过。替换详情会在界面提示并写入发送记录。'}</p>
             <h4>本次投递</h4>
             <dl className="plan-send-metrics">
               <div><dt>待发送</dt><dd>{sendCount}<small>封</small></dd></div>

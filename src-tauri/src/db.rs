@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS manuscripts (
   body TEXT NOT NULL,
   content_type TEXT NOT NULL DEFAULT 'text/plain',
   recipients TEXT NOT NULL DEFAULT '[]',
+  lock_recipients INTEGER NOT NULL DEFAULT 0,
   sender_name TEXT NOT NULL DEFAULT '',
   word_count INTEGER NOT NULL DEFAULT 0,
   category TEXT NOT NULL DEFAULT '',
@@ -267,6 +268,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     add_manuscript_account_ids_column(&connection)?;
     add_manuscript_mail_templates_column(&connection)?;
     add_manuscript_fixed_mail_template_column(&connection)?;
+    add_manuscript_lock_recipients_column(&connection)?;
     add_manuscript_send_interval_column(&connection)?;
     add_manuscript_send_interval_seconds_columns(&connection)?;
     connection.execute("INSERT OR IGNORE INTO settings(key,value)
@@ -1497,6 +1499,16 @@ fn add_manuscript_mail_templates_column(conn: &Connection) -> Result<(), String>
     Ok(())
 }
 
+fn add_manuscript_lock_recipients_column(conn: &Connection) -> Result<(), String> {
+    if table_lacks_column(conn, "manuscripts", "lock_recipients") {
+        conn.execute(
+            "ALTER TABLE manuscripts ADD COLUMN lock_recipients INTEGER NOT NULL DEFAULT 0",
+            [],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn add_manuscript_fixed_mail_template_column(conn: &Connection) -> Result<(), String> {
     if table_lacks_column(conn, "manuscripts", "fixed_mail_template_id") {
         conn.execute(
@@ -1757,6 +1769,18 @@ mod tests {
         assert_eq!(valid_delivery_task, Some(1));
         assert_eq!(orphan_delivery_task, None);
         assert_eq!(orphan_reply, (None, None));
+    }
+
+    #[test]
+    fn recipient_lock_migration_preserves_legacy_plans_and_is_idempotent() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE manuscripts (id INTEGER PRIMARY KEY, recipients TEXT); INSERT INTO manuscripts VALUES(1,'[\"editor@example.com\"]');").unwrap();
+        add_manuscript_lock_recipients_column(&connection).unwrap();
+        let saved: (String, bool) = connection.query_row("SELECT recipients,lock_recipients FROM manuscripts WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(saved, ("[\"editor@example.com\"]".into(), false));
+        connection.execute("UPDATE manuscripts SET lock_recipients=1", []).unwrap();
+        add_manuscript_lock_recipients_column(&connection).unwrap();
+        assert!(connection.query_row("SELECT lock_recipients FROM manuscripts WHERE id=1", [], |r| r.get::<_, bool>(0)).unwrap());
     }
 
     #[test]

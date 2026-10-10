@@ -412,7 +412,7 @@ fn write_manuscript(
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let input = prepared.input;
     let sql = if id.is_some() {
-        "UPDATE manuscripts SET title=:title,body=:body,content_type=:content_type,recipients=:recipients,
+        "UPDATE manuscripts SET title=:title,body=:body,content_type=:content_type,recipients=:recipients,lock_recipients=:lock_recipients,
          sender_name=:sender_name,word_count=:word_count,category=:category,reader_category=:reader_category,
          reader_emotion=:reader_emotion,style=:style,genres=:genres,excluded_types=:excluded,account_ids=:accounts,
          send_interval_min=:interval_min,send_interval_from_sec=:interval_from,send_interval_to_sec=:interval_to,
@@ -420,16 +420,17 @@ fn write_manuscript(
          file_name=CASE WHEN :file_data IS NULL THEN file_name ELSE :file_name END,
          file_data=COALESCE(:file_data,file_data),updated_at=datetime('now','localtime') WHERE id=:id"
     } else {
-        "INSERT INTO manuscripts(id,title,body,content_type,recipients,sender_name,word_count,category,reader_category,
+        "INSERT INTO manuscripts(id,title,body,content_type,recipients,lock_recipients,sender_name,word_count,category,reader_category,
          reader_emotion,style,genres,excluded_types,account_ids,send_interval_min,send_interval_from_sec,send_interval_to_sec,
          subject,mail_templates,fixed_mail_template_id,file_name,file_data)
-         VALUES(:id,:title,:body,:content_type,:recipients,:sender_name,:word_count,:category,:reader_category,
+         VALUES(:id,:title,:body,:content_type,:recipients,:lock_recipients,:sender_name,:word_count,:category,:reader_category,
          :reader_emotion,:style,:genres,:excluded,:accounts,:interval_min,:interval_from,:interval_to,
          :subject,:templates,:fixed_template,CASE WHEN :file_data IS NULL THEN '' ELSE :file_name END,:file_data)"
     };
     let changed = tx.execute(sql, rusqlite::named_params! {
         ":id": id, ":title": input.title, ":body": input.body, ":content_type": input.content_type,
         ":recipients": prepared.recipients, ":sender_name": input.sender_name.trim(), ":word_count": input.word_count,
+        ":lock_recipients": input.lock_recipients,
         ":category": input.category.trim(), ":reader_category": input.reader_category.trim(), ":reader_emotion": input.reader_emotion.trim(),
         ":style": input.style.trim(), ":genres": prepared.genres, ":excluded": prepared.excluded, ":accounts": prepared.accounts,
         ":interval_min": legacy_send_interval_min(input.send_interval_from_sec,input.send_interval_to_sec),
@@ -441,6 +442,13 @@ fn write_manuscript(
         return Err("稿件不存在，请刷新后重试".into());
     }
     let saved_id = id.unwrap_or_else(|| tx.last_insert_rowid());
+    if id.is_some() {
+        let task_id: Option<i64> = tx.query_row(
+            "SELECT MAX(id) FROM tasks WHERE EXISTS (SELECT 1 FROM json_each(tasks.manuscript_ids) WHERE value=?1)",
+            [saved_id], |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        if let Some(task_id) = task_id { store::refresh_completed_task_recipients(&tx, task_id)?; }
+    }
     tx.execute("INSERT INTO settings(key,value) VALUES('last_send_interval',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         [serde_json::json!([input.send_interval_from_sec,input.send_interval_to_sec]).to_string()]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -669,6 +677,24 @@ mod manuscript_write_tests {
         })).unwrap()
     }
     #[test]
+    fn recipient_lock_and_picks_persist_on_create_and_update() {
+        let conn = crate::db::test_database();
+        let mut draft = input();
+        assert!(!draft.lock_recipients);
+        draft.lock_recipients = true;
+        let expected = draft.recipients.clone();
+        let id = write_manuscript(&conn, None, PreparedManuscript::new(draft.clone()).unwrap()).unwrap();
+        let saved = store::load_manuscript(&conn, id).unwrap().unwrap();
+        assert!(saved.lock_recipients);
+        assert_eq!(saved.recipients, expected);
+        draft.title = "重新打开后保存".into();
+        write_manuscript(&conn, Some(id), PreparedManuscript::new(draft).unwrap()).unwrap();
+        let saved = store::load_manuscript(&conn, id).unwrap().unwrap();
+        assert!(saved.lock_recipients);
+        assert_eq!(saved.recipients, expected);
+    }
+
+    #[test]
     fn create_and_update_share_validation_fallback_and_attachment_rules() {
         let conn = crate::db::test_database();
         let id = write_manuscript(&conn, None, PreparedManuscript::new(input()).unwrap()).unwrap();
@@ -725,6 +751,25 @@ mod manuscript_write_tests {
                 .contains("不存在")
         );
     }
+    #[test]
+    fn appending_recipients_reopens_completed_task_and_rolls_back_on_history_error() {
+        let conn = crate::db::test_database();
+        let id = write_manuscript(&conn,None,PreparedManuscript::new(input()).unwrap()).unwrap();
+        conn.execute("INSERT INTO tasks(id,name,manuscript_ids,status,sent,total,run_id) VALUES(1,'fixture',?1,'completed',1,1,8)",
+            [serde_json::json!([id]).to_string()]).unwrap();
+        conn.execute("INSERT INTO deliveries(task_id,manuscript_id,recipient,message_id,run_id) VALUES(1,?1,'editor@example.com','delivered',8)",[id]).unwrap();
+        let mut updated=input(); updated.recipients.push("new@example.com".into());
+        write_manuscript(&conn,Some(id),PreparedManuscript::new(updated.clone()).unwrap()).unwrap();
+        let task=store::load_task(&conn,1).unwrap().unwrap();
+        assert_eq!((task.status.as_str(),task.sent,task.total),("stopped",1,2));
+        assert_eq!(conn.query_row("SELECT run_id FROM tasks WHERE id=1",[],|r|r.get::<_,i64>(0)).unwrap(),8);
+        conn.execute_batch("UPDATE tasks SET status='completed',total=2; DROP TABLE deliveries;").unwrap();
+        updated.recipients.push("third@example.com".into());
+        assert!(write_manuscript(&conn,Some(id),PreparedManuscript::new(updated).unwrap()).is_err());
+        assert_eq!(store::load_manuscript(&conn,id).unwrap().unwrap().recipients.len(),2);
+        assert_eq!(store::load_task(&conn,1).unwrap().unwrap().status,"completed");
+    }
+
     #[test]
     fn successful_save_remembers_interval_and_failure_rolls_back_both() {
         let conn = crate::db::test_database();

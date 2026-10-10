@@ -214,6 +214,23 @@ pub fn route(
         })
         .map_err(|e| e.to_string())?;
     let original_email = mailbox(original);
+    if manuscript.lock_recipients {
+        let unavailable = if let Err(message) = store::ensure_editor_enabled(&tx, &original_email) {
+            Some(("editor_status", message))
+        } else if blocked(&tx, &account.email, &original_email)? {
+            Some(("blacklist", format!("发件邮箱 {} 被 {} 拉黑；本次名单已固定，已跳过，不更换编辑。", account.email, original)))
+        } else {
+            None
+        };
+        let result = if let Some((category, message)) = unavailable {
+            Route::Unavailable(store::insert_send_log(&tx, Some(task_id), Some(manuscript.id),
+                Some(account.id), "warning", category, &message, original)?)
+        } else {
+            Route::Ready { recipient: original.to_string(), notice: None }
+        };
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(result);
+    }
     let current: Option<String>=tx.query_row("SELECT recipient FROM send_recipient_routes WHERE task_id=?1 AND run_id=?2 AND manuscript_id=?3 AND original_recipient=?4",
         params![task_id,run_id,manuscript.id,original_email],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
     let current_email = current.clone().unwrap_or_else(|| original_email.clone());
@@ -460,6 +477,26 @@ mod tests {
         .unwrap();
         assert!(blocked(&conn, "sender@example.com", "old@example.com").unwrap());
     }
+    #[test]
+    fn locked_recipients_never_substitute_even_with_an_existing_route() {
+        let conn = fixture();
+        block(&conn, "old@example.com");
+        conn.execute("UPDATE manuscripts SET lock_recipients=1 WHERE id=1", []).unwrap();
+        let Route::Unavailable(log) = resolve(&conn, 1) else { panic!("blocked pick must be skipped") };
+        assert!(log.message.contains("不更换编辑"));
+        assert_eq!(mailbox(log.recipient.as_deref().unwrap()), "old@example.com");
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM send_recipient_routes", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        conn.execute("INSERT INTO send_recipient_routes SELECT id,run_id,1,'old@example.com','peer@example.com' FROM tasks WHERE id=1", []).unwrap();
+        let Route::Ready { recipient, notice } = resolve(&conn, 2) else { panic!() };
+        assert_eq!(mailbox(&recipient), "old@example.com");
+        assert!(notice.is_none());
+        clear(&conn, "sender@example.com", "old@example.com").unwrap();
+        let Route::Ready { recipient, .. } = resolve(&conn, 1) else { panic!() };
+        assert_eq!(mailbox(&recipient), "old@example.com");
+        conn.execute("UPDATE editors SET enabled=0 WHERE id=1", []).unwrap();
+        assert!(matches!(resolve(&conn, 1), Route::Unavailable(_)));
+    }
+
     #[test]
     fn substitution_preserves_sender_platform_placeholders_and_resume_progress() {
         let mut conn = fixture();

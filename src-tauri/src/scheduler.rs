@@ -813,9 +813,15 @@ async fn send_with_retry(
                 }
                 match category.as_str() {
                     "blacklist" => {
+                        let action = if target.manuscript.lock_recipients {
+                            "本次名单已固定，已跳过，不更换编辑。"
+                        } else {
+                            "将检查同平台可用编辑。"
+                        };
                         let log = store::insert_send_log(&db.lock().unwrap(),Some(task_id),Some(target.manuscript.id),Some(account.id),
-                            "error","blacklist",&format!("投递被永久拒绝：{message}；已记录 {} 被 {recipient} 拉黑，将检查同平台可用编辑。",account.email),&recipient);
+                            "error","blacklist",&format!("投递被永久拒绝：{message}；已记录 {} 被 {recipient} 拉黑，{action}",account.email),&recipient);
                         match log { Ok(log)=>emit_log(app,&log), Err(error)=>return SendOutcome::DataError(error) }
+                        if target.manuscript.lock_recipients { return SendOutcome::Failed; }
                         interruptible_sleep(send_delay_secs(target.manuscript.send_interval_from_sec,target.manuscript.send_interval_to_sec),handle).await;
                         continue;
                     }
@@ -910,6 +916,37 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn completed_plan_with_added_recipients_continues_the_same_round() {
+        let conn = prepared_fixture();
+        conn.execute_batch("UPDATE manuscripts SET recipients='[\"one@example.com\"]';
+            UPDATE tasks SET status='completed',sent=1,total=1,run_id=7,finished_at='finished';
+            INSERT INTO deliveries(task_id,manuscript_id,recipient,message_id,run_id) VALUES(1,1,'one@example.com','old',7);
+            INSERT INTO deliveries(task_id,manuscript_id,recipient,message_id,run_id) VALUES(1,1,'two@example.com','prior-round',6);").unwrap();
+        assert!(!store::refresh_completed_task_recipients(&conn, 1).unwrap());
+        conn.execute("UPDATE manuscripts SET recipients='[\"one@example.com\",\"two@example.com\",\"TWO@example.com\"]'", []).unwrap();
+        assert!(store::refresh_completed_task_recipients(&conn, 1).unwrap());
+        let task = store::load_task(&conn, 1).unwrap().unwrap();
+        assert_eq!((task.status.as_str(),task.sent,task.total), ("stopped",1,2));
+        assert_eq!(conn.query_row("SELECT run_id FROM tasks WHERE id=1", [], |r| r.get::<_,i64>(0)).unwrap(),7);
+        assert!(!store::refresh_completed_task_recipients(&conn, 1).unwrap());
+        let prepared = prepare_task(&conn, 1).unwrap();
+        assert_eq!(prepared.queue.len(), 1);
+        assert_eq!(prepared.queue[0].recipient, "two@example.com");
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM deliveries", [], |r| r.get::<_,i64>(0)).unwrap(),2);
+    }
+
+    #[test]
+    fn extending_old_or_loop_tasks_does_not_reopen_them() {
+        let conn = prepared_fixture();
+        conn.execute_batch("UPDATE tasks SET status='completed',sent=1,total=1,schedule_type='loop';").unwrap();
+        assert!(!store::refresh_completed_task_recipients(&conn,1).unwrap());
+        conn.execute_batch("UPDATE tasks SET schedule_type='immediate';
+            INSERT INTO tasks(id,name,manuscript_ids) VALUES(2,'newer','[1]');").unwrap();
+        assert!(!store::refresh_completed_task_recipients(&conn,1).unwrap());
+        assert_eq!(store::load_task(&conn,1).unwrap().unwrap().status,"completed");
     }
 
     #[test]

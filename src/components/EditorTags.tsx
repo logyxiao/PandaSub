@@ -112,9 +112,9 @@ export function EditorTagDialog({
   }, [])
   const allOptions = [
     ...new Set([
-      ...options.map((option) => option.label),
-      ...draft.included,
-      ...draft.excluded,
+      ...options.filter(option => !filtering || (option.count ?? 0) > 0).map((option) => option.label),
+      ...(!filtering ? draft.included : []),
+      ...(!filtering ? draft.excluded : []),
     ]),
   ]
   const visible = allOptions.filter((tag) =>

@@ -15,7 +15,13 @@ pub async fn list_tasks(state: State<'_, AppState>) -> Result<Vec<crate::models:
     let db=state.db.clone();
     tauri::async_runtime::spawn_blocking(move||{
     let conn = db.lock().map_err(|e| e.to_string())?;
-    store::load_tasks(&conn)
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for task in store::load_tasks(&tx)? {
+        store::refresh_completed_task_recipients(&tx, task.id)?;
+    }
+    let tasks = store::load_tasks(&tx)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(tasks)
     }).await.map_err(|e|e.to_string())?
 }
 
@@ -440,6 +446,7 @@ fn start_reserved_task(
         if let Some(current) = store::load_task(&conn, id)? {
             ensure_no_manual_sends(&pending, &current.manuscript_ids)?;
         }
+        store::refresh_completed_task_recipients(&conn, id)?;
         let task = store::load_task(&conn, id)?.ok_or("任务不存在")?;
         if task.status == "running" {
             return Err("任务已在运行".into());
