@@ -27,6 +27,7 @@ struct SendTarget {
 enum SendOutcome {
     Success { message_id: String, account_id: i64, recipient: String, subject: String },
     Failed,
+    Handled,
     RetryLater,
     NeedsReview(String),
     DataError(String),
@@ -387,6 +388,13 @@ fn prepare_task(conn: &Connection, task_id: i64) -> Result<PreparedTask, String>
             .map_err(|e| e.to_string())?;
         }
     }
+    let mut handled = std::collections::HashSet::new();
+    for manuscript in &manuscripts {
+        for email in crate::send_outcomes::skipped_emails(&tx, task_id, manuscript.id)? {
+            handled.insert(delivery_target_key(manuscript.id, &email));
+        }
+    }
+    queue.retain(|target| !handled.contains(&delivery_target_key(target.manuscript.id, &target.recipient)));
     let has_pending = skip_pending_recipients(&tx, &manuscripts, &mut queue)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(PreparedTask {
@@ -487,7 +495,7 @@ async fn run_task_worker(
             } else if had_failure {
                 "任务投递结束，但有邮件发送失败"
             } else {
-                "任务全部投递完成"
+                "任务已完成，所有收件人均已处理"
             };
             let log = store::insert_log(
                 &db.lock().unwrap(),
@@ -671,6 +679,7 @@ async fn run_task_worker(
                 queue.push_front(target);
                 interruptible_sleep(30, &handle).await;
             }
+            SendOutcome::Handled => { emit_task(&app, &db, task_id); }
             SendOutcome::Failed => {
                 had_failure = true;
             }
@@ -752,6 +761,7 @@ async fn send_with_retry(
                 recipient
             }
             Ok(crate::editor_blocks::Route::Unavailable(log)) => {emit_log(app,&log);return SendOutcome::Failed;}
+            Ok(crate::editor_blocks::Route::Handled(log)) => {emit_log(app,&log);return SendOutcome::Handled;}
             Err(error) => return SendOutcome::DataError(error),
         };
         // Regenerate placeholders for the actual replacement editor, never the blocked one.
@@ -812,16 +822,15 @@ async fn send_with_retry(
                     return SendOutcome::DataError(error);
                 }
                 match category.as_str() {
-                    "blacklist" => {
-                        let action = if target.manuscript.lock_recipients {
-                            "本次名单已固定，已跳过，不更换编辑。"
+                    "blacklist" | "recipient_invalid" => {
+                        let action = if category == "blacklist" {
+                            format!("已记录 {} 被 {recipient} 拉黑", account.email)
                         } else {
-                            "将检查同平台可用编辑。"
+                            format!("已记录收件地址 {recipient} 失效并停用对应编辑")
                         };
                         let log = store::insert_send_log(&db.lock().unwrap(),Some(task_id),Some(target.manuscript.id),Some(account.id),
-                            "error","blacklist",&format!("投递被永久拒绝：{message}；已记录 {} 被 {recipient} 拉黑，{action}",account.email),&recipient);
+                            "error",&category,&format!("投递被永久拒绝：{message}；{action}，将检查同平台可用编辑。"),&recipient);
                         match log { Ok(log)=>emit_log(app,&log), Err(error)=>return SendOutcome::DataError(error) }
-                        if target.manuscript.lock_recipients { return SendOutcome::Failed; }
                         interruptible_sleep(send_delay_secs(target.manuscript.send_interval_from_sec,target.manuscript.send_interval_to_sec),handle).await;
                         continue;
                     }
@@ -951,23 +960,30 @@ mod tests {
 
     #[test]
     fn replacement_pending_and_delivered_targets_keep_original_progress_after_restart() {
-        let mut conn=prepared_fixture();
-        conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'sender@example.com','','localhost');
-            INSERT INTO editors(name,email,platform) VALUES('原编辑','one@example.com','平台'),('替代编辑','peer@example.com','平台');").unwrap();
-        crate::editor_blocks::record(&conn,"sender@example.com","one@example.com","550 The sender is blacklisted by the recipient","2026-10-03").unwrap();
-        let account=store::load_account(&conn,1).unwrap().unwrap();
-        let manuscript=store::load_manuscript(&conn,1).unwrap().unwrap();
-        assert!(matches!(crate::editor_blocks::route(&conn,1,&account,&manuscript,"one@example.com").unwrap(),crate::editor_blocks::Route::Ready{..}));
-        let attempt=store::SuccessfulDelivery{task_id:Some(1),account_id:1,manuscript_id:1,recipient:"peer@example.com",subject:"fixture",message_id:"replaced-pending",increment_task_progress:true};
-        store::begin_send_attempt(&conn,&attempt).unwrap();
-        let prepared=prepare_task(&conn,1).unwrap();
-        assert!(prepared.has_pending);assert_eq!(prepared.queue.len(),1);assert_eq!(prepared.queue[0].recipient,"two@example.com");
-        store::record_successful_delivery(&mut conn,attempt).unwrap();
-        let prepared=prepare_task(&conn,1).unwrap();
-        assert!(!prepared.has_pending);assert_eq!(prepared.queue.len(),1);
-        assert_eq!(store::load_task(&conn,1).unwrap().unwrap().sent,1);
-        conn.execute("DELETE FROM tasks WHERE id=1",[]).unwrap();
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM send_recipient_routes",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        for invalid_address in [false, true] {
+            let mut conn=prepared_fixture();
+            conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'sender@example.com','','localhost');
+                INSERT INTO editors(name,email,platform) VALUES('原编辑','one@example.com','平台'),('替代编辑','peer@example.com','平台');").unwrap();
+            conn.execute("UPDATE manuscripts SET lock_recipients=1", []).unwrap();
+            if invalid_address {
+                crate::editor_blocks::record_invalid(&conn, "one@example.com", "550 Recipient not found", "2026-10-03").unwrap();
+            } else {
+                crate::editor_blocks::record(&conn,"sender@example.com","one@example.com","550 The sender is blacklisted by the recipient","2026-10-03").unwrap();
+            }
+            let account=store::load_account(&conn,1).unwrap().unwrap();
+            let manuscript=store::load_manuscript(&conn,1).unwrap().unwrap();
+            assert!(matches!(crate::editor_blocks::route(&conn,1,&account,&manuscript,"one@example.com").unwrap(),crate::editor_blocks::Route::Ready{..}));
+            let attempt=store::SuccessfulDelivery{task_id:Some(1),account_id:1,manuscript_id:1,recipient:"peer@example.com",subject:"fixture",message_id:"replaced-pending",increment_task_progress:true};
+            store::begin_send_attempt(&conn,&attempt).unwrap();
+            let prepared=prepare_task(&conn,1).unwrap();
+            assert!(prepared.has_pending);assert_eq!(prepared.queue.len(),1);assert_eq!(prepared.queue[0].recipient,"two@example.com");
+            store::record_successful_delivery(&mut conn,attempt).unwrap();
+            let prepared=prepare_task(&conn,1).unwrap();
+            assert!(!prepared.has_pending);assert_eq!(prepared.queue.len(),1);
+            assert_eq!(store::load_task(&conn,1).unwrap().unwrap().sent,1);
+            conn.execute("DELETE FROM tasks WHERE id=1",[]).unwrap();
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM send_recipient_routes",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { useEditorListModel } from '../hooks/useEditorListModel'
-import { EditorBlockBadge } from '../components/EditorBlocks'
+import { InvalidRecipientBadge, EditorBlockBadge } from '../components/EditorBlocks'
 import { onLog, onReply } from '../api'
 import { EditorReplyTime } from '../components/EditorReplyTime'
 import { useEventSubscription } from '../hooks/useEventSubscription'
@@ -130,7 +130,7 @@ export function EditorLibrary({
   useEffect(() => {
     if (!dirty && !saving && replyStatsPending.current) { replyStatsPending.current = false; void load(true) }
   }, [dirty, saving, load])
-  useEventSubscription(onLog, () => { if (!dirty && !savingRef.current) void load(true) }, 200, log => ['blacklist', 'editor_replacement'].includes(log.category))
+  useEventSubscription(onLog, () => { if (!dirty && !savingRef.current) void load(true) }, 200, log => ['blacklist', 'recipient_invalid', 'editor_replacement'].includes(log.category))
   useEffect(() => {
     void load(reloadSignal > 0)
     const sequence = requestSeq
@@ -572,6 +572,7 @@ export function EditorLibrary({
                           )}
                         </small>
                         {!e.enabled && <span className="library-modified">已停用</span>}
+                        <InvalidRecipientBadge reason={e.invalid_recipient_reason} />
                         <EditorBlockBadge senders={e.blocked_senders} onClick={() => void allowChange().then(ok => { if (ok) onBlockedDetails(e.email) })} />
                       </td>
                       <td onDoubleClick={() => void edit(e)}>

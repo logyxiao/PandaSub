@@ -1054,6 +1054,7 @@ mod tests {
             provider: String::new(),
             enabled: true,
             last_sent_at: None,
+            last_plan_sent_at: None,
             imap_host: "localhost".into(),
             imap_port: 993,
             check_replies: true,
@@ -1379,6 +1380,25 @@ mod budget_tests {
         conn.execute("INSERT INTO accounts(id,email,password,smtp_host,imap_uid,imap_uid_validity) VALUES(1,'fixture@example.com','','localhost',500,10)", []).unwrap();
         let account = store::load_account(&conn, 1).unwrap().unwrap();
         (conn, account)
+    }
+
+    #[test]
+    fn incoming_submission_replies_use_saved_acceptance_keywords_and_empty_disables_them() {
+        let (conn, account) = scan_fixture();
+        let mut settings = store::load_settings(&conn).unwrap();
+        settings.acceptance_body_keywords = vec!["签约邀请".into()];
+        store::save_settings(&conn,&settings).unwrap();
+        let mut mail = super::tests::reply("editor@example.com","回复");
+        let delivery = super::tests::delivery(1,"editor@example.com","投稿");
+        for (uid,body,matched,accepted) in [(1,"签约邀请",true,true),(2,"恭喜过稿",true,false),(3,"签约邀请",false,false)] {
+            mail.uid=uid;mail.message_id=format!("configured-{uid}");mail.body=body.into();
+            let saved=persist_incoming(&conn,&account,&mail,matched.then_some(&delivery),10,&[]).unwrap().unwrap();
+            assert_eq!(saved.accepted,accepted,"{body}");
+        }
+        settings.acceptance_body_keywords.clear();
+        store::save_settings(&conn,&settings).unwrap();
+        mail.uid=4;mail.message_id="disabled".into();
+        assert!(!persist_incoming(&conn,&account,&mail,Some(&delivery),10,&[]).unwrap().unwrap().accepted);
     }
 
     #[test]
@@ -1949,7 +1969,8 @@ fn persist_incoming(
     );
     let accepted = delivery.is_some()
         && classification.kind == classify::ReplyKind::Human
-        && classify::body_suggests_accepted(&mail.body);
+        && classify::body_suggests_accepted_with_keywords(&mail.body,
+            &store::load_settings(conn)?.acceptance_body_keywords);
     let snippet: String = mail.body.chars().take(180).collect();
     let reply = store::insert_reply(
         conn,

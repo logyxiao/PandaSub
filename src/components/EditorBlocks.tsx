@@ -14,11 +14,15 @@ export function EditorBlockBadge({ senders, onClick }: { senders?: string[]; onC
     : <span className="editor-block-badge" title={title}>{text}</span>
 }
 
+export function InvalidRecipientBadge({ reason }: { reason?: string | null }) {
+  return reason ? <span className="editor-block-badge" title={`${reason}\n核验地址恢复后，可在编辑库重新启用。`}>收件地址失效</span> : null
+}
+
 /** Visible on every page; the durable evidence remains in the editor library/logs. */
 export function EditorBlockNotifications() {
   const toast = useToast()
   useEventSubscription(onLog, log => {
-    if (log.category === 'blacklist' || log.category === 'editor_replacement') toast(log.message, 'warning')
+    if (['blacklist', 'recipient_invalid', 'editor_replacement'].includes(log.category)) toast(log.message, 'warning')
   })
   return null
 }
@@ -39,7 +43,7 @@ export function EditorBlocksDialog({ recipient, onClose, onChanged }: { recipien
     finally { setLoading(false) }
   }, [])
   useEffect(() => { void load() }, [load])
-  useEventSubscription(onLog, () => { void load() }, 200, log => ['blacklist', 'editor_replacement'].includes(log.category))
+  useEventSubscription(onLog, () => { void load() }, 200, log => ['blacklist', 'recipient_invalid', 'editor_replacement'].includes(log.category))
   const senders = useMemo(() => [...new Set(items.map(item => item.sender_email))].sort(), [items])
   const rows = useMemo(() => items.filter(item => (!sender || item.sender_email === sender)
     && [item.sender_email, item.recipient_email, item.editor_name, item.platform].some(value => value.toLowerCase().includes(query.trim().toLowerCase()))), [items, query, sender])
@@ -52,7 +56,7 @@ export function EditorBlocksDialog({ recipient, onClose, onChanged }: { recipien
   }
   return <Modal title="编辑拉黑记录" width={920} onClose={() => { if (!busy) onClose() }}>
     <p className="hint">按发件邮箱分别记录，仅依据服务器明确的 550 拉黑回复。未列出代表未发现记录，不保证对方没有拦截。清空发送日志不会清除这里的记录。</p>
-    <div className="notice">编辑组投稿的名单选好后固定，遇到拉黑时跳过并记录原因。其他自动投递会保持发件邮箱不变，改投符合稿件类型的同平台编辑；跳过已选、已投递和待确认的收件人。没有可用编辑则跳过并提示。</div>
+    <div className="notice">自动投递（包括编辑组投稿）遇到明确拉黑或收件地址失效时，会自动记录，并保持发件邮箱不变，选择符合稿件类型的同平台编辑补投；跳过地址失效、已选、已投递和待确认的收件人。没有可用编辑则跳过并提示。</div>
     <div className="toolbar editor-block-filters">
       <input aria-label="搜索拉黑记录" placeholder="搜索编辑、平台或邮箱" value={query} onChange={e => setQuery(e.target.value)} />
       <Select ariaLabel="拉黑记录发件邮箱" value={sender} onChange={setSender} options={[{value:'',label:'全部发件邮箱'},...senders.map(value=>({value,label:value}))]} />

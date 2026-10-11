@@ -22,26 +22,20 @@ pub fn update_settings(state: State<'_, AppState>, mut settings: Settings) -> Re
     if settings.reply_poll_minutes < 1 {
         return Err("检查回复间隔至少 1 分钟".into());
     }
-    settings.auto_reply_subject_keywords = settings
-        .auto_reply_subject_keywords
-        .into_iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect();
-    if settings.auto_reply_subject_keywords.len() > 30
-        || settings
-            .auto_reply_subject_keywords
-            .iter()
-            .any(|value| value.chars().count() > 80)
-    {
-        return Err("自动回复关键词最多 30 个，每个最多 80 字".into());
-    }
-    let mut seen = std::collections::HashSet::new();
-    settings
-        .auto_reply_subject_keywords
-        .retain(|value| seen.insert(value.to_lowercase()));
+    normalize_reply_keywords(&mut settings.auto_reply_subject_keywords, "自动回复")?;
+    normalize_reply_keywords(&mut settings.acceptance_body_keywords, "过稿统计")?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     store::save_settings(&conn, &settings)
+}
+
+fn normalize_reply_keywords(keywords: &mut Vec<String>, label: &str) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    *keywords = std::mem::take(keywords).into_iter().map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && seen.insert(value.to_lowercase())).collect();
+    if keywords.len() > 30 || keywords.iter().any(|value| value.chars().count() > 80) {
+        return Err(format!("{label}关键词最多 30 个，每个最多 80 字"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -181,5 +175,20 @@ mod backup_tests {
             assert_eq!(snapshot.query_row("SELECT COUNT(*) FROM manuscripts WHERE title='fixture'", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
         }
         drop(conn); std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod keyword_tests {
+    use super::*;
+    #[test]
+    fn reply_keyword_validation_is_shared_and_counts_unique_unicode_entries() {
+        let mut keywords = vec![" 签约邀请 ".into(),"READY".into(),"ready".into()," ".into()];
+        normalize_reply_keywords(&mut keywords,"过稿统计").unwrap();
+        assert_eq!(keywords,vec!["签约邀请","READY"]);
+        normalize_reply_keywords(&mut Vec::new(),"过稿统计").unwrap();
+        assert!(normalize_reply_keywords(&mut vec!["过".repeat(81)],"过稿统计").unwrap_err().contains("过稿统计"));
+        assert!(normalize_reply_keywords(&mut (0..31).map(|i|format!("词{i}")).collect(),"过稿统计").is_err());
+        assert!(normalize_reply_keywords(&mut vec!["重复".into();31],"过稿统计").is_ok());
     }
 }

@@ -61,7 +61,7 @@ with sync_playwright() as p:
         # Changing random values, visiting the send step and rerendering cannot redraw.
         page.evaluate('Math.random=()=>0')
         page.get_by_role('button', name='下一步：选择邮箱', exact=True).click()
-        expect(page.locator('.plan-send-review')).to_contain_text('本次名单已固定')
+        expect(page.locator('.plan-send-review')).to_contain_text('编辑组也允许失败后替换')
         page.get_by_role('button', name='上一步', exact=True).click()
         expect(roster).to_contain_text('甲收藏二')
         expect(roster).to_contain_text('乙编辑二')

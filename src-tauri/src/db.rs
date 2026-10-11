@@ -298,6 +298,9 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|e| e.to_string())?;
     crate::editor_blocks::backfill(&connection)?;
+    crate::editor_blocks::backfill_invalid(&connection)?;
+    connection.execute_batch(crate::send_outcomes::SCHEMA).map_err(|e|e.to_string())?;
+    crate::send_outcomes::backfill(&connection)?;
     // Existing plan records gain their known manuscript length; external counts stay unknown.
     connection.execute("UPDATE accepted_works SET word_count=(SELECT word_count FROM manuscripts WHERE id=accepted_works.manuscript_id)
         WHERE source='plan' AND word_count=0 AND EXISTS(SELECT 1 FROM manuscripts WHERE id=accepted_works.manuscript_id AND word_count>0)", []).map_err(|e| e.to_string())?;
@@ -1843,6 +1846,7 @@ pub(crate) fn test_database() -> Connection {
     conn.execute_batch(crate::editor_blocks::SCHEMA).unwrap();
     conn.execute_batch(crate::store::ACCEPTANCE_FILTER_SCHEMA).unwrap();
     migrate_delivery_reliability(&conn).unwrap();
+    conn.execute_batch(crate::send_outcomes::SCHEMA).unwrap();
     add_runtime_query_indexes(&conn).unwrap();
     conn
 }
@@ -1919,6 +1923,7 @@ mod reliability_tests {
     fn account_ids_never_reuse_deleted_or_dangling_plan_ids() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch(crate::send_outcomes::SCHEMA).unwrap();
         seed(&conn);
         conn.execute("UPDATE tasks SET account_ids = '[1,99]'", [])
             .unwrap();
@@ -1985,6 +1990,7 @@ mod reliability_tests {
         conn.execute_batch("UPDATE tasks SET sent=1,status='stopped';
             INSERT INTO deliveries(task_id,account_id,manuscript_id,recipient,message_id) VALUES(1,1,1,'a@example.com','old');").unwrap();
         migrate_delivery_reliability(&conn).unwrap();
+        conn.execute_batch(crate::send_outcomes::SCHEMA).unwrap();
         migrate_delivery_reliability(&conn).unwrap();
         assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 1);
         assert!(store::delivered_emails_for_task_manuscript(&conn, 1, 1)
@@ -2178,6 +2184,8 @@ mod reliability_tests {
             crate::models::default_auto_reply_subject_keywords()
         );
         settings.auto_reply_subject_keywords = vec!["系统回执".into(), "Receipt".into()];
+        assert_eq!(settings.acceptance_body_keywords, crate::models::default_acceptance_body_keywords());
+        settings.acceptance_body_keywords = vec!["签约邀请".into(), "Ready to Contract".into()];
         store::save_settings(&conn, &settings).unwrap();
         assert_eq!(
             store::load_settings(&conn)
@@ -2185,11 +2193,16 @@ mod reliability_tests {
                 .auto_reply_subject_keywords,
             settings.auto_reply_subject_keywords
         );
+        assert_eq!(store::load_settings(&conn).unwrap().acceptance_body_keywords,settings.acceptance_body_keywords);
+        settings.acceptance_body_keywords.clear();
+        store::save_settings(&conn, &settings).unwrap();
+        assert!(store::load_settings(&conn).unwrap().acceptance_body_keywords.is_empty());
         let mut legacy = serde_json::to_value(settings).unwrap();
         legacy
             .as_object_mut()
             .unwrap()
             .remove("auto_reply_subject_keywords");
+        legacy.as_object_mut().unwrap().remove("acceptance_body_keywords");
         conn.execute(
             "UPDATE settings SET value = ?1 WHERE key = 'app'",
             [legacy.to_string()],
@@ -2201,6 +2214,7 @@ mod reliability_tests {
                 .auto_reply_subject_keywords,
             crate::models::default_auto_reply_subject_keywords()
         );
+        assert_eq!(store::load_settings(&conn).unwrap().acceptance_body_keywords,crate::models::default_acceptance_body_keywords());
     }
 
     #[test]

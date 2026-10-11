@@ -5,6 +5,7 @@ mod editor_blocks;
 mod inbox;
 mod models;
 mod scheduler;
+mod send_outcomes;
 mod smtp;
 mod state;
 mod store;

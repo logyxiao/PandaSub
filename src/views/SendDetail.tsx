@@ -24,6 +24,7 @@ interface DetailRow {
   work_type: string[]
   rejected_types: string[]
   sent: boolean
+  skipKind?: string | null
   sentCount: number
   lastSentAt: string | null
   latestId: number | null
@@ -105,7 +106,7 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
   const filtered = useMemo(() => (result?.items ?? []).flatMap(summary => {
     const row = rows[summary.row_index]
     return row ? [{ ...row, sent: summary.sent_count > 0, sentCount: summary.sent_count,
-      latestId: summary.latest_id, lastSentAt: summary.last_sent_at, latestRecipient: summary.latest_recipient }] : []
+      latestId: summary.latest_id, lastSentAt: summary.last_sent_at, latestRecipient: summary.latest_recipient, skipKind: summary.skip_kind }] : []
   }), [rows, result])
   const sentCount = result?.sent_total
   const busy = locked || resending !== null || loading || Boolean(error) || pending.length > 0 || resolving || savingRecipients
@@ -233,7 +234,7 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
       <div className="send-detail-head">
         <div className="send-detail-title">
           <h3>{manuscript.title}</h3>
-          <p>按默认发送顺序排列 · 共 {recipients.length} 位收件人 · 已发送 {sentCount ?? '…'} · 未发送 {sentCount === undefined ? '…' : recipients.length - sentCount}</p>
+          <p>按默认发送顺序排列 · 共 {recipients.length} 位收件人 · 已发送 {sentCount ?? '…'} · 未发送 {sentCount === undefined ? '…' : Math.max(0, recipients.length - sentCount - (result?.skipped_total ?? 0))} · 被拉黑 {result?.blacklist_total ?? 0} · 地址失效 {result?.invalid_total ?? 0}</p>
         </div>
         <div className="send-detail-actions">
           <label className="plan-search send-detail-search">
@@ -395,6 +396,7 @@ export function SendDetailModal({ manuscript, revision, editors, enabledAccounts
                     <div className="editor-row-status">
                       {r.sent
                         ? <Badge tone="success" dot>已发送{r.sentCount > 1 ? ` ×${r.sentCount}` : ''}</Badge>
+                        : r.skipKind ? <Badge tone="warning">{r.skipKind === 'blacklist' ? '被拉黑，已处理' : '地址失效，已处理'}</Badge>
                         : <Badge tone="neutral">未发送</Badge>}
                       <small>{r.lastSentAt ? formatTime(r.lastSentAt) : '—'}</small>
                       {r.latestRecipient && r.latestRecipient.toLowerCase() !== r.email.toLowerCase() && <small className="warn-text" title={`实际投递给 ${r.latestRecipient}`}>已改投 {r.latestRecipient}</small>}

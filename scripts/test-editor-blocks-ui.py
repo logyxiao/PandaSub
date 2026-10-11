@@ -6,7 +6,7 @@ EXTRA=r'''
 const originalEditors=functions.listEditors;
 window.__blocks=['sender@example.com','other@example.com'].map(sender_email=>({sender_email,recipient_email:'a@example.com',editor_name:'编辑甲',platform:'平台',reason:'服务端拒绝投递（550）：The sender is blacklisted by the recipient, please contact the recipient.',first_seen:'2026-10-01 12:00:00',last_seen:'2026-10-03 12:00:00'}));
 functions.listEditorBlocks=()=>window.__blocks;
-functions.listEditors=()=>[...originalEditors().map(e=>({...e,blocked_senders:window.__blocks.filter(b=>b.recipient_email===e.email).map(b=>b.sender_email)})),{...originalEditors()[0],id:2,email:'peer@example.com',name:'编辑乙',blocked_senders:[]}];
+functions.listEditors=()=>[...originalEditors().map(e=>({...e,blocked_senders:window.__blocks.filter(b=>b.recipient_email===e.email).map(b=>b.sender_email)})),{...originalEditors()[0],id:2,email:'peer@example.com',name:'编辑乙',blocked_senders:[],enabled:false,invalid_recipient_reason:'550 Recipient not found'}];
 functions.clearEditorBlock=(sender,recipient)=>{window.__blocks=window.__blocks.filter(b=>b.sender_email!==sender||b.recipient_email!==recipient)};
 '''
 with sync_playwright() as p:
@@ -19,6 +19,8 @@ with sync_playwright() as p:
         page.goto(os.environ['NOVELSUB_TEST_URL']);page.wait_for_load_state('networkidle')
         nav=page.get_by_role('navigation',name='主导航')
         nav.get_by_role('button',name='编辑库',exact=True).click()
+        expect(page.get_by_text('收件地址失效',exact=True)).to_be_visible()
+        expect(page.get_by_text('收件地址失效',exact=True)).to_have_attribute('title','550 Recipient not found\n核验地址恢复后，可在编辑库重新启用。')
         page.get_by_role('tab',name='有拉黑记录').click()
         expect(page.get_by_role('button',name='编辑甲',exact=True)).to_be_visible()
         expect(page.get_by_role('button',name='编辑乙',exact=True)).to_have_count(0)
@@ -53,6 +55,8 @@ with sync_playwright() as p:
         expect(page.locator('.toasts')).to_contain_text('已自动改投同平台编辑乙')
         page.evaluate("window.__emit('log',{id:101,category:'editor_replacement',level:'error',message:'没有可用同平台编辑，已跳过，请调整编辑名单。'})")
         expect(page.locator('.toasts')).to_contain_text('没有可用同平台编辑')
+        page.evaluate("window.__emit('log',{id:102,category:'recipient_invalid',level:'error',message:'收件地址失效，已记录并停用编辑。'})")
+        expect(page.locator('.toasts')).to_contain_text('收件地址失效，已记录并停用编辑。')
         assert not page.evaluate("window.__calls.some(c=>['sendManualDelivery','resendDelivery','createTask'].includes(c.name))")
         assert not errors,errors
         browser.close()

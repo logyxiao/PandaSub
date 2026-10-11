@@ -158,12 +158,12 @@ pub async fn reclassify_replies(
 fn reclassify_history(
     db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
 ) -> Result<usize, String> {
-    let (keywords, upper): (Vec<String>, i64) = {
+    let (settings, upper) = {
         let conn = db.lock().map_err(|e| e.to_string())?;
         (
-            store::load_settings(&conn)?.auto_reply_subject_keywords,
+            store::load_settings(&conn)?,
             conn.query_row("SELECT COALESCE(MAX(id),0) FROM replies", [], |row| {
-                row.get(0)
+                row.get::<_, i64>(0)
             })
             .map_err(|e| e.to_string())?,
         )
@@ -210,12 +210,12 @@ fn reclassify_history(
                     body: body.clone(),
                     ..Default::default()
                 },
-                &keywords,
+                &settings.auto_reply_subject_keywords,
             );
             let next_accepted = delivery.is_some()
                 && !dismissed
                 && result.kind == crate::classify::ReplyKind::Human
-                && crate::classify::body_suggests_accepted(&body)
+                && crate::classify::body_suggests_accepted_with_keywords(&body, &settings.acceptance_body_keywords)
                 && {
                     let conn = db.lock().map_err(|e| e.to_string())?;
                     !store::acceptance_is_filtered(&conn, &body)?
@@ -268,6 +268,33 @@ fn reclassify_history(
 #[cfg(test)]
 mod classification_tests {
     use super::*;
+    #[test]
+    fn configured_acceptance_rules_reclassify_history_without_overriding_safeguards() {
+        let conn = crate::db::test_database();
+        conn.execute("INSERT INTO replies(id,delivery_id,kind,body,accepted,acceptance_dismissed) VALUES
+            (1,1,'human','签约邀请',0,0),(2,1,'human','恭喜过稿',1,0),
+            (3,1,'human','签约邀请',0,1),(4,NULL,'human','签约邀请',0,0),
+            (5,1,'auto','签约邀请',0,0),(6,1,'bounce','签约邀请',0,0),
+            (7,1,'human','稍后发签约邀请',0,0)",[]).unwrap();
+        conn.execute("UPDATE replies SET subject='自动回复：收到' WHERE id=5",[]).unwrap();
+        store::learn_acceptance_filter(&conn,"稍后发签约邀请").unwrap();
+        let mut settings = store::load_settings(&conn).unwrap();
+        settings.acceptance_body_keywords = vec!["签约邀请".into()];
+        store::save_settings(&conn,&settings).unwrap();
+        let db = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        reclassify_history(&db).unwrap();
+        {
+            let conn = db.lock().unwrap();
+            for id in 1..=7 {
+                assert_eq!(store::load_reply(&conn,id).unwrap().unwrap().accepted,id==1,"reply {id}");
+            }
+            assert_eq!(store::count_accepted_replies(&conn).unwrap(),1);
+            settings.acceptance_body_keywords.clear();
+            store::save_settings(&conn,&settings).unwrap();
+        }
+        reclassify_history(&db).unwrap();
+        assert_eq!(store::count_accepted_replies(&db.lock().unwrap()).unwrap(),0);
+    }
     #[test]
     fn reclassification_preserves_manual_false_positive_dismissal() {
         let conn = crate::db::test_database();

@@ -31,19 +31,20 @@ const emptyTask: TaskInput = {
 
 type PlanAction = { label: string; icon: typeof Copy; onClick: () => void; disabled?: boolean; danger?: boolean }
 
-function PlanProgress({ sent, total, status, loop, title }: {
-  sent: number; total: number; status: Task['status']; loop: boolean; title: string
+function PlanProgress({ sent, skipped, total, status, loop, title }: {
+  sent: number; skipped: number; total: number; status: Task['status']; loop: boolean; title: string
 }) {
-  const percent = total > 0 ? Math.min(100, Math.max(0, sent / total * 100)) : 0
+  const processed = loop ? sent : Math.min(total, sent + skipped)
+  const percent = total > 0 ? Math.min(100, Math.max(0, processed / total * 100)) : 0
   return (
     <div className="plan-progress" data-status={status}>
       <div className="plan-progress-head">
-        <span>{loop ? '已成功' : '已发送'}</span>
-        <strong className="plan-progress-count">{loop ? `${sent} 封` : `${sent} / ${total || '—'}`}</strong>
+        <span>{loop ? '已成功' : skipped > 0 ? '已处理' : '已发送'}</span>
+        <strong className="plan-progress-count">{loop ? `${sent} 封` : `${processed} / ${total || '—'}`}</strong>
       </div>
       <div className="plan-progress-bar" role="progressbar" aria-label={`《${title}》发送进度`}
-        aria-valuemin={0} aria-valuemax={total || undefined} aria-valuenow={total ? Math.min(total, Math.max(0, sent)) : undefined}
-        aria-valuetext={`已发送 ${sent} 封，共 ${total || '未知'} 封`}>
+        aria-valuemin={0} aria-valuemax={total || undefined} aria-valuenow={total ? Math.min(total, Math.max(0, processed)) : undefined}
+        aria-valuetext={`已发送 ${sent} 封，已处理拒收 ${skipped} 个，共 ${total || '未知'} 个目标`}>
         <span className="plan-progress-fill" style={{ width: `${percent}%` }} />
       </div>
     </div>
@@ -707,7 +708,7 @@ export function PlansView({ newPlanRequest = 0 }: { newPlanRequest?: number }) {
                   const task = taskByManuscript.get(m.id)
                   if (!task) return <span className="hint">草稿</span>
                   const progress = taskSendProgress(m, task)
-                  return <PlanProgress sent={progress.sent} total={progress.total} status={task.status}
+                  return <PlanProgress sent={progress.sent} skipped={task.skipped ?? 0} total={progress.total} status={task.status}
                     loop={task.schedule_type === 'loop'} title={m.title} />
                 },
               },

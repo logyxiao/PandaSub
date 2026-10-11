@@ -4,7 +4,7 @@ from playwright.sync_api import sync_playwright, expect
 from ui_fixtures import MOCK, UPDATE
 
 EXTRA = r'''
-Object.assign(accounts[0],{smtp_host:'smtp.example.com',smtp_port:465,imap_host:'imap.example.com',imap_port:993,check_replies:true,notes:'短篇专用'});
+Object.assign(accounts[0],{smtp_host:'smtp.example.com',smtp_port:465,imap_host:'imap.example.com',imap_port:993,check_replies:true,notes:'短篇专用',last_plan_sent_at:'2026-10-11 09:30:00'});
 task.status='stopped';task.sent=0;
 functions.addAccount=input=>{const id=accounts.length+1;accounts.push({...input,id,sent_today:0});return id};
 functions.updateAccount=(id,input)=>Object.assign(accounts.find(a=>a.id===id),input);
@@ -50,6 +50,9 @@ with sync_playwright() as p:
         picker = page.locator('.account-pick-list')
         expect(picker.locator('input:checked')).to_have_count(1)
         expect(picker).to_contain_text('备注：短篇专用')
+        expect(picker).to_contain_text('上次发送计划：')
+        expect(picker.locator('small[title="2026-10-11 09:30:00"]')).to_contain_text('09:30')
+        expect(picker).to_contain_text('暂无计划投递记录')
         page.get_by_role('button', name='返回', exact=True).click()
         page.get_by_role('button', name='新建计划', exact=True).click()
         page.get_by_label('作品名称', exact=True).fill('默认不选邮箱')

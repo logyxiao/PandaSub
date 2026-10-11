@@ -1,4 +1,5 @@
 import { StorageManager } from '../components/StorageManager'
+import { DEFAULT_ACCEPTANCE_BODY_KEYWORDS } from '../lib/replyKeywords'
 import { useRequestGuard } from '../hooks/useRequestGuard'
 import { useBusyAction } from '../hooks/useBusyAction'
 import { applyPreparedUpdate, runUpdateFlow, useUpdateFlow } from '../lib/updateFlow'
@@ -19,6 +20,7 @@ const defaults: Settings = {
   anti_spam_mutation: true, auto_start: false, close_to_tray: true, auto_backup: false,
   update_feed_url: '', reply_poll_minutes: 2,
   auto_reply_subject_keywords: ['自动回复', '自動回覆', 'AutoReply', 'Auto-Reply'],
+  acceptance_body_keywords: DEFAULT_ACCEPTANCE_BODY_KEYWORDS,
 }
 
 const sections = [

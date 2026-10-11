@@ -344,6 +344,11 @@ pub fn classify_error(err: &SendError) -> (String, String) {
             if code == Some(550) && crate::editor_blocks::is_blacklist_message(&format!("550 {text}")) {
                 return ("blacklist".into(), smtp_message("服务端拒绝投递（550）".into(), &text));
             }
+            if let Some(code) = code.filter(|code| matches!(code, 550 | 551 | 553 | 554)) {
+                if crate::editor_blocks::is_invalid_recipient_message(&format!("{code} {text}")) {
+                    return ("recipient_invalid".into(), smtp_message(format!("收件地址失效（{code}）"), &text));
+                }
+            }
             match code {
                 Some(535) | Some(530) | Some(534) => (
                     "auth".into(),
@@ -505,7 +510,7 @@ mod outcome_tests {
     use std::io::{BufRead, Write};
 
     /// A loopback protocol fixture, never a real email provider or account.
-    async fn server_outcome(rejection: Option<&'static str>) -> SendError {
+    async fn server_result(rejection: Option<&'static str>) -> Result<(), SendError> {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -552,9 +557,59 @@ mod outcome_tests {
             .to("recipient@example.com".parse().unwrap())
             .body("fixture body".to_string())
             .unwrap();
-        let error = mailer.send(mail).await.unwrap_err();
+        let result = mailer.send(mail).await.map(|_| ()).map_err(SendError::Smtp);
         server.join().unwrap();
-        SendError::Smtp(error)
+        result
+    }
+
+    async fn server_outcome(rejection: Option<&'static str>) -> SendError {
+        server_result(rejection).await.unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn smtp_rejections_record_and_replace_group_targets_then_complete_once() {
+        use crate::{editor_blocks::{self, Route}, store};
+        let mut conn = crate::db::test_database();
+        conn.execute_batch(r#"
+          INSERT INTO accounts(id,email,password,smtp_host) VALUES(1,'sender@example.com','','localhost');
+          INSERT INTO editors(name,email,platform,work_type) VALUES
+           ('原编辑','old@example.com','平台','["短篇"]'),
+           ('第二位','peer@example.com','平台','["短篇"]'),
+           ('第三位','next@example.com','平台','["短篇"]');
+          UPDATE editors SET favorited=1 WHERE email='peer@example.com';
+          INSERT INTO manuscripts(id,title,body,recipients,genres,lock_recipients) VALUES(1,'稿件','正文','["old@example.com"]','["短篇"]',1);
+          INSERT INTO tasks(id,name,manuscript_ids) VALUES(1,'计划','[1]');
+        "#).unwrap();
+        let account = store::load_account(&conn, 1).unwrap().unwrap();
+        let manuscript = store::load_manuscript(&conn, 1).unwrap().unwrap();
+        for (i, (expected, response)) in [
+            ("old@example.com", "550 The recipient may contain a non-existent account, please check the recipient address.\r\n"),
+            ("peer@example.com", "550 The sender is blacklisted by the recipient, please contact the recipient.\r\n"),
+            ("next@example.com", "250 accepted\r\n"),
+        ].into_iter().enumerate() {
+            let Route::Ready { recipient, .. } = editor_blocks::route(&conn, 1, &account, &manuscript, "old@example.com").unwrap() else { panic!() };
+            assert_eq!(editor_blocks::mailbox(&recipient), expected);
+            let message_id = format!("fixture-{i}");
+            let delivery = store::SuccessfulDelivery { task_id: Some(1), account_id: 1, manuscript_id: 1, recipient: expected, subject: "稿件", message_id: &message_id, increment_task_progress: true };
+            store::begin_send_attempt(&conn, &delivery).unwrap();
+            match server_result(Some(response)).await {
+                Err(error) => {
+                    assert!(definitely_not_sent(&error));
+                    store::mark_attempt_not_sent(&conn, &message_id).unwrap();
+                    let (category, message) = classify_error(&error);
+                    assert!(matches!(category.as_str(), "blacklist" | "recipient_invalid"));
+                    store::insert_send_log(&conn, Some(1), Some(1), Some(1), "error", &category, &message, expected).unwrap();
+                    assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 0);
+                }
+                Ok(()) => store::record_successful_delivery(&mut conn, delivery).unwrap(),
+            }
+        }
+        assert!(editor_blocks::invalid(&conn, "old@example.com").unwrap());
+        assert!(editor_blocks::blocked(&conn, "sender@example.com", "peer@example.com").unwrap());
+        assert!(store::pending_sends(&conn, 1).unwrap().is_empty());
+        assert_eq!(store::load_task(&conn, 1).unwrap().unwrap().sent, 1);
+        assert!(store::delivered_emails_for_task_manuscript(&conn, 1, 1).unwrap().contains("old@example.com"));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM deliveries", [], |r|r.get::<_,i64>(0)).unwrap(), 1);
     }
 
     #[tokio::test]
@@ -572,7 +627,15 @@ mod outcome_tests {
     async fn only_explicit_recipient_blacklist_is_classified_as_a_block() {
         for (response,expected) in [
             ("550 The sender is blacklisted by the recipient, please contact the recipient.\r\n","blacklist"),
-            ("550 Recipient not found\r\n","send"),
+            ("550 Recipient not found\r\n","recipient_invalid"),
+            ("550 The recipient may contain a non-existent account, please check the recipient address.\r\n","recipient_invalid"),
+            ("550 5.1.1 No such user\r\n","recipient_invalid"),
+            ("553 5.1.1 User unknown\r\n","recipient_invalid"),
+            ("450 User unknown\r\n","limit"),
+            ("535 User unknown\r\n","auth"),
+            ("550 Sender address rejected: User unknown\r\n","send"),
+            ("550 Mailbox full\r\n","send"),
+            ("550 The mail may contain inappropriate words or content.\r\n","send"),
             ("550 Sender IP is on a public blacklist\r\n","send"),
             ("450 The sender is blacklisted by the recipient\r\n","limit"),
         ] {

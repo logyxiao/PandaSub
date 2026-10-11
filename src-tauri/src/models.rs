@@ -14,6 +14,9 @@ pub struct Account {
     pub provider: String,
     pub enabled: bool,
     pub last_sent_at: Option<String>,
+    /// Most recent successful plan delivery; derived for mailbox selection only.
+    #[serde(default)]
+    pub last_plan_sent_at: Option<String>,
     pub imap_host: String,
     pub imap_port: u16,
     pub check_replies: bool,
@@ -54,7 +57,7 @@ pub struct Manuscript {
     pub body: String,
     pub content_type: String,
     pub recipients: Vec<String>,
-    /// Group picks are fixed for this plan, including blocked recipients.
+    /// Preserve the group's initial picks; delivery failures may still substitute.
     #[serde(default)]
     pub lock_recipients: bool,
     pub sender_name: String,
@@ -296,6 +299,8 @@ pub struct Task {
     pub delay_minutes: i64,
     pub retry_max: i64,
     pub sent: i64,
+    #[serde(default)]
+    pub skipped: i64,
     pub total: i64,
     pub created_at: String,
     pub started_at: Option<String>,
@@ -347,6 +352,8 @@ pub struct Settings {
     pub reply_poll_minutes: i64,
     #[serde(default = "default_auto_reply_subject_keywords")]
     pub auto_reply_subject_keywords: Vec<String>,
+    #[serde(default = "default_acceptance_body_keywords")]
+    pub acceptance_body_keywords: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -363,6 +370,12 @@ pub fn default_auto_reply_subject_keywords() -> Vec<String> {
         .into_iter()
         .map(str::to_string)
         .collect()
+}
+
+pub fn default_acceptance_body_keywords() -> Vec<String> {
+    ["审核通过", "过稿", "初审通过", "过初审", "通过初审", "复审通过",
+        "终审通过", "三审通过", "录用", "采用", "签约通过"]
+        .into_iter().map(str::to_string).collect()
 }
 
 fn default_reply_poll() -> i64 {
@@ -421,6 +434,7 @@ impl Default for Settings {
             update_feed_url: String::new(),
             reply_poll_minutes: 2,
             auto_reply_subject_keywords: default_auto_reply_subject_keywords(),
+            acceptance_body_keywords: default_acceptance_body_keywords(),
         }
     }
 }
@@ -717,6 +731,8 @@ pub struct Editor {
     pub reply_sample_count: usize,
     #[serde(default)]
     pub blocked_senders: Vec<String>,
+    #[serde(default)]
+    pub invalid_recipient_reason: Option<String>,
     pub id: i64,
     pub platform: String,
     pub name: String,

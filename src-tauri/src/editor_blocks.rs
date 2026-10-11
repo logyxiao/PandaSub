@@ -1,5 +1,5 @@
-//! Recipient-specific SMTP refusals. A block belongs to a sender/recipient pair,
-//! not to an editor or a whole platform globally.
+//! Durable SMTP recipient failures and same-platform recovery. Blacklists belong
+//! to sender/recipient pairs; nonexistent addresses are unavailable to all senders.
 use crate::{
     models::{Account, Manuscript, TaskLog},
     smtp, store,
@@ -17,6 +17,26 @@ CREATE TABLE IF NOT EXISTS editor_blocks (
  active INTEGER NOT NULL DEFAULT 1,
  PRIMARY KEY(sender_email,recipient_email)
 );
+CREATE TABLE IF NOT EXISTS editor_invalid_addresses (
+ recipient_email TEXT PRIMARY KEY COLLATE NOCASE,
+ reason TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+ active INTEGER NOT NULL DEFAULT 1
+);
+CREATE TRIGGER IF NOT EXISTS disable_invalid_editor_insert AFTER INSERT ON editor_invalid_addresses WHEN NEW.active=1 BEGIN
+ UPDATE editors SET enabled=0 WHERE lower(trim(email))=NEW.recipient_email;
+END;
+CREATE TRIGGER IF NOT EXISTS disable_invalid_editor_update AFTER UPDATE ON editor_invalid_addresses WHEN NEW.active=1 BEGIN
+ UPDATE editors SET enabled=0 WHERE lower(trim(email))=NEW.recipient_email;
+END;
+CREATE TRIGGER IF NOT EXISTS restore_invalid_editor AFTER UPDATE OF enabled ON editors WHEN NEW.enabled=1 AND OLD.enabled=0 BEGIN
+ UPDATE editor_invalid_addresses SET active=0 WHERE recipient_email=lower(trim(NEW.email));
+END;
+CREATE TRIGGER IF NOT EXISTS check_imported_invalid_editor AFTER INSERT ON editors BEGIN
+ UPDATE editors SET enabled=0 WHERE id=NEW.id AND EXISTS(SELECT 1 FROM editor_invalid_addresses WHERE recipient_email=lower(trim(NEW.email)) AND active=1);
+END;
+CREATE TRIGGER IF NOT EXISTS check_changed_invalid_editor AFTER UPDATE OF email ON editors BEGIN
+ UPDATE editors SET enabled=0 WHERE id=NEW.id AND EXISTS(SELECT 1 FROM editor_invalid_addresses WHERE recipient_email=lower(trim(NEW.email)) AND active=1);
+END;
 CREATE TABLE IF NOT EXISTS send_recipient_routes (
  task_id INTEGER NOT NULL, run_id INTEGER NOT NULL, manuscript_id INTEGER NOT NULL,
  original_recipient TEXT NOT NULL COLLATE NOCASE,
@@ -41,6 +61,50 @@ pub fn mailbox(raw: &str) -> String {
 pub fn is_blacklist_message(message: &str) -> bool {
     let text = message.to_ascii_lowercase();
     text.contains("550") && text.contains("the sender is blacklisted by the recipient")
+}
+
+/// Recipient-address evidence only. Content, sender, quota and transient errors
+/// must not disable an editor or start a replacement chain.
+pub fn is_invalid_recipient_message(message: &str) -> bool {
+    let text = message.to_ascii_lowercase();
+    ["550", "551", "553", "554"].iter().any(|code| text.contains(code))
+        && !["sender address", "sender unknown", "mail from"].iter().any(|s| text.contains(s))
+        && ["the recipient may contain a non-existent account", "recipient not found",
+            "user unknown", "unknown user", "no such user", "mailbox not found",
+            "mailbox does not exist", "recipient address does not exist", "5.1.1"]
+            .iter().any(|s| text.contains(s))
+}
+
+pub fn record_invalid(conn: &Connection, recipient: &str, reason: &str, at: &str) -> Result<(), String> {
+    let email = mailbox(recipient);
+    if !is_invalid_recipient_message(reason) || smtp::parse_mailbox(&email).is_err() {
+        return Ok(());
+    }
+    conn.execute("INSERT INTO editor_invalid_addresses(recipient_email,reason,first_seen,last_seen) VALUES(?1,?2,?3,?3)
+        ON CONFLICT(recipient_email) DO UPDATE SET reason=excluded.reason,last_seen=excluded.last_seen,active=1",
+        params![email, reason, at]).map_err(|e|e.to_string())?;
+    Ok(())
+}
+
+pub fn invalid(conn: &Connection, recipient: &str) -> Result<bool, String> {
+    conn.query_row("SELECT EXISTS(SELECT 1 FROM editor_invalid_addresses WHERE recipient_email=?1 AND active=1)",
+        [mailbox(recipient)], |r|r.get(0)).map_err(|e|e.to_string())
+}
+
+pub fn backfill_invalid(conn: &Connection) -> Result<(), String> {
+    let done: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='editors.invalid_addresses_backfilled.v1')", [], |r|r.get(0)).map_err(|e|e.to_string())?;
+    if done { return Ok(()); }
+    let tx = conn.unchecked_transaction().map_err(|e|e.to_string())?;
+    {
+        let mut stmt = tx.prepare("SELECT recipient,message,created_at FROM task_logs WHERE level='error' AND category IN ('send','recipient_invalid') AND recipient IS NOT NULL ORDER BY id").map_err(|e|e.to_string())?;
+        let rows = stmt.query_map([], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).map_err(|e|e.to_string())?;
+        for row in rows {
+            let (recipient, reason, at) = row.map_err(|e|e.to_string())?;
+            record_invalid(&tx, &recipient, &reason, &at)?;
+        }
+    }
+    tx.execute("INSERT INTO settings(key,value) VALUES('editors.invalid_addresses_backfilled.v1','1')", []).map_err(|e|e.to_string())?;
+    tx.commit().map_err(|e|e.to_string())
 }
 
 #[derive(Serialize)]
@@ -160,6 +224,7 @@ pub enum Route {
         notice: Option<TaskLog>,
     },
     Unavailable(TaskLog),
+    Handled(TaskLog),
 }
 
 fn compatible(editor: &crate::models::Editor, manuscript: &Manuscript) -> bool {
@@ -214,23 +279,6 @@ pub fn route(
         })
         .map_err(|e| e.to_string())?;
     let original_email = mailbox(original);
-    if manuscript.lock_recipients {
-        let unavailable = if let Err(message) = store::ensure_editor_enabled(&tx, &original_email) {
-            Some(("editor_status", message))
-        } else if blocked(&tx, &account.email, &original_email)? {
-            Some(("blacklist", format!("发件邮箱 {} 被 {} 拉黑；本次名单已固定，已跳过，不更换编辑。", account.email, original)))
-        } else {
-            None
-        };
-        let result = if let Some((category, message)) = unavailable {
-            Route::Unavailable(store::insert_send_log(&tx, Some(task_id), Some(manuscript.id),
-                Some(account.id), "warning", category, &message, original)?)
-        } else {
-            Route::Ready { recipient: original.to_string(), notice: None }
-        };
-        tx.commit().map_err(|e| e.to_string())?;
-        return Ok(result);
-    }
     let current: Option<String>=tx.query_row("SELECT recipient FROM send_recipient_routes WHERE task_id=?1 AND run_id=?2 AND manuscript_id=?3 AND original_recipient=?4",
         params![task_id,run_id,manuscript.id,original_email],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
     let current_email = current.clone().unwrap_or_else(|| original_email.clone());
@@ -247,26 +295,30 @@ pub fn route(
             .map(|e| format!("{} <{}>", e.name.replace(['<', '>', '\r', '\n'], ""), email))
             .unwrap_or_else(|| email.to_string())
     };
-    if let Err(message) = store::ensure_editor_enabled(&tx, &current_email) {
-        let log = store::insert_send_log(&tx, Some(task_id), Some(manuscript.id), Some(account.id),
-            "warning", "editor_status", &message, &current_email)?;
-        tx.commit().map_err(|e| e.to_string())?;
-        return Ok(Route::Unavailable(log));
+    let address_invalid = invalid(&tx, &current_email)?;
+    if !address_invalid {
+        if let Err(message) = store::ensure_editor_enabled(&tx, &current_email) {
+            let log = store::insert_send_log(&tx, Some(task_id), Some(manuscript.id), Some(account.id),
+                "warning", "editor_status", &message, &current_email)?;
+            tx.commit().map_err(|e| e.to_string())?;
+            return Ok(Route::Unavailable(log));
+        }
+        if current.is_some()
+            && !editors.iter().any(|e| {
+                mailbox(&e.email) == current_email
+                    && e.enabled
+                    && crate::models::canonicalize_editor_platform(&e.platform) == platform
+                    && compatible(e, manuscript)
+            })
+        {
+            let log=store::insert_send_log(&tx,Some(task_id),Some(manuscript.id),Some(account.id),"error","editor_replacement",
+                &format!("先前替代编辑 {} 的资料已变更、被禁用或已不符合原平台与稿件类型。本次已跳过，请检查编辑资料后再发送。",formatted(&current_email)),&current_email)?;
+            tx.commit().map_err(|e| e.to_string())?;
+            return Ok(Route::Unavailable(log));
+        }
     }
-    if current.is_some()
-        && !editors.iter().any(|e| {
-            mailbox(&e.email) == current_email
-                && e.enabled
-                && crate::models::canonicalize_editor_platform(&e.platform) == platform
-                && compatible(e, manuscript)
-        })
-    {
-        let log=store::insert_send_log(&tx,Some(task_id),Some(manuscript.id),Some(account.id),"error","editor_replacement",
-            &format!("先前替代编辑 {} 的资料已变更、被禁用或已不符合原平台与稿件类型。本次已跳过，请检查编辑资料后再发送。",formatted(&current_email)),&current_email)?;
-        tx.commit().map_err(|e| e.to_string())?;
-        return Ok(Route::Unavailable(log));
-    }
-    if !blocked(&tx, &account.email, &current_email)? {
+    let sender_blocked = blocked(&tx, &account.email, &current_email)?;
+    if !address_invalid && !sender_blocked {
         let recipient = if current.is_some() {
             formatted(&current_email)
         } else {
@@ -306,6 +358,7 @@ pub fn route(
                 || crate::models::canonicalize_editor_platform(&editor.platform) != platform
                 || smtp::parse_mailbox(&email).is_err()
                 || !compatible(editor, manuscript)
+                || invalid(&tx, &email)?
                 || blocked(&tx, &account.email, &email)?
             {
                 continue;
@@ -314,19 +367,27 @@ pub fn route(
             break;
         }
     }
+    let failure = if address_invalid {
+        format!("收件地址 {} 已失效", formatted(&current_email))
+    } else {
+        format!("发件邮箱 {} 被 {} 拉黑", account.email, formatted(&current_email))
+    };
+    let kind = if address_invalid { "recipient_invalid" } else { "blacklist" };
+    crate::send_outcomes::record_failure(&tx, task_id, manuscript.id, &current_email, kind)?;
     let result = if let Some(recipient) = next {
         tx.execute("INSERT INTO send_recipient_routes(task_id,run_id,manuscript_id,original_recipient,recipient) VALUES(?1,?2,?3,?4,?5)
             ON CONFLICT(task_id,run_id,manuscript_id,original_recipient) DO UPDATE SET recipient=excluded.recipient",
             params![task_id,run_id,manuscript.id,original_email,mailbox(&recipient)]).map_err(|e|e.to_string())?;
         let notice=store::insert_send_log(&tx,Some(task_id),Some(manuscript.id),Some(account.id),"warning","editor_replacement",
-            &format!("发件邮箱 {} 被 {} 拉黑；已自动改投同平台「{}」的 {}。发件邮箱保持不变，替换仅用于本次任务；未发现拉黑记录不代表保证投递成功。",account.email,formatted(&current_email),platform,recipient),&recipient)?;
+            &format!("{}；已选择同平台「{}」的 {} 补投。发件邮箱保持不变，替换仅用于本次任务。",failure,platform,recipient),&recipient)?;
         Route::Ready {
             recipient,
             notice: Some(notice),
         }
     } else {
-        Route::Unavailable(store::insert_send_log(&tx,Some(task_id),Some(manuscript.id),Some(account.id),"error","editor_replacement",
-            &format!("发件邮箱 {} 被 {} 拉黑；未找到可用的同平台替代编辑（需有明确平台、启用、类型符合、未被该邮箱拉黑，且未在名单、投递历史或待确认记录中）。已跳过，未更换发件邮箱，请调整编辑名单后再发送。",account.email,formatted(&current_email)),&current_email)?)
+        crate::send_outcomes::record_skip(&tx, task_id, manuscript.id, original, kind)?;
+        Route::Handled(store::insert_send_log(&tx,Some(task_id),Some(manuscript.id),Some(account.id),"warning","editor_replacement",
+            &format!("{}；未找到可用的同平台替代编辑（需有明确平台、启用、类型符合、地址有效、未被该邮箱拉黑，且未在名单、投递历史或待确认记录中）。已跳过，未更换发件邮箱，请调整编辑名单后再发送。",failure),&current_email)?)
     };
     tx.commit().map_err(|e| e.to_string())?;
     Ok(result)
@@ -335,6 +396,7 @@ pub fn route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const INVALID: &str = "收件地址失效（550）：The recipient may contain a non-existent account, please check the recipient address.";
     const REASON: &str="投递被永久拒绝：服务端拒绝投递（550）：The sender is blacklisted by the recipient, please contact the recipient.";
     fn fixture() -> Connection {
         let conn = crate::db::test_database();
@@ -369,6 +431,79 @@ mod tests {
         )
         .unwrap()
     }
+    fn fail_address(conn: &Connection, recipient: &str) {
+        store::insert_send_log(conn, Some(1), Some(1), Some(1), "error", "recipient_invalid", INVALID, recipient).unwrap();
+    }
+
+    #[test]
+    fn invalid_address_is_global_durable_and_visible_and_can_be_restored() {
+        let conn = fixture();
+        fail_address(&conn, "原编辑 <OLD@example.com>");
+        fail_address(&conn, "old@example.com");
+        assert!(invalid(&conn, "OLD@example.com").unwrap());
+        assert!(!blocked(&conn, "sender@example.com", "old@example.com").unwrap());
+        assert!(store::ensure_editor_enabled(&conn, "old@example.com").unwrap_err().contains("已失效"));
+        let original = store::load_editors(&conn).unwrap().into_iter().find(|e| e.id == 1).unwrap();
+        assert!(!original.enabled);
+        assert_eq!(original.invalid_recipient_reason.as_deref(), Some(INVALID));
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM editor_invalid_addresses", [], |r|r.get::<_, i64>(0)).unwrap(), 1);
+        conn.execute("DELETE FROM task_logs", []).unwrap();
+        for sender in [1, 2] {
+            let Route::Ready { recipient, notice } = resolve(&conn, sender) else { panic!() };
+            assert_eq!(mailbox(&recipient), "peer@example.com");
+            assert_eq!(notice.as_ref().map(|l| l.account_id), if sender == 1 { Some(Some(1)) } else { None });
+        }
+        store::set_editor_enabled(&conn, 1, true).unwrap();
+        assert!(!invalid(&conn, "old@example.com").unwrap());
+        assert!(store::ensure_editor_enabled(&conn, "old@example.com").is_ok());
+        assert!(store::load_editors(&conn).unwrap().iter().all(|e| e.invalid_recipient_reason.is_none()));
+        fail_address(&conn, "old@example.com");
+        assert!(invalid(&conn, "old@example.com").unwrap());
+    }
+
+    #[test]
+    fn generic_content_sender_and_transient_failures_do_not_disable_editors() {
+        let conn = fixture();
+        for reason in ["550 spam rejected", "550 Mailbox full", "451 User unknown", "550 Sender address rejected: User unknown", "Invalid input"] {
+            store::insert_send_log(&conn, Some(1), Some(1), Some(1), "error", "send", reason, "old@example.com").unwrap();
+        }
+        assert!(!invalid(&conn, "old@example.com").unwrap());
+        assert!(store::load_editors(&conn).unwrap().iter().all(|e|e.enabled));
+        assert!(matches!(resolve(&conn, 1), Route::Ready { notice: None, .. }));
+    }
+
+    #[test]
+    fn invalid_history_backfill_is_one_time_and_reimports_cannot_bypass_evidence() {
+        let conn = fixture();
+        conn.execute("INSERT INTO task_logs(recipient,message,level,category) VALUES('old@example.com',?1,'error','send')", [INVALID]).unwrap();
+        backfill_invalid(&conn).unwrap();
+        assert!(invalid(&conn, "old@example.com").unwrap());
+        store::set_editor_enabled(&conn, 1, true).unwrap();
+        backfill_invalid(&conn).unwrap();
+        assert!(!invalid(&conn, "old@example.com").unwrap());
+        fail_address(&conn, "old@example.com");
+        conn.execute("DELETE FROM editors WHERE id=1", []).unwrap();
+        conn.execute("INSERT INTO editors(id,name,email) VALUES(1,'重新导入','OLD@example.com')", []).unwrap();
+        assert!(!store::load_editors(&conn).unwrap().iter().find(|e|e.id==1).unwrap().enabled);
+    }
+
+    #[test]
+    fn invalid_replacement_continues_the_chain_and_exhaustion_never_crosses_platforms() {
+        let conn = fixture();
+        conn.execute("UPDATE manuscripts SET lock_recipients=1 WHERE id=1", []).unwrap();
+        conn.execute("INSERT INTO editors(id,name,email,platform,work_type) VALUES(4,'第三位','next@example.com','甲平台','[\"短篇\"]')", []).unwrap();
+        fail_address(&conn, "old@example.com");
+        let Route::Ready { recipient, .. } = resolve(&conn, 1) else { panic!() };
+        assert_eq!(mailbox(&recipient), "peer@example.com");
+        fail_address(&conn, "peer@example.com");
+        let Route::Ready { recipient, .. } = resolve(&conn, 1) else { panic!() };
+        assert_eq!(mailbox(&recipient), "next@example.com");
+        block(&conn, "next@example.com");
+        let Route::Handled(log) = resolve(&conn, 1) else { panic!() };
+        assert!(log.message.contains("未找到可用"));
+        assert_eq!(conn.query_row("SELECT recipient FROM send_recipient_routes", [], |r|r.get::<_,String>(0)).unwrap(), "next@example.com");
+    }
+
     #[test]
     fn disabled_editors_are_checked_for_saved_plans_and_manual_targets() {
         let conn = fixture();
@@ -401,6 +536,8 @@ mod tests {
     fn upgrading_an_existing_database_backfills_once_without_resurrecting_cleared_blocks() {
         let conn = fixture();
         conn.execute("INSERT INTO task_logs(account_id,recipient,message,level) VALUES(1,'原编辑 <old@example.com>',?1,'error')",[REASON]).unwrap();
+        conn.execute("INSERT INTO task_logs(recipient,message,level,category) VALUES('peer@example.com',?1,'error','send')",[INVALID]).unwrap();
+        conn.execute_batch("DROP TRIGGER disable_invalid_editor_insert; DROP TRIGGER disable_invalid_editor_update; DROP TRIGGER restore_invalid_editor; DROP TRIGGER check_imported_invalid_editor; DROP TRIGGER check_changed_invalid_editor; DROP TABLE editor_invalid_addresses;").unwrap();
         conn.execute_batch("DROP TRIGGER clean_task_recipient_routes; DROP TRIGGER clean_manuscript_recipient_routes; DROP TABLE send_recipient_routes; DROP TABLE editor_blocks;").unwrap();
         let path = std::env::temp_dir().join(format!(
             "novelsub-block-upgrade-{:032x}.sqlite",
@@ -412,15 +549,18 @@ mod tests {
         let upgraded = crate::db::open_database(path.clone()).unwrap();
         assert!(blocked(&upgraded, "sender@example.com", "old@example.com").unwrap());
         assert_eq!(list(&upgraded).unwrap().len(), 1);
+        assert!(invalid(&upgraded, "peer@example.com").unwrap());
+        store::set_editor_enabled(&upgraded, 2, true).unwrap();
         clear(&upgraded, "sender@example.com", "old@example.com").unwrap();
         drop(upgraded);
         let reopened = crate::db::open_database(path.clone()).unwrap();
         assert!(!blocked(&reopened, "sender@example.com", "old@example.com").unwrap());
+        assert!(!invalid(&reopened, "peer@example.com").unwrap());
         assert_eq!(
             reopened
                 .query_row("SELECT COUNT(*) FROM task_logs", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            1
+            2
         );
         drop(reopened);
         std::fs::remove_file(&path).unwrap();
@@ -478,23 +618,20 @@ mod tests {
         assert!(blocked(&conn, "sender@example.com", "old@example.com").unwrap());
     }
     #[test]
-    fn locked_recipients_never_substitute_even_with_an_existing_route() {
+    fn group_picks_allow_failure_substitution_without_changing_the_roster() {
         let conn = fixture();
-        block(&conn, "old@example.com");
         conn.execute("UPDATE manuscripts SET lock_recipients=1 WHERE id=1", []).unwrap();
-        let Route::Unavailable(log) = resolve(&conn, 1) else { panic!("blocked pick must be skipped") };
-        assert!(log.message.contains("不更换编辑"));
-        assert_eq!(mailbox(log.recipient.as_deref().unwrap()), "old@example.com");
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM send_recipient_routes", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
-        conn.execute("INSERT INTO send_recipient_routes SELECT id,run_id,1,'old@example.com','peer@example.com' FROM tasks WHERE id=1", []).unwrap();
-        let Route::Ready { recipient, notice } = resolve(&conn, 2) else { panic!() };
-        assert_eq!(mailbox(&recipient), "old@example.com");
-        assert!(notice.is_none());
+        let before = store::load_manuscript(&conn, 1).unwrap().unwrap().recipients;
+        block(&conn, "old@example.com");
+        let Route::Ready { recipient, notice } = resolve(&conn, 1) else { panic!() };
+        assert_eq!(mailbox(&recipient), "peer@example.com");
+        assert!(notice.is_some());
+        // A different sender is unaffected by the original pair-specific block.
         clear(&conn, "sender@example.com", "old@example.com").unwrap();
-        let Route::Ready { recipient, .. } = resolve(&conn, 1) else { panic!() };
-        assert_eq!(mailbox(&recipient), "old@example.com");
-        conn.execute("UPDATE editors SET enabled=0 WHERE id=1", []).unwrap();
-        assert!(matches!(resolve(&conn, 1), Route::Unavailable(_)));
+        let Route::Ready { recipient, notice } = resolve(&conn, 1) else { panic!() };
+        assert_eq!(mailbox(&recipient), "peer@example.com");
+        assert!(notice.is_none());
+        assert_eq!(store::load_manuscript(&conn, 1).unwrap().unwrap().recipients, before);
     }
 
     #[test]
@@ -572,7 +709,7 @@ mod tests {
         assert_eq!(mailbox(&recipient), "old@example.com");
         assert!(notice.is_none());
         block(&conn, "peer@example.com");
-        let Route::Unavailable(log) = resolve(&conn, 1) else {
+        let Route::Handled(log) = resolve(&conn, 1) else {
             panic!()
         };
         assert!(log.message.contains("已跳过"));
@@ -586,63 +723,66 @@ mod tests {
     }
     #[test]
     fn candidates_exclude_disabled_incompatible_selected_sent_and_pending_mail() {
-        for case in [
-            "disabled", "rejected", "excluded", "mismatch", "selected", "sent", "pending",
-            "unknown",
-        ] {
-            let conn = fixture();
-            block(&conn, "old@example.com");
-            match case {
-                "disabled" => {
-                    conn.execute("UPDATE editors SET enabled=0 WHERE id=2", [])
+        for invalid_original in [false, true] {
+            for case in [
+                "invalid", "disabled", "rejected", "excluded", "mismatch", "selected", "sent", "pending",
+                "unknown",
+            ] {
+                let conn = fixture();
+                if invalid_original { fail_address(&conn, "old@example.com"); } else { block(&conn, "old@example.com"); }
+                match case {
+                    "invalid" => fail_address(&conn, "peer@example.com"),
+                    "disabled" => {
+                        conn.execute("UPDATE editors SET enabled=0 WHERE id=2", [])
+                            .unwrap();
+                    }
+                    "rejected" => {
+                        conn.execute(
+                            "UPDATE editors SET rejected_types='[\"短篇\"]' WHERE id=2",
+                            [],
+                        )
                         .unwrap();
-                }
-                "rejected" => {
-                    conn.execute(
-                        "UPDATE editors SET rejected_types='[\"短篇\"]' WHERE id=2",
-                        [],
-                    )
-                    .unwrap();
-                }
-                "excluded" => {
-                    conn.execute(
-                        "UPDATE manuscripts SET excluded_types='[\"短篇\"]' WHERE id=1",
-                        [],
-                    )
-                    .unwrap();
-                }
-                "mismatch" => {
-                    conn.execute("UPDATE editors SET work_type='[\"长篇\"]' WHERE id=2", [])
+                    }
+                    "excluded" => {
+                        conn.execute(
+                            "UPDATE manuscripts SET excluded_types='[\"短篇\"]' WHERE id=1",
+                            [],
+                        )
                         .unwrap();
-                }
-                "selected" => {
-                    conn.execute("UPDATE manuscripts SET recipients='[\"old@example.com\",\"peer@example.com\"]' WHERE id=1",[]).unwrap();
-                }
-                "sent" => {
-                    conn.execute("INSERT INTO deliveries(manuscript_id,recipient,message_id) VALUES(1,'peer@example.com','sent')",[]).unwrap();
-                }
-                "pending" => {
-                    store::begin_send_attempt(
-                        &conn,
-                        &store::SuccessfulDelivery {
-                            task_id: Some(1),
-                            account_id: 1,
-                            manuscript_id: 1,
-                            recipient: "peer@example.com",
-                            subject: "稿件",
-                            message_id: "pending",
-                            increment_task_progress: true,
-                        },
-                    )
-                    .unwrap();
-                }
-                "unknown" => {
-                    conn.execute("UPDATE editors SET platform='未知'", [])
+                    }
+                    "mismatch" => {
+                        conn.execute("UPDATE editors SET work_type='[\"长篇\"]' WHERE id=2", [])
+                            .unwrap();
+                    }
+                    "selected" => {
+                        conn.execute("UPDATE manuscripts SET recipients='[\"old@example.com\",\"peer@example.com\"]' WHERE id=1",[]).unwrap();
+                    }
+                    "sent" => {
+                        conn.execute("INSERT INTO deliveries(manuscript_id,recipient,message_id) VALUES(1,'peer@example.com','sent')",[]).unwrap();
+                    }
+                    "pending" => {
+                        store::begin_send_attempt(
+                            &conn,
+                            &store::SuccessfulDelivery {
+                                task_id: Some(1),
+                                account_id: 1,
+                                manuscript_id: 1,
+                                recipient: "peer@example.com",
+                                subject: "稿件",
+                                message_id: "pending",
+                                increment_task_progress: true,
+                            },
+                        )
                         .unwrap();
+                    }
+                    "unknown" => {
+                        conn.execute("UPDATE editors SET platform='未知'", [])
+                            .unwrap();
+                    }
+                    _ => unreachable!(),
                 }
-                _ => unreachable!(),
+                assert!(matches!(resolve(&conn, 1), Route::Handled(_)), "{case}, invalid original: {invalid_original}");
             }
-            assert!(matches!(resolve(&conn, 1), Route::Unavailable(_)), "{case}");
         }
     }
     #[test]
@@ -660,7 +800,7 @@ mod tests {
         ] {
             conn.execute("UPDATE editors SET work_type=?1 WHERE id=2", [work])
                 .unwrap();
-            assert!(matches!(resolve(&conn, 1), Route::Unavailable(_)));
+            assert!(matches!(resolve(&conn, 1), Route::Handled(_)));
         }
         conn.execute(
             "UPDATE editors SET work_type='[\"短篇\",\"女频\",\"古言\"]' WHERE id=2",
@@ -693,7 +833,7 @@ mod tests {
         };
         assert_ne!(recipient, second);
         block(&conn, &second);
-        assert!(matches!(resolve(&conn, 1), Route::Unavailable(_)));
+        assert!(matches!(resolve(&conn, 1), Route::Handled(_)));
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM send_recipient_routes", [], |r| r
                 .get::<_, i64>(0))

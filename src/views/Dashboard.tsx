@@ -358,13 +358,13 @@ export function DashboardView() {
                   </Badge>
                 </div>
                 <RuntimeTrack
-                  sent={activeTask.sent}
+                  sent={activeTask.sent + (activeTask.schedule_type === 'loop' ? 0 : (activeTask.skipped ?? 0))}
                   total={activeTask.total}
                   status={activeTask.status}
                   meta={
                     activeTask.schedule_type === 'loop'
                       ? `已成功 ${activeTask.sent} 封`
-                      : `${activeTask.sent} / ${activeTask.total || '—'}`
+                      : `${activeTask.sent + (activeTask.skipped ?? 0)} / ${activeTask.total || '—'}`
                   }
                 />
                 <div className="dashboard-live-bottom">
@@ -580,7 +580,7 @@ export function DashboardView() {
                     </td>
                     <td>
                       <RuntimeTrack
-                        sent={task.sent}
+                        sent={task.sent + (task.schedule_type === 'loop' ? 0 : (task.skipped ?? 0))}
                         total={task.total}
                         status={task.status}
                       />

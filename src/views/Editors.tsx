@@ -3,7 +3,7 @@ import { useUnsavedChanges } from '../hooks/useUnsavedChanges'
 import { MAX_ATTACHMENT_BYTES, MAX_EDITOR_GROUP_BYTES, readFileBytes } from '../lib/binaryIpc'
 import { useEditorListModel } from '../hooks/useEditorListModel'
 import { EditorReplyTime } from '../components/EditorReplyTime'
-import { EditorBlockBadge, EditorBlocksDialog } from '../components/EditorBlocks'
+import { InvalidRecipientBadge, EditorBlockBadge, EditorBlocksDialog } from '../components/EditorBlocks'
 import { useRequestGuard } from '../hooks/useRequestGuard'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -215,6 +215,7 @@ export function EditorsList({
             onKeyDown={onEdit ? (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onEdit(e) } } : undefined}>
             <EditorIdentity name={e.name} platform={e.platform} email={e.email} />
             {!e.enabled && <Badge tone="neutral">已停用</Badge>}
+            <InvalidRecipientBadge reason={e.invalid_recipient_reason} />
             <EditorBlockBadge senders={e.blocked_senders} />
           </div>
         ),

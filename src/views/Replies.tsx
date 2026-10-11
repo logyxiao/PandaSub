@@ -1,4 +1,5 @@
 import { createLatestRequestQueue } from '../lib/latestRequestQueue'
+import { DEFAULT_ACCEPTANCE_BODY_KEYWORDS } from '../lib/replyKeywords'
 import { useEventSubscription } from '../hooks/useEventSubscription'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { mailIdentityKey } from '../lib/mailContentCache'
@@ -84,6 +85,7 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
   const [accounts, setAccounts] = useState<Account[]>([])
   const [settings, setSettings] = useState<Settings | null>(null)
   const [ruleOpen, setRuleOpen] = useState(false)
+  const [ruleKind, setRuleKind] = useState<'auto' | 'acceptance'>('auto')
   const [ruleDraft, setRuleDraft] = useState('')
   const [ruleSaving, setRuleSaving] = useState(false)
   const [kind, setKind] = useState(initialKind ?? '')
@@ -224,9 +226,11 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
     finally { setReclassifying(false) }
   }
 
-  const openRules = () => {
+  const openRules = (mode: 'auto' | 'acceptance') => {
     if (!settings) return
-    setRuleDraft(settings.auto_reply_subject_keywords.join('\n'))
+    setRuleKind(mode)
+    setRuleDraft((mode === 'auto' ? settings.auto_reply_subject_keywords
+      : settings.acceptance_body_keywords ?? DEFAULT_ACCEPTANCE_BODY_KEYWORDS).join('\n'))
     setRuleOpen(true)
   }
   const saveRules = async () => {
@@ -244,11 +248,12 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
     }
     setRuleSaving(true)
     try {
-      const next = { ...settings, auto_reply_subject_keywords: keywords }
+      const latest = await api.getSettings()
+      const next = { ...latest, [ruleKind === 'auto' ? 'auto_reply_subject_keywords' : 'acceptance_body_keywords']: keywords }
       await api.updateSettings(next)
       setSettings(next)
       setRuleOpen(false)
-      toast('自动回复识别关键词已保存', 'success')
+      toast(ruleKind === 'auto' ? '自动回复识别关键词已保存' : '过稿统计关键词已保存', 'success')
     } catch (e) { toast(String(e), 'error') }
     finally { setRuleSaving(false) }
   }
@@ -481,14 +486,24 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
             </span>)
           : <span>启用邮箱的收件检查后，新邮件会自动同步。</span>}
       </div>
-      <div className="inbox-rule-bar">
+      <div className="inbox-rule-bar" role="group" aria-label="自动回复识别规则">
         <strong>自动回复识别</strong>
         <span>主题包含</span>
         {settings?.auto_reply_subject_keywords.length
           ? <span className="inbox-rule-keywords">{settings.auto_reply_subject_keywords.map((keyword) => <span key={keyword}>{keyword}</span>)}</span>
           : <span className="inbox-rule-empty">{settings ? '未设置关键词' : '正在读取规则…'}</span>}
-        <Button size="sm" onClick={openRules} disabled={!settings}>编辑关键词</Button>
+        <Button size="sm" onClick={() => openRules('auto')} disabled={!settings}>编辑关键词</Button>
         <span className="inbox-rule-explain">退信单独识别</span>
+      </div>
+
+      <div className="inbox-rule-bar inbox-acceptance-rule-bar" role="group" aria-label="过稿统计识别规则">
+        <strong>过稿统计识别</strong>
+        <span>人工投稿回复正文包含</span>
+        {settings && (settings.acceptance_body_keywords ?? DEFAULT_ACCEPTANCE_BODY_KEYWORDS).length
+          ? <span className="inbox-rule-keywords">{(settings.acceptance_body_keywords ?? DEFAULT_ACCEPTANCE_BODY_KEYWORDS).map(keyword => <span key={keyword}>{keyword}</span>)}</span>
+          : <span className="inbox-rule-empty">{settings ? '未设置关键词' : '正在读取规则…'}</span>}
+        <Button size="sm" onClick={() => openRules('acceptance')} disabled={!settings}>编辑过稿关键词</Button>
+        <span className="inbox-rule-explain">命中后进入待确认，人工误判标记仍保留</span>
       </div>
 
       {kind === 'paused' && <p className="hint">按邮件主题或正文中的“暂停收稿”筛选，包含历史邮件。勾选邮件可批量暂停对应编辑；恢复收稿后可批量启用。</p>}
@@ -613,15 +628,15 @@ export function RepliesView({ initialKind, initialReply, accountFilter, onAccoun
       </div>
 
       {ruleOpen && (
-        <Modal title="自动回复识别关键词" onClose={() => { if (!ruleSaving) setRuleOpen(false) }} width={540}
+        <Modal title={ruleKind === 'auto' ? '自动回复识别关键词' : '过稿统计识别关键词'} onClose={() => { if (!ruleSaving) setRuleOpen(false) }} width={540}
           footer={<><Button variant="ghost" disabled={ruleSaving} onClick={() => setRuleOpen(false)}>取消</Button>
             <Button variant="primary" disabled={ruleSaving} onClick={() => void saveRules()}>{ruleSaving ? '保存中…' : '保存规则'}</Button></>}>
           <div className="inbox-rule-editor">
-            <label className="field">主题包含以下任意关键词时，判为自动回复
-              <textarea aria-label="自动回复主题关键词" rows={6} value={ruleDraft}
+            <label className="field">{ruleKind === 'auto' ? '主题包含以下任意关键词时，判为自动回复' : '人工投稿回复正文包含以下任意关键词时，标记为过稿待确认'}
+              <textarea aria-label={ruleKind === 'auto' ? '自动回复主题关键词' : '过稿回复正文关键词'} rows={6} value={ruleDraft}
                 placeholder="每行一个关键词" onChange={(event) => setRuleDraft(event.target.value)} />
             </label>
-            <p className="hint">每行一个关键词，不区分英文大小写。清空后不再按关键词识别自动回复；退信仍单独识别。保存后点击“按当前规则重新判定”可更新已有邮件。</p>
+            <p className="hint">每行一个关键词，不区分英文大小写。{ruleKind === 'auto' ? '清空后不再按关键词识别自动回复；退信仍单独识别。' : '清空后停止自动识别过稿。仍会排除否定表达、祝福和引用原文，并保留人工误判及已学习的拒稿模板。'}保存后点击“按当前规则重新判定”可更新已有邮件。</p>
           </div>
         </Modal>
       )}

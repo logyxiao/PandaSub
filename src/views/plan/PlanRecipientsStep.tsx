@@ -78,7 +78,7 @@ export function PlanRecipientsStep({ model }: { model: PlanEditorModel }) {
                   <div className="plan-group-roster-head">
                     <div>
                       <b>这次将投给 {groupPlanIds.size} 位</b>
-                      <p>有效邮箱 {recipients.length} 个，同平台随机选一位，收藏优先。选好后发送时不再换人；临时调整只影响这次。</p>
+                      <p>有效邮箱 {recipients.length} 个，同平台随机选一位，收藏优先。保留初始名单；遇到明确拉黑或地址失效时允许同平台替换，调整只影响这次。</p>
                     </div>
                     <Button size="sm" onClick={openPlanMembers}>调整名单</Button>
                     <Button size="sm" variant="ghost" disabled={!groupPlanIds.size} onClick={savePlanAsGroup}>存成新组</Button>

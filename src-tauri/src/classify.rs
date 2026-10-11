@@ -75,7 +75,13 @@ pub fn classify_with_keywords(mail: &IncomingMail, keywords: &[String]) -> Class
 
 /// 人工回复正文是否包含「过稿」信号：审核通过、初审、过稿、录用等。
 /// 先排除「未通过 / 没过」等否定表达，避免「初审未通过」被误判。
+#[cfg(test)]
 pub fn body_suggests_accepted(body: &str) -> bool {
+    body_suggests_accepted_with_keywords(body, &crate::models::default_acceptance_body_keywords())
+}
+
+pub fn body_suggests_accepted_with_keywords(body: &str, keywords: &[String]) -> bool {
+    if keywords.is_empty() { return false; }
     let body = unique_body(body).to_lowercase();
     if body.contains("未通过")
         || body.contains("没有通过")
@@ -89,24 +95,14 @@ pub fn body_suggests_accepted(body: &str) -> bool {
     {
         return false;
     }
-    const KEYS: &[&str] = &[
-        "审核通过",
-        "过稿",
-        "初审通过",
-        "过初审",
-        "通过初审",
-        "复审通过",
-        "终审通过",
-        "三审通过",
-        "录用",
-        "采用",
-        "签约通过",
-    ];
     body.split(['\n', '。', '！', '!', '？', '?', '；', ';']).any(|sentence| {
         let sentence = sentence.trim();
         // A closing wish such as "祝宝子早日过稿" is not a decision on this manuscript.
         !(sentence.starts_with('祝') && !sentence.starts_with("祝贺")) && !sentence.contains("早日过稿")
-            && KEYS.iter().any(|key| sentence.contains(key))
+            && keywords.iter().any(|key| {
+                let key = key.trim().to_lowercase();
+                !key.is_empty() && sentence.contains(&key)
+            })
     })
 }
 
@@ -190,6 +186,18 @@ mod tests {
             subject: subject.into(),
             body: body.into(),
             ..IncomingMail::default()
+        }
+    }
+
+    #[test]
+    fn custom_acceptance_keywords_replace_defaults_and_empty_disables_detection() {
+        let keywords = vec![" READY TO CONTRACT ".into(), "签约邀请".into(), " ".into()];
+        assert!(body_suggests_accepted_with_keywords("We are ready to contract this story.", &keywords));
+        assert!(body_suggests_accepted_with_keywords("这篇可以发签约邀请了。", &keywords));
+        assert!(!body_suggests_accepted_with_keywords("恭喜过稿！", &keywords));
+        assert!(!body_suggests_accepted_with_keywords("恭喜过稿！", &[]));
+        for body in ["未通过初审，无法发签约邀请", "祝你早日拿到签约邀请！", "暂不合适。\n> 签约邀请", "暂不合适。\n---原始邮件---\n签约邀请"] {
+            assert!(!body_suggests_accepted_with_keywords(body, &keywords), "{body}");
         }
     }
 

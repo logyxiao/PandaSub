@@ -148,7 +148,7 @@ function safeListen<T>(event: string, cb: (payload: T) => void): Promise<Unliste
   return listen<T>(event, (e) => {
     if (event === 'log' || event === 'reply' || event === 'task') invalidateStats()
     if (event === 'reply') editorCache.invalidate()
-    if (event === 'log' && ['blacklist', 'editor_replacement'].includes((e.payload as TaskLog).category)) editorCache.invalidate()
+    if (event === 'log' && ['blacklist', 'recipient_invalid', 'editor_replacement'].includes((e.payload as TaskLog).category)) editorCache.invalidate()
     cb(e.payload)
   }).then((unlisten) => {
     return () => {

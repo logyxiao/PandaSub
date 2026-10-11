@@ -90,6 +90,7 @@ fn map_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         provider: r.get(6)?,
         enabled: r.get::<_, i64>(7)? != 0,
         last_sent_at: r.get(8)?,
+        last_plan_sent_at: None,
         imap_host: r.get(9)?,
         imap_port: r.get::<_, i64>(10)? as u16,
         check_replies: r.get::<_, i64>(11)? != 0,
@@ -231,8 +232,14 @@ pub fn load_accounts(conn: &Connection) -> Result<Vec<Account>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     let counts = sent_today_by_account(conn)?;
+    let mut stmt = conn.prepare("SELECT account_id,MAX(sent_at) FROM deliveries
+        WHERE account_id IS NOT NULL AND task_id IS NOT NULL AND manuscript_id IS NOT NULL
+        AND datetime(sent_at) IS NOT NULL GROUP BY account_id").map_err(|e|e.to_string())?;
+    let mut last_plans = stmt.query_map([], |r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))
+        .map_err(|e|e.to_string())?.collect::<Result<std::collections::HashMap<_,_>,_>>().map_err(|e|e.to_string())?;
     for account in &mut accounts {
         account.sent_today = counts.get(&account.id).copied().unwrap_or(0);
+        account.last_plan_sent_at = last_plans.remove(&account.id);
     }
     Ok(accounts)
 }
@@ -359,6 +366,7 @@ fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
         average_reply_seconds: None,
         reply_sample_count: 0,
         blocked_senders: Vec::new(),
+        invalid_recipient_reason: None,
         id: r.get(0)?,
         platform: r.get(1)?,
         name: r.get(2)?,
@@ -462,6 +470,9 @@ pub fn batch_editors(conn: &mut Connection, ids: &[i64], enabled: Option<bool>) 
 /// Explicit recipients outside the library keep their existing behavior.
 pub fn ensure_editor_enabled(conn: &Connection, recipient: &str) -> Result<(), String> {
     let email = crate::editor_blocks::mailbox(recipient);
+    if crate::editor_blocks::invalid(conn, &email)? {
+        return Err(format!("收件地址 {email} 已失效，本次未发送。可使用自动投递选择同平台替代编辑；核验地址恢复后可在编辑库重新启用。"));
+    }
     let disabled: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM editors WHERE lower(trim(email))=?1 AND enabled=0)",
         [&email], |r| r.get(0),
@@ -482,8 +493,12 @@ pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
     for block in crate::editor_blocks::list(conn)? {
         blocked.entry(block.recipient_email).or_default().push(block.sender_email);
     }
+    let mut stmt = conn.prepare("SELECT recipient_email,reason FROM editor_invalid_addresses WHERE active=1").map_err(|e|e.to_string())?;
+    let mut invalid_reasons = stmt.query_map([], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))
+        .map_err(|e|e.to_string())?.collect::<Result<std::collections::HashMap<_,_>,_>>().map_err(|e|e.to_string())?;
     for editor in &mut editors {
         editor.blocked_senders = blocked.remove(&editor.email.trim().to_lowercase()).unwrap_or_default();
+        editor.invalid_recipient_reason = invalid_reasons.remove(&crate::editor_blocks::mailbox(&editor.email));
     }
     Ok(editors)
 }
@@ -554,7 +569,8 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
         .prepare(
             "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
                     retry_max, sent, total,
-                    created_at, started_at, finished_at, after_task_id, delay_minutes
+                    created_at, started_at, finished_at, after_task_id, delay_minutes,
+                    (SELECT COUNT(*) FROM active_send_recipient_skips s WHERE s.task_id=tasks.id)
              FROM tasks WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -574,6 +590,7 @@ pub fn load_task(conn: &Connection, id: i64) -> Result<Option<Task>, String> {
                 delay_minutes: r.get(14)?,
                 retry_max: r.get(7)?,
                 sent: r.get(8)?,
+                skipped: r.get(15)?,
                 total: r.get(9)?,
                 created_at: r.get(10)?,
                 started_at: r.get(11)?,
@@ -598,7 +615,8 @@ fn load_task_list(conn: &Connection, filter: &str) -> Result<Vec<Task>, String> 
         .prepare(&format!(
             "SELECT id, name, manuscript_ids, account_ids, status, schedule_type, scheduled_at,
                     retry_max, sent, total,
-                    created_at, started_at, finished_at, after_task_id, delay_minutes
+                    created_at, started_at, finished_at, after_task_id, delay_minutes,
+                    (SELECT COUNT(*) FROM active_send_recipient_skips s WHERE s.task_id=tasks.id)
              FROM tasks {filter} ORDER BY id DESC",
         ))
         .map_err(|e| e.to_string())?;
@@ -618,6 +636,7 @@ fn load_task_list(conn: &Connection, filter: &str) -> Result<Vec<Task>, String> 
                 delay_minutes: r.get(14)?,
                 retry_max: r.get(7)?,
                 sent: r.get(8)?,
+                skipped: r.get(15)?,
                 total: r.get(9)?,
                 created_at: r.get(10)?,
                 started_at: r.get(11)?,
@@ -791,6 +810,15 @@ pub fn insert_send_log(
     recipient: &str,
 ) -> Result<TaskLog, String> {
     // Keep evidence independently of logs, so clearing logs cannot forget blocks.
+    if level == "error" && matches!(category, "send" | "blacklist" | "recipient_invalid") {
+        if let (Some(task), Some(mid), Some(kind)) = (task_id, manuscript_id, crate::send_outcomes::failure_kind(message)) {
+            crate::send_outcomes::record_failure(conn, task, mid, recipient, kind)?;
+        }
+    }
+    if level == "error" && matches!(category, "send" | "recipient_invalid")
+        && crate::editor_blocks::is_invalid_recipient_message(message) {
+        crate::editor_blocks::record_invalid(conn, recipient, message, &now_str(conn)?)?;
+    }
     if level == "error" && crate::editor_blocks::is_blacklist_message(message) {
         if let Some(account_id) = account_id {
             let sender: String = conn.query_row("SELECT email FROM accounts WHERE id=?1", [account_id], |r| r.get(0)).map_err(|e|e.to_string())?;
@@ -2114,6 +2142,7 @@ mod tests {
             )
             .unwrap();
         connection.execute_batch(crate::editor_blocks::SCHEMA).unwrap();
+        connection.execute_batch(crate::send_outcomes::SCHEMA).unwrap();
         connection.execute_batch(ACCEPTANCE_FILTER_SCHEMA).unwrap();
         connection
     }
@@ -2358,6 +2387,7 @@ mod tests {
 #[derive(serde::Serialize)]
 pub struct DeliverySummary {
     pub latest_recipient: Option<String>,
+    pub skip_kind: Option<String>,
     pub row_index: usize,
     pub sent_count: i64,
     pub latest_id: Option<i64>,
@@ -2368,6 +2398,9 @@ pub struct DeliverySummaryPage {
     pub items: Vec<DeliverySummary>,
     pub total: i64,
     pub sent_total: i64,
+    pub blacklist_total: i64,
+    pub invalid_total: i64,
+    pub skipped_total: i64,
 }
 
 // Only internal column identifiers are passed here, never user input.
@@ -2410,27 +2443,35 @@ pub fn delivery_summary_page(
             SELECT 1 FROM send_recipient_routes x WHERE x.manuscript_id=d.manuscript_id
               AND x.original_recipient=r.value AND x.recipient={recipient_key}
               AND x.run_id=d.run_id AND (x.task_id=d.task_id OR d.task_id IS NULL)))
-        GROUP BY r.key), filtered AS (
-        SELECT * FROM summary WHERE row_index IN (SELECT value FROM json_each(?3))
-        AND (?4='all' OR (?4='sent' AND sent_count>0) OR (?4='unsent' AND sent_count=0)))"
+        GROUP BY r.key), outcomes AS (
+        SELECT summary.*, (SELECT s.kind FROM active_send_recipient_skips s WHERE s.manuscript_id=?1
+            AND s.original_recipient=(SELECT value FROM json_each(?2) WHERE CAST(key AS INTEGER)=summary.row_index)
+            AND s.task_id=(SELECT MAX(id) FROM tasks WHERE EXISTS(SELECT 1 FROM json_each(tasks.manuscript_ids) WHERE value=?1))) skip_kind
+        FROM summary), filtered AS (
+        SELECT * FROM outcomes WHERE row_index IN (SELECT value FROM json_each(?3))
+        AND (?4='all' OR (?4='sent' AND sent_count>0) OR (?4='unsent' AND sent_count=0 AND skip_kind IS NULL)))"
     );
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    let (total, sent_total) = tx
+    let (total, sent_total, skipped_total) = tx
         .query_row(
             &format!(
                 "{cte} SELECT (SELECT COUNT(*) FROM filtered),
-        (SELECT COUNT(*) FROM summary WHERE sent_count>0)"
+        (SELECT COUNT(*) FROM summary WHERE sent_count>0),
+        (SELECT COUNT(*) FROM outcomes WHERE sent_count=0 AND skip_kind IS NOT NULL)"
             ),
             params![manuscript_id, emails, matching, filter],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
         )
         .map_err(|e| e.to_string())?;
+    let (blacklist_total, invalid_total) = tx.query_row("SELECT COUNT(DISTINCT CASE WHEN kind='blacklist' THEN recipient END),
+        COUNT(DISTINCT CASE WHEN kind='recipient_invalid' THEN recipient END) FROM send_recipient_failures WHERE manuscript_id=?1",
+        [manuscript_id], |r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
     let items = {
         let mut stmt = tx
             .prepare(&format!(
                 "{cte} SELECT row_index,sent_count,latest_id,
             (SELECT sent_at FROM deliveries WHERE id=latest_id),
-            (SELECT recipient FROM deliveries WHERE id=latest_id) FROM filtered
+            (SELECT recipient FROM deliveries WHERE id=latest_id),skip_kind FROM filtered
             ORDER BY row_index LIMIT ?5 OFFSET ?6"
             ))
             .map_err(|e| e.to_string())?;
@@ -2451,6 +2492,7 @@ pub fn delivery_summary_page(
                         latest_id: r.get(2)?,
                         last_sent_at: r.get(3)?,
                         latest_recipient: r.get(4)?,
+                        skip_kind: r.get(5)?,
                     })
                 },
             )
@@ -2464,6 +2506,9 @@ pub fn delivery_summary_page(
         items,
         total,
         sent_total,
+        blacklist_total,
+        invalid_total,
+        skipped_total,
     })
 }
 
@@ -2869,6 +2914,28 @@ mod inbox_filter_index_tests {
 #[cfg(test)]
 mod account_config_tests {
     use super::*;
+    #[test]
+    fn last_plan_time_uses_successful_plan_history_not_manual_pending_or_account_time() {
+        let conn = crate::db::test_database();
+        conn.execute_batch("INSERT INTO accounts(id,email,password,smtp_host,last_sent_at) VALUES
+            (1,'used@example.com','fixture','localhost','2026-10-12 12:00:00'),
+            (2,'new@example.com','fixture','localhost',NULL);
+            INSERT INTO deliveries(account_id,task_id,manuscript_id,recipient,message_id,sent_at) VALUES
+            (1,1,1,'editor@example.com','older','2026-10-10 08:00:00'),
+            (1,2,2,'editor@example.com','latest-plan','2026-10-11 09:30:00'),
+            (1,NULL,2,'editor@example.com','manual','2026-10-12 10:00:00'),
+            (1,3,3,'editor@example.com','invalid-time','invalid');").unwrap();
+        store_pending_plan_fixture(&conn);
+        let accounts = load_accounts(&conn).unwrap();
+        assert_eq!(accounts[0].last_plan_sent_at.as_deref(),Some("2026-10-11 09:30:00"));
+        assert_eq!(accounts[0].last_sent_at.as_deref(),Some("2026-10-12 12:00:00"));
+        assert!(accounts[1].last_plan_sent_at.is_none());
+    }
+    fn store_pending_plan_fixture(conn: &Connection) {
+        conn.execute("INSERT INTO outgoing_attempts(task_id,run_id,account_id,manuscript_id,recipient,subject,message_id,status,created_at)
+            VALUES(3,0,1,3,'pending@example.com','稿件','pending','pending','2026-10-12 11:00:00'),
+            (3,0,1,3,'failed@example.com','稿件','failed','not_sent','2026-10-12 11:30:00')",[]).unwrap();
+    }
     #[test]
     fn enabled_configs_do_not_read_delivery_statistics() {
         let conn = crate::db::test_database();

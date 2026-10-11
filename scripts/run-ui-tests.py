@@ -14,6 +14,8 @@ TESTS = ['test-accepted-mail-ui.py', 'test-mail-templates-ui.py', 'test-plan-mai
          'test-plan-group-dedup-ui.py', 'test-optimization-ui.py', 'test-accepted-safety-ui.py', 'test-unread-ui.py', 'test-tray-inbox-ui.py', 'test-mail-sync-ui.py', 'test-mail-detail-ui.py', 'test-mail-performance-ui.py', 'test-mail-races-ui.py', 'test-plan-performance-ui.py', 'test-module-audit-ui.py', 'test-boundary-recovery-ui.py', 'test-mail-loading-and-dialog-ui.py', 'test-local-mail-and-confirm-ui.py']
 
 TESTS.append('test-plan-detail-tag-batch-ui.py')
+TESTS.append('test-plan-refusal-counts-ui.py')
+TESTS.append('test-acceptance-keywords-ui.py')
 
 def main():
     with socket.socket() as listener:

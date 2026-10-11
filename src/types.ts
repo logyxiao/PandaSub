@@ -8,6 +8,7 @@ export interface Account {
   provider: string
   enabled: boolean
   last_sent_at: string | null
+  last_plan_sent_at?: string | null
   imap_host: string
   imap_port: number
   check_replies: boolean
@@ -36,6 +37,7 @@ export interface Editor {
   average_reply_seconds?: number | null
   reply_sample_count?: number
   blocked_senders?: string[]
+  invalid_recipient_reason?: string | null
   id: number
   platform: string
   name: string
@@ -241,6 +243,7 @@ export interface Task {
   delay_minutes?: number
   retry_max: number
   sent: number
+  skipped?: number
   total: number
   created_at: string
   started_at: string | null
@@ -283,6 +286,7 @@ export interface Settings {
   update_feed_url: string
   reply_poll_minutes: number
   auto_reply_subject_keywords: string[]
+  acceptance_body_keywords: string[]
 }
 
 export interface Dashboard {
@@ -352,9 +356,12 @@ export interface StatsReport {
 }
 
 export interface DeliverySummaryPage {
-  items: { row_index: number; sent_count: number; latest_id: number | null; last_sent_at: string | null; latest_recipient?: string | null }[]
+  items: { row_index: number; sent_count: number; latest_id: number | null; last_sent_at: string | null; latest_recipient?: string | null; skip_kind?: string | null }[]
   total: number
   sent_total: number
+  blacklist_total?: number
+  invalid_total?: number
+  skipped_total?: number
 }
 export interface PendingSend {
   id: number; task_id: number | null; account_id: number; manuscript_id: number
