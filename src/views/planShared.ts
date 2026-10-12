@@ -162,7 +162,7 @@ export function groupPlanEditors(editors: Editor[]) {
   })
 }
 
-/** Draw once when a group is used; favorites form the entire pool when available. */
+/** Draw once when a group is used, sharing the history/favorite priority of type matching. */
 export function randomGroupPlanEditors(editors: Editor[]) {
   const groups = new Map<string, Editor[]>()
   const seenEmails = new Set<string>()
@@ -176,9 +176,7 @@ export function randomGroupPlanEditors(editors: Editor[]) {
     groups.set(platform, peers)
   }
   return [...groups.values()].map((peers) => {
-    const favorites = peers.filter(isEditorFavorited)
-    const pool = favorites.length ? favorites : peers
-    return pool[Math.floor(Math.random() * pool.length)]
+    return pickRandomPlatformEditor(peers)!
   })
 }
 
@@ -194,7 +192,7 @@ export function additionalPlanEditors(candidates: Editor[], recipients: readonly
   for (const editor of library) {
     if (emails.has(editor.email.trim().toLowerCase())) platforms.add(editorPlatformKey(editor).toLocaleLowerCase())
   }
-  return groupPlanEditors(candidates.filter(editor =>
+  return randomGroupPlanEditors(candidates.filter(editor =>
     !emails.has(editor.email.trim().toLowerCase()) &&
     !platforms.has(editorPlatformKey(editor).toLocaleLowerCase()),
   )).filter(editor => {
@@ -588,9 +586,16 @@ export function groupMatchingByPlatform(
 }
 
 export function pickRandomPlatformEditor(list: Editor[], sentMap: Map<string, number> = new Map()) {
-  if (!list.length) return undefined
-  const unsent = list.filter((editor) => (sentMap.get(editor.email.toLowerCase()) ?? 0) === 0)
-  const pool = unsent.length ? unsent : list
+  const valid = list.filter(editor => editor.enabled && isValidEmail(editor.email) && !editor.invalid_recipient_reason)
+  if (!valid.length) return undefined
+  const count = (value: number | undefined) => Math.max(0, Number.isFinite(value) ? value! : 0)
+  const unsent = valid.filter((editor) => (sentMap.get(editor.email.trim().toLowerCase()) ?? 0) === 0)
+  const available = unsent.length ? unsent : valid
+  const unused = available.filter(editor => count(editor.plan_sent_count) === 0)
+  const historyPool = unused.length ? unused : available
+  const usage = (editor: Editor) => count(editor.plan_sent_count) + count(editor.plan_queued_count)
+  const minimum = Math.min(...historyPool.map(usage))
+  const pool = historyPool.filter(editor => usage(editor) === minimum)
   const favored = pool.filter(isEditorFavorited)
   const pickFrom = favored.length ? favored : pool
   return pickFrom[Math.floor(Math.random() * pickFrom.length)]
@@ -625,9 +630,11 @@ export function mergeEditorSelectionByPlatform(
   const next = new Set<number>()
   for (const list of groupMatchingByPlatform(editors, genres, excludedWorkTypes).values()) {
     const kept = list.find((editor) => selected.has(editor.id))
-    next.add((kept ?? list[0]).id)
+    const chosen = kept ?? pickRandomPlatformEditor(list)
+    if (chosen) next.add(chosen.id)
   }
-  return next
+  // Keep the saved/manual roster's order as well as its choices when reopening.
+  return new Set([...selected].filter(id => next.has(id)).concat([...next].filter(id => !selected.has(id))))
 }
 
 export function estimateMinutes(count: number, intervalMin: number, intervalMax: number, batchMin: number, batchMax: number, pauseMin: number, pauseMax: number) {

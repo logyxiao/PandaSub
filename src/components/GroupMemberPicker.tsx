@@ -102,9 +102,11 @@ export function GroupMemberPicker({ editors, selectedIds, onChange, header, oneP
   }, [filtered, selectedIds])
   const selectedCount = useMemo(() => normalized.reduce((count, editor) => count + Number(selectedIds.has(editor.id)), 0), [normalized, selectedIds])
   const filterKey = JSON.stringify([query, favoritedOnly, tags])
-  const add = (items: Editor[]) => {
+  const add = (items: Editor[], keepExisting = false) => {
     if (!onePerPlatform) { onChange(new Set([...selectedIds, ...items.map((e) => e.id)])); return }
-    const picks = pickPlatformEditors(items.filter((editor) => editor.enabled && isValidEmail(editor.email)))
+    const scope = new Set(items.map(editorPlatformKey))
+    const pool = keepExisting ? [...items, ...normalized.filter(editor => selectedIds.has(editor.id) && scope.has(editorPlatformKey(editor)))] : items
+    const picks = pickPlatformEditors(pool.filter((editor) => editor.enabled && isValidEmail(editor.email)), selectedIds, true)
     const platforms = new Set(picks.map(editorPlatformKey))
     const next = new Set(selectedIds)
     for (const editor of normalized) {
@@ -145,7 +147,7 @@ export function GroupMemberPicker({ editors, selectedIds, onChange, header, oneP
         <section className="group-member-pane" aria-label="待选编辑">
           <header className="group-member-heading">
             <h3>待选 <small>{available.length}</small></h3>
-            <Button size="sm" disabled={!available.length} onClick={() => add(available)}
+            <Button size="sm" disabled={!available.length} onClick={() => add(available, true)}
               title={`加入全部 ${available.length} 条筛选结果`}>
               加入筛选 <ArrowRight size={12} />
             </Button>

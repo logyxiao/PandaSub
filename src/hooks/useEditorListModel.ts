@@ -14,9 +14,9 @@ export function useEditorListModel(items: readonly Editor[], {
   const basePool = useMemo(() => searchEditorIndex(index, query, platform), [index, query, platform])
   const candidates = useMemo(() => basePool.filter(editor => (!source || editor.source === source)
     && (!favoritedOnly || editor.favorited) && (!predicate || predicate(editor))), [basePool, source, favoritedOnly, predicate])
-  const matchingEditors = useCallback((selection: EditorTagSelection) => {
+  const matchingEditors = useCallback((selection: EditorTagSelection, collapse = onePerPlatform) => {
     const matches = matchEditorResults(candidates, selection, plan, true)
-    return onePerPlatform && !query.trim() ? pickPlatformEditors(matches, selectedIds) : matches
+    return collapse && !query.trim() ? pickPlatformEditors(matches, selectedIds) : matches
   }, [candidates, plan, onePerPlatform, query, selectedIds])
   return { platforms, basePool, candidates, matchingEditors }
 }

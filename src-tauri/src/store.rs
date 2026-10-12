@@ -363,6 +363,8 @@ fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
     let raw_rejected: String = r.get(5)?;
     let source: String = r.get(7)?;
     Ok(Editor {
+        plan_sent_count: 0,
+        plan_queued_count: 0,
         average_reply_seconds: None,
         reply_sample_count: 0,
         blocked_senders: Vec::new(),
@@ -507,6 +509,12 @@ pub fn load_editors(conn: &Connection) -> Result<Vec<Editor>, String> {
 /// Keep this out of load_editors: the scheduler uses that lightweight path before each send.
 pub fn load_editors_with_reply_stats(conn: &Connection) -> Result<Vec<Editor>, String> {
     let mut editors = load_editors(conn)?;
+    let usage = crate::editor_selection::load_usage(conn, &std::collections::HashSet::new())?;
+    for editor in &mut editors {
+        let counts = usage.get(&crate::editor_blocks::mailbox(&editor.email)).copied().unwrap_or_default();
+        editor.plan_sent_count = counts.sent;
+        editor.plan_queued_count = counts.queued;
+    }
     let mut stmt = conn.prepare(
         "SELECT d.recipient, MIN(CAST(strftime('%s', r.received_at) AS INTEGER) - CAST(strftime('%s', d.sent_at) AS INTEGER))
          FROM replies r JOIN deliveries d ON d.id=r.delivery_id

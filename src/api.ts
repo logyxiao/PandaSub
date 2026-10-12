@@ -54,9 +54,9 @@ export const api = {
 
   listManuscripts: (summary = false) => invoke<Manuscript[]>('list_manuscripts', { summary }),
   getManuscript: (id: number) => invoke<Manuscript | null>('get_manuscript', { id }),
-  addManuscript: (input: ManuscriptInput) => invoke<number>('add_manuscript', { input }),
-  updateManuscript: (id: number, input: ManuscriptInput) => invoke('update_manuscript', { id, input }),
-  deleteManuscript: (id: number) => changesStats(invoke('delete_manuscript', { id })),
+  addManuscript: (input: ManuscriptInput) => editLibrary(invoke<number>('add_manuscript', { input })),
+  updateManuscript: (id: number, input: ManuscriptInput) => editLibrary(invoke('update_manuscript', { id, input })),
+  deleteManuscript: (id: number) => editLibrary(changesStats(invoke('delete_manuscript', { id }))),
 
   listAcceptedWorks: (summary = false) => invoke<AcceptedWork[]>('list_accepted_works', { summary }),
   getAcceptedWork: (id: number) => invoke<AcceptedWork>('get_accepted_work', { id }),
@@ -72,12 +72,12 @@ export const api = {
   saveAcceptedShareImage: (path: string, data: Uint8Array) => invokeBinary<string>('save_accepted_share_image', data, { path }),
 
   listTasks: () => invoke<Task[]>('list_tasks'),
-  createTask: (input: TaskInput) => invoke<{ id: number; start_error: string | null }>('create_task', { input }),
-  updateTask: (id: number, input: TaskInput) => invoke('update_task', { id, input }),
+  createTask: (input: TaskInput) => editLibrary(invoke<{ id: number; start_error: string | null }>('create_task', { input })),
+  updateTask: (id: number, input: TaskInput) => editLibrary(invoke('update_task', { id, input })),
   createWasteDraftTask: (manuscriptId: number) =>
     invoke<number>('create_waste_draft_task', { manuscriptId }),
   updateTaskAccounts: (id: number, accountIds: number[]) => invoke('update_task_accounts', { id, accountIds }),
-  deleteTask: (id: number) => invoke('delete_task', { id }),
+  deleteTask: (id: number) => editLibrary(invoke('delete_task', { id })),
   startTask: (id: number) => invoke('start_task', { id }),
   pauseTask: (id: number) => invoke('pause_task', { id }),
   resumeTask: (id: number) => invoke('resume_task', { id }),
@@ -147,7 +147,7 @@ export const api = {
 function safeListen<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   return listen<T>(event, (e) => {
     if (event === 'log' || event === 'reply' || event === 'task') invalidateStats()
-    if (event === 'reply') editorCache.invalidate()
+    if (event === 'reply' || event === 'task') editorCache.invalidate()
     if (event === 'log' && ['blacklist', 'recipient_invalid', 'editor_replacement'].includes((e.payload as TaskLog).category)) editorCache.invalidate()
     cb(e.payload)
   }).then((unlisten) => {

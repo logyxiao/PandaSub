@@ -726,6 +726,10 @@ fn strip_platform_suffix(value: &str) -> String {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Editor {
     #[serde(default)]
+    pub plan_sent_count: usize,
+    #[serde(default)]
+    pub plan_queued_count: usize,
+    #[serde(default)]
     pub average_reply_seconds: Option<f64>,
     #[serde(default)]
     pub reply_sample_count: usize,

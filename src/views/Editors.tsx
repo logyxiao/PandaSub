@@ -131,7 +131,11 @@ export function EditorsList({
   useEffect(() => { onTotalChange?.(visible.length) }, [visible.length, onTotalChange])
   const onVisibleChangeRef = useRef(onVisibleChange)
   onVisibleChangeRef.current = onVisibleChange
-  useEffect(() => { onVisibleChangeRef.current?.(visible) }, [visible])
+  // Bulk picking needs the full eligible pool, even when each platform has one preview row.
+  const selectionPool = useMemo(() => onePerPlatform ? matchingEditors({
+    included: workTypes, excluded: excludedWorkTypes, match: 'any',
+  }, false) : visible, [onePerPlatform, matchingEditors, workTypes, excludedWorkTypes, visible])
+  useEffect(() => { onVisibleChangeRef.current?.(selectionPool) }, [selectionPool])
   useEffect(() => { setMore(null); setPeerPick(null) }, [platform, query, source, workTypes, excludedWorkTypes, favoritedOnly, list])
 
   const resetFilters = () => {

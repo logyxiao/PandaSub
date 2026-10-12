@@ -75,7 +75,7 @@ with sync_playwright() as p:
         expect(chosen.locator('.group-member-row')).to_have_count(5)
         dialog.get_by_role('button', name='加入筛选', exact=True).click()
         expect(chosen.locator('.group-member-row')).to_have_count(5)
-        expect(chosen.locator('button[data-editor-id="2"]')).to_have_count(1)
+        expect(chosen.locator('button[data-editor-id="1"]')).to_have_count(1)
         expect(chosen.locator('button[data-editor-id="4"]')).to_have_count(0)
         expect(chosen.locator('button[data-editor-id="5"]')).to_have_count(0)
         dialog.get_by_role('button', name='用于这次计划', exact=True).click()

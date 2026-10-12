@@ -34,6 +34,8 @@ export interface AccountInput {
 }
 
 export interface Editor {
+  plan_sent_count?: number
+  plan_queued_count?: number
   average_reply_seconds?: number | null
   reply_sample_count?: number
   blocked_senders?: string[]

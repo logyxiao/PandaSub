@@ -5,7 +5,7 @@ const server = await createServer({ server: { middlewareMode: true, watch: null 
 try {
   const { groupPlanEditors, groupPlanRecipients, randomGroupPlanEditors, toInput, isValidSendIntervalRange, matchingEditorGroupId, summarizeEditorGroup,
     defaultMailTemplates, normalizeDefaultMailTemplates, hydrateMailTemplates, fillPlaceholders,
-    normalizeEditorTags, editorMatchesPlan } = await server.ssrLoadModule('/src/views/planShared.ts')
+    normalizeEditorTags, editorMatchesPlan, mergeEditorSelectionByPlatform, pickRandomPlatformEditor } = await server.ssrLoadModule('/src/views/planShared.ts')
   const reviewedStyle = { enabled: true, work_type: ['知乎风', '知乎风', '小程序'], rejected_types: ['知乎风', '番茄风'] }
   assert.deepEqual(normalizeEditorTags(reviewedStyle).work_type, ['知乎风'])
   assert.deepEqual(normalizeEditorTags(reviewedStyle).rejected_types, ['知乎风'])
@@ -53,9 +53,35 @@ try {
     { ...editor(9, ' FAVORITE1@example.com '), favorited: true },
   ]
   const randomBefore = JSON.stringify(randomGroup)
+  const eligible = [
+    { ...editor(20, 'used@example.com'), work_type: ['短篇'], favorited: true, plan_sent_count: 5 },
+    { ...editor(21, 'unused1@example.com'), work_type: ['短篇'], plan_sent_count: 0 },
+    { ...editor(22, 'unused2@example.com'), work_type: ['短篇'], plan_sent_count: 0 },
+    { ...editor(23, 'queued@example.com'), work_type: ['短篇'], favorited: true, plan_queued_count: 1 },
+    { ...editor(24, 'disabled@example.com', false), work_type: ['短篇'], favorited: true },
+    { ...editor(25, 'invalid'), work_type: ['短篇'], favorited: true },
+    { ...editor(26, 'other@example.com'), work_type: ['长篇'], favorited: true },
+    { ...editor(27, 'rejected@example.com'), work_type: ['短篇'], rejected_types: ['短篇'], favorited: true },
+  ]
   const realRandom = Math.random
   try {
     Math.random = () => 0
+    assert.deepEqual([...mergeEditorSelectionByPlatform(eligible, [], ['短篇'])], [21], 'type matching skips sent/queued favorites, invalid/disabled/wrong-type/rejecting candidates')
+    Math.random = () => 0.999
+    assert.deepEqual([...mergeEditorSelectionByPlatform(eligible, [], ['短篇'])], [22], 'type matching really draws a different eligible peer')
+    Math.random = () => { throw new Error('manual selection must not draw again') }
+    assert.deepEqual([...mergeEditorSelectionByPlatform(eligible, [20], ['短篇'])], [20], 'manual choice survives history and favorite priority')
+    Math.random = () => 0
+    assert.equal(pickRandomPlatformEditor([
+      { ...eligible[0], plan_sent_count: 3 },
+      { ...eligible[1], plan_sent_count: 2, plan_queued_count: 1 },
+      { ...eligible[2], plan_sent_count: 2 },
+    ]).id, 22, 'when everyone has history, least combined usage wins')
+    assert.equal(pickRandomPlatformEditor([
+      { ...eligible[1], plan_queued_count: 1 }, { ...eligible[0], plan_sent_count: 1, plan_queued_count: 0 },
+    ]).id, 21, 'never-sent still precedes already-sent, even if reserved once')
+    assert.equal(pickRandomPlatformEditor([{ ...eligible[1], favorited: false }, { ...eligible[2], favorited: true }]).id, 22, 'favorite wins among equally unused candidates')
+    assert.equal(pickRandomPlatformEditor(eligible.slice(4, 6)), undefined)
     const first = randomGroupPlanEditors(randomGroup)
     assert.deepEqual(first.map(e => e.id), [2, 6], 'only valid favorites are eligible when available')
     Math.random = () => 0.999

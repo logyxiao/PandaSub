@@ -348,7 +348,7 @@ pub fn route(
             excluded.insert(mailbox(&row.map_err(|e| e.to_string())?));
         }
     }
-    let mut next = None;
+    let mut candidates = Vec::new();
     if !["", "未知", "未填", "未填平台"].contains(&platform.as_str()) {
         for editor in &editors {
             let email = mailbox(&editor.email);
@@ -363,10 +363,13 @@ pub fn route(
             {
                 continue;
             }
-            next = Some(formatted(&email));
-            break;
+            candidates.push(editor);
         }
     }
+    let next = if candidates.is_empty() { None } else {
+        let usage = crate::editor_selection::load_usage(&tx, &HashSet::new())?;
+        crate::editor_selection::choose(&candidates, &usage, &mut rand::rng()).map(|editor| formatted(&mailbox(&editor.email)))
+    };
     let failure = if address_invalid {
         format!("收件地址 {} 已失效", formatted(&current_email))
     } else {
@@ -409,7 +412,19 @@ mod tests {
           INSERT INTO manuscripts(id,title,body,recipients,genres) VALUES(1,'稿件','给{{编辑昵称}}：正文','["原编辑 <old@example.com>"]','["短篇"]');
           INSERT INTO tasks(id,name,manuscript_ids) VALUES(1,'计划','[1]'),(2,'另一计划','[1]');
         "#).unwrap();
+        conn.execute("UPDATE editors SET favorited=1 WHERE id=2", []).unwrap();
         conn
+    }
+    #[test]
+    fn replacement_prefers_peer_without_prior_plan_submissions_over_used_favorite() {
+        let conn = fixture();
+        block(&conn, "old@example.com");
+        conn.execute("INSERT INTO editors(id,name,email,platform,work_type) VALUES(4,'未投编辑','new@example.com','甲平台','[\"短篇\"]')", []).unwrap();
+        conn.execute("INSERT INTO deliveries(task_id,manuscript_id,recipient,message_id) VALUES(99,99,'peer@example.com','past-plan')", []).unwrap();
+        let manuscript = store::load_manuscript(&conn, 1).unwrap().unwrap();
+        let account = store::load_account(&conn, 1).unwrap().unwrap();
+        let Route::Ready { recipient, .. } = route(&conn, 1, &account, &manuscript, "old@example.com").unwrap() else { panic!("expected a replacement") };
+        assert_eq!(mailbox(&recipient), "new@example.com");
     }
     fn block(conn: &Connection, recipient: &str) {
         record(

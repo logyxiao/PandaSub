@@ -403,7 +403,7 @@ export function usePlanEditor({
   // Results cover every page; keep an existing choice when search returns platform peers.
   const selectEditorResults = (candidates: Editor[]) => {
     setSelectedIds((prev) => {
-      const picks = pickPlatformEditors(candidates, prev)
+      const picks = pickPlatformEditors(candidates, prev, true)
       const platforms = new Set(picks.map(editorPlatformKey))
       const next = new Set(prev)
       for (const item of editors) {

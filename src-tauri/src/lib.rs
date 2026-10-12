@@ -2,6 +2,7 @@ mod classify;
 mod commands;
 mod db;
 mod editor_blocks;
+pub mod editor_selection;
 mod inbox;
 mod models;
 mod scheduler;

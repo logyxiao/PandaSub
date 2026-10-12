@@ -16,6 +16,7 @@ TESTS = ['test-accepted-mail-ui.py', 'test-mail-templates-ui.py', 'test-plan-mai
 TESTS.append('test-plan-detail-tag-batch-ui.py')
 TESTS.append('test-plan-refusal-counts-ui.py')
 TESTS.append('test-acceptance-keywords-ui.py')
+TESTS.append('test-plan-editor-random-ui.py')
 
 def main():
     with socket.socket() as listener:

@@ -1,6 +1,6 @@
 import type { Editor } from '../types'
 import type { EditorTagSelection } from '../components/EditorTags'
-import { compareEditorsByFavorite, editorMatchesPlan, editorPlatformKey } from '../views/planShared'
+import { compareEditorsByFavorite, editorMatchesPlan, editorPlatformKey, pickRandomPlatformEditor } from '../views/planShared'
 import { matchesEditorTags } from '../views/editorLibraryShared'
 
 export function filterEditorText(items: readonly Editor[], query = '', platform = '') {
@@ -21,14 +21,19 @@ export function searchEditorIndex(index: ReturnType<typeof buildEditorSearchInde
   return index.filter(({ editor, text }) => (!platform || editor.platform === platform) && (!needle || text.includes(needle))).map(row => row.editor)
 }
 
-export function pickPlatformEditors(items: readonly Editor[], selected: ReadonlySet<number> = new Set()) {
-  const groups = new Map<string, Editor>()
+export function pickPlatformEditors(items: readonly Editor[], selected: ReadonlySet<number> = new Set(), randomize = false) {
+  const groups = new Map<string, Editor[]>()
   for (const editor of items) {
     const key = editorPlatformKey(editor)
-    const current = groups.get(key)
-    if (!current || (selected.has(editor.id) && !selected.has(current.id))) groups.set(key, editor)
+    const peers = groups.get(key) ?? []
+    peers.push(editor)
+    groups.set(key, peers)
   }
-  return [...groups.values()]
+  return [...groups.values()].flatMap(peers => {
+    const chosen = peers.find(editor => selected.has(editor.id))
+      ?? (randomize ? pickRandomPlatformEditor(peers) : peers[0])
+    return chosen ? [chosen] : []
+  })
 }
 
 export function matchEditorResults(items: readonly Editor[], selection: EditorTagSelection, plan = false, presorted = false) {
