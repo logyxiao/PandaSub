@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.2.16"
+version = "0.2.17"
 description = "熊猫投稿"
 authors = ["you"]
 license = ""
@@ -26,7 +26,9 @@ log = "0.4"
 tauri = { version = "2.11.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 rusqlite = { version = "0.38", features = ["bundled"] }
-lettre = { version = "0.11.19", features = ["tokio1-native-tls"] }
+# Use Rustls for SMTP handshakes instead of Windows Schannel, while retaining
+# the system's trusted certificate roots (including managed mail gateways).
+lettre = { version = "0.11.19", default-features = false, features = ["smtp-transport", "pool", "hostname", "builder", "tokio1-rustls", "ring", "rustls-native-certs"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 rand = "0.9.5"
 rust_xlsxwriter = "0.92.0"
@@ -44,6 +46,8 @@ tauri-plugin-single-instance = "2"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["test-util"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 # Keep imap 2.x's parser API while fixing expression-macro compatibility.
 [patch.crates-io]

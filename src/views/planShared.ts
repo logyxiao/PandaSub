@@ -245,30 +245,10 @@ export const SCHEDULE_OPTIONS = [
 ] as const
 
 
-const OLD_DEFAULT_SUBJECTS = new Set([
-  '投稿：《{{作品名}}》',
-  '《{{作品名}}》投稿（{{字数}}）',
-  '《{{作品名}}》投稿',
-  '恳请审阅：《{{作品名}}》',
-  '投稿附件：《{{作品名}}》',
-  '投稿来了：《{{作品名}}》',
-  '{{类型}} | 《{{作品名}}》',
-  '《{{作品名}}》请您看看',
-])
-
 export const DEFAULT_MAIL_TEMPLATES: MailTemplate[] = mailTemplateCatalog.presets
 
-export function ensureSubjectMeta(subject: string) {
-  let next = subject.trim() || '投稿：《{{作品名}}》'
-  if (!next.includes('{{字数}}')) next = `${next}+{{字数}}`
-  if (!next.includes('{{类型}}')) next = `${next}+{{类型}}`
-  return next
-}
-
 export function upgradeMailSubject(item: MailTemplate) {
-  const preset = DEFAULT_MAIL_TEMPLATES.find((entry) => entry.id === item.id)
-  if (preset && OLD_DEFAULT_SUBJECTS.has(item.subject)) return preset.subject
-  return ensureSubjectMeta(item.subject.replace(/(?:给|致)?\{\{(?:编辑昵称|收件人)\}\}[，,:：\s]*/g, ''))
+  return item.subject.replace(/(?:给|致)?\{\{(?:编辑昵称|收件人)\}\}[，,:：\s]*/g, '')
 }
 
 const DROPPED_MAIL_TEMPLATE_IDS = new Set(['t9', 't10'])
@@ -551,7 +531,7 @@ export function editorWorkTypeOptions(editors: Editor[]) {
 }
 
 export function editorPlatformKey(editor: Pick<Editor, 'platform' | 'email'>) {
-  return editor.platform.trim() || `__${editor.email.trim().toLowerCase()}`
+  return editor.platform.trim().replace(/\s+/g, ' ').toLowerCase() || `__${editor.email.trim().toLowerCase()}`
 }
 
 export function isEditorFavorited(editor: Pick<Editor, 'favorited'>) {

@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>投稿猫</title>
+<style>
+/* ── 设计令牌 ────────────────────────────────── */
+:root {
+  --bg:          #F0F0F2;
+  --surf-0:      #FFFFFF;
+  --surf-1:      #F5F5F7;
+  --surf-2:      #EAEAED;
+  --border:      #D8D8DC;
+  --border-sub:  #EAEAED;
+  --text:        #18181B;
+  --text-2:      #52525B;
+  --text-3:      #A1A1AA;
+  --accent:      #EA580C;
+  --accent-dim:  rgba(234,88,12,.08);
+  --accent-hi:   #C2410C;
+  --success:     #16A34A;
+  --success-dim: rgba(22,163,74,.09);
+  --warn:        #B45309;
+  --warn-dim:    rgba(180,83,9,.09);
+  --danger:      #DC2626;
+  --danger-dim:  rgba(220,38,38,.09);
+  --info:        #2563EB;
+  --info-dim:    rgba(37,99,235,.09);
+  --r-xs:   3px;
+  --r-sm:   5px;
+  --r:      7px;
+  --r-lg:  10px;
+  --sidebar-w: 216px;
+  --topbar-h:   48px;
+  font-size: 13px;
+}
+
+/* ── 重置 ────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+}
+a { color: inherit; text-decoration: none; }
+button { cursor: pointer; border: none; background: none; color: inherit; font: inherit; }
+input, textarea, select {
+  font: inherit; color: var(--text);
+  background: var(--surf-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color .15s;
+}
+input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+svg { display: block; flex-shrink: 0; }
+
+/* ── 侧边栏 ──────────────────────────────────── */
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--surf-0);
+  border-right: 1px solid var(--border-sub);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+.sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--border-sub);
+}
+.logo-mark {
+  width: 30px; height: 30px;
+  background: var(--accent);
+  border-radius: var(--r-sm);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.logo-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text);
+}
+.logo-ver {
+  font-size: 10px;
+  color: var(--text-3);
+  margin-top: 1px;
+}
+.sidebar-section {
+  padding: 14px 8px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding-left: 12px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  border-radius: var(--r-sm);
+  margin: 1px 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  transition: background .12s, color .12s;
+  cursor: pointer;
+  user-select: none;
+}
+.nav-item:hover { background: var(--surf-1); color: var(--text); }
+.nav-item.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.nav-item .nav-icon { width: 16px; height: 16px; opacity: .7; }
+.nav-item.active .nav-icon { opacity: 1; }
+.nav-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 10px;
+  padding: 1px 6px;
+  line-height: 15px;
+}
+.nav-badge.green { background: var(--success); }
+.sidebar-footer {
+  margin-top: auto;
+  padding: 10px 6px;
+  border-top: 1px solid var(--border-sub);
+}
+
+/* ── 主区域 ──────────────────────────────────── */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+  height: var(--topbar-h);
+  border-bottom: 1px solid var(--border-sub);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 12px;
+  background: var(--surf-0);
+  flex-shrink: 0;
+}
+.topbar-title { font-size: 14px; font-weight: 600; white-space: nowrap; }
+.topbar-sep { color: var(--text-3); margin: 0 2px; white-space: nowrap; }
+.topbar-sub { font-size: 13px; color: var(--text-2); white-space: nowrap; }
+.topbar-spacer { flex: 1; }
+.search-box {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--surf-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 5px 10px;
+  width: 200px;
+  color: var(--text-2);
+  font-size: 12px;
+  transition: border-color .15s;
+}
+.search-box:focus-within { border-color: var(--accent); color: var(--text); }
+.search-box input {
+  border: none; background: none; padding: 0;
+  font-size: 12px; width: 100%;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background .12s, opacity .12s;
+  cursor: pointer;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--accent-hi); }
+.btn-ghost {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { background: var(--surf-1); color: var(--text); }
+.btn-sm { padding: 4px 9px; font-size: 11px; }
+
+/* ── 内容区 ──────────────────────────────────── */
+.content { flex: 1; overflow-y: auto; padding: 20px; }
+.view { display: none; }
+.view.active { display: block; }
+ /* ── 工作台卡片 ──────────────────────────────── */
+ .dashboard-grid {
+   display: grid;
+   grid-template-columns: repeat(4, 1fr);
+   gap: 12px;
+   margin-bottom: 20px;
+ }
+ .stat-card {
+   background: var(--surf-1);
+   border: 1px solid var(--border);
+   border-radius: var(--r);
+   padding: 16px;
+ }
+ .stat-card-label {
+   font-size: 11px;
+   color: var(--text-3);
+   font-weight: 500;
+   text-transform: uppercase;
+   letter-spacing: .05em;
+   margin-bottom: 8px;
+ }
+ .stat-card-val {
+   font-size: 26px;
+   font-weight: 700;
+   line-height: 1;
+   color: var(--text);
+   font-variant-numeric: tabular-nums;
+ }
+ .stat-card-sub {
+   font-size: 11px;
+   color: var(--text-3);
+   margin-top: 6px;
+ }
+ .stat-card-val .unit { font-size: 14px; font-weight: 500; color: var(--text-2); margin-left: 2px; }
+ .accent-val { color: var(--accent); }
+ .success-val { color: var(--success); }
+ .warn-val { color: var(--warn); }
+ .info-val { color: var(--info); }
+ /* ── 趋势图占位 ──────────────────────────────── */
+ .trend-row { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 20px; }
+ .panel {
+   background: var(--surf-1);
+   border: 1px solid var(--border);
+   border-radius: var(--r);
+   padding: 16px;
+ }
+ .panel-header {
+   display: flex; align-items: center; justify-content: space-between;
+   margin-bottom: 14px;
+ }
+ .panel-title { font-size: 13px; font-weight: 600; }
+ .panel-meta { font-size: 11px; color: var(--text-3); }
+ /* 简易折线图 */
+ .sparkline-wrap { height: 80px; position: relative; }
+ .sparkline-wrap svg { width: 100%; height: 100%; }
+ /* ── 表格 ────────────────────────────────────── */
+ .table-wrap { overflow-x: auto; }
+ table { width: 100%; border-collapse: collapse; }
+ th {
+   text-align: left;
+   font-size: 11px;
+   font-weight: 600;
+   color: var(--text-3);
+   text-transform: uppercase;
+   letter-spacing: .05em;
+   padding: 8px 10px;
+   border-bottom: 1px solid var(--border);
+   white-space: nowrap;
+   position: sticky; top: 0;
+   background: var(--surf-1);
+ }
+ td {
+   padding: 9px 10px;
+   font-size: 12px;
+   border-bottom: 1px solid var(--border-sub);
+   color: var(--text-2);
+   vertical-align: middle;
+   white-space: nowrap;
+ }
+ tr:last-child td { border-bottom: none; }
+ tr:hover td { background: var(--surf-2); color: var(--text); }
+ td.td-name { color: var(--text); font-weight: 500; }
+ td.td-num { font-variant-numeric: tabular-nums; text-align: right; }
+ /* ── 状态标签 ────────────────────────────────── */
+ .tag {
+   display: inline-flex; align-items: center; gap: 4px;
+   font-size: 11px; font-weight: 500;
+   padding: 2px 7px;
+   border-radius: var(--r-xs);
+   white-space: nowrap;
+ }
+ .tag-success { background: var(--success-dim); color: var(--success); }
+ .tag-warn    { background: var(--warn-dim);    color: var(--warn);    }
+ .tag-danger  { background: var(--danger-dim);  color: var(--danger);  }
+ .tag-info    { background: var(--info-dim);    color: var(--info);    }
+ .tag-neutral { background: var(--surf-2);      color: var(--text-2);  }
+ .tag-accent  { background: var(--accent-dim);  color: var(--accent);  }
+ /* ── 筛选栏 ──────────────────────────────────── */
+ .filter-bar {
+   display: flex; align-items: center; gap: 8px;
+   margin-bottom: 14px; flex-wrap: wrap;
+ }
+ .filter-chip {
+   font-size: 11px; font-weight: 500;
+   padding: 4px 10px;
+   border-radius: 20px;
+   border: 1px solid var(--border);
+   color: var(--text-2);
+   cursor: pointer;
+   transition: background .12s, color .12s, border-color .12s;
+ }
+ .filter-chip:hover { border-color: var(--text-2); color: var(--text); }
+ .filter-chip.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+ /* ── 收件箱分栏 ──────────────────────────────── */
+ .inbox-layout { display: grid; grid-template-columns: 320px 1fr; gap: 0; height: 100%; min-height: 0; }
+ .inbox-list { border-right: 1px solid var(--border-sub); overflow-y: auto; }
+ .inbox-item {
+   padding: 12px 14px;
+   border-bottom: 1px solid var(--border-sub);
+   cursor: pointer;
+   transition: background .1s;
+ }
+ .inbox-item:hover { background: var(--surf-2); }
+ .inbox-item.active { background: var(--accent-dim); border-left: 2px solid var(--accent); }
+ .inbox-item-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px; }
+ .inbox-from { font-size: 12px; font-weight: 600; color: var(--text); }
+ .inbox-time { font-size: 10px; color: var(--text-3); }
+ .inbox-subject { font-size: 12px; color: var(--text-2); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+ .inbox-preview { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+ .inbox-unread .inbox-from::before {
+   content: ''; display: inline-block;
+   width: 6px; height: 6px;
+   background: var(--accent); border-radius: 50%;
+   margin-right: 6px; vertical-align: middle;
+ }
+ .mail-reader { padding: 20px 24px; overflow-y: auto; }
+ .mail-subject { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
+ .mail-meta { display: flex; gap: 16px; font-size: 11px; color: var(--text-3); margin-bottom: 20px; padding-bottom: 14px; border-bottom: 1px solid var(--border-sub); }
+ .mail-body { font-size: 13px; line-height: 1.75; color: var(--text-2); }
+ /* ── 编辑器列表行 ──────────────────────────────── */
+ .avatar {
+   width: 28px; height: 28px;
+   border-radius: 50%;
+   background: var(--surf-2);
+   display: flex; align-items: center; justify-content: center;
+   font-size: 11px; font-weight: 600;
+   color: var(--text-2);
+   flex-shrink: 0;
+ }
+ .editor-row td { padding: 8px 10px; }
+ /* ── 进度条 ──────────────────────────────────── */
+ .progress-wrap { height: 4px; background: var(--surf-2); border-radius: 2px; overflow: hidden; min-width: 80px; }
+ .progress-fill { height: 100%; border-radius: 2px; background: var(--accent); transition: width .3s; }
+ .progress-fill.green { background: var(--success); }
+ /* ── 滚动条 ──────────────────────────────────── */
+ ::-webkit-scrollbar { width: 5px; height: 5px; }
+ ::-webkit-scrollbar-track { background: transparent; }
+ ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+ ::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+ /* ── 收件箱高度修正 ──────────────────────────── */
+ #view-inbox { height: 100%; display: none; flex-direction: column; }
+ #view-inbox.active { display: flex; }
+ /* ── 空态 ────────────────────────────────────── */
+ .empty-state {
+   display: flex; flex-direction: column; align-items: center; justify-content: center;
+   height: 200px; color: var(--text-3); gap: 8px;
+ }
+ .empty-state svg { opacity: .3; }
+ .empty-state p { font-size: 12px; }
+ </style>
+ </head>
+ <body>
+ <!-- ══ 侧边栏 ══════════════════════════════════ -->
+ <aside class="sidebar">
+   <div class="sidebar-logo">
+     <div class="logo-mark">
+       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+         <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+         <path d="M8 9c0-1.1.9-2 2-2s2 .9 2 2-.9 2-2 2-2-.9-2-2z" fill="#fff" stroke="none"/>
+         <path d="M14 9c0-1.1.9-2 2-2s2 .9 2 2-.9 2-2 2-2-.9-2-2z" fill="#fff" stroke="none"/>
+         <path d="M6 14s1.5 3 6 3 6-3 6-3"/>
+         <path d="M7 3.5C7 3.5 5 2 4 4" stroke-width="1.8"/>
+         <path d="M17 3.5C17 3.5 19 2 20 4" stroke-width="1.8"/>
+       </svg>
+     </div>
+     <div>
+       <div class="logo-name">投稿猫</div>
+       <div class="logo-ver">v1.0.0</div>
+     </div>
+   </div>
+   <nav style="flex:1;overflow-y:auto;padding-top:6px;">
+     <div class="sidebar-section">工作台</div>
+     <div class="nav-item active" onclick="switchView('dashboard',this)">
+       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+       工作台
+     </div>
+     <div class="sidebar-section">投稿</div>
+     <div class="nav-item" onclick="switchView('plans',this)">
+       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
+       投稿计划
+     </div>
+     <div class="nav-item" onclick="switchView('logs',this)">
+       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>
+       发送记录
+     </div>
+     <div class="nav-item" onclick="switchView('inbox',this)">
+       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="22,12 16,12 14,15 10,15 8,12 2,12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+       收件箱
+       <span class="nav-badge">5</span>
+     </div>
+     <div class="sidebar-section">数据</div>
+     <div class="nav-item" onclick="switchView('accepted',this)">
+       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+       过稿统计
+       <span class="nav-badge green">2</span>
+     </div>
+     <div class="nav-item" onclick="switchView('stats',this)">
+       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+       投稿统计
+     </div>
+     <div class="sidebar-section">资源</div>
+     <div class="nav-item" onclick="switchView('accounts',this)">
+       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+       邮箱管理
+     </div>
+   </nav>
+   <div class="sidebar-footer">
+     <div class="nav-item" onclick="switchView('settings',this)">
+       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+       设置
+     </div>
+   </div>
+ </aside>
+ <!-- ══ 主区域 ════════════════════════════════════ -->
+ <div class="main">
+   <div class="topbar">
+     <span class="topbar-title" id="topbar-title">工作台</span>
+     <span class="topbar-sep" id="topbar-sep" style="display:none">/</span>
+     <span class="topbar-sub" id="topbar-sub"></span>
+     <div class="topbar-spacer"></div>
+     <div class="search-box">
+       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+       <input type="text" placeholder="搜索…">
+     </div>
+     <button class="btn btn-primary" id="topbar-action" onclick="topbarAction()">
+       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+       新建计划
+     </button>
+   </div>
+   <div class="content">
+
+     <!-- ── 工作台 ── -->
+     <div class="view active" id="view-dashboard">
+       <div class="dashboard-grid">
+         <div class="stat-card">
+           <div class="stat-card-label">本月投递</div>
+           <div class="stat-card-val accent-val">247<span class="unit">封</span></div>
+           <div class="stat-card-sub">较上月 +38</div>
+         </div>
+         <div class="stat-card">
+           <div class="stat-card-label">人工回复</div>
+           <div class="stat-card-val info-val">61<span class="unit">封</span></div>
+           <div class="stat-card-sub">回复率 24.7%</div>
+         </div>
+         <div class="stat-card">
+           <div class="stat-card-label">本月过稿</div>
+           <div class="stat-card-val success-val">3<span class="unit">篇</span></div>
+           <div class="stat-card-sub">待核对 2 封</div>
+         </div>
+         <div class="stat-card">
+           <div class="stat-card-label">预计稿酬</div>
+           <div class="stat-card-val warn-val">4,800<span class="unit">元</span></div>
+           <div class="stat-card-sub">已结算 2,400 元</div>
+         </div>
+       </div>
+       <div class="trend-row">
+         <div class="panel">
+           <div class="panel-header">
+             <span class="panel-title">近 30 天投递趋势</span>
+             <span class="panel-meta">日均 8.2 封</span>
+           </div>
+           <div class="sparkline-wrap">
+             <svg viewBox="0 0 400 80" preserveAspectRatio="none">
+               <defs>
+                 <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+                   <stop offset="0%" stop-color="#f2664a" stop-opacity=".25"/>
+                   <stop offset="100%" stop-color="#f2664a" stop-opacity="0"/>
+                 </linearGradient>
+               </defs>
+               <path d="M0,60 L13,55 L26,50 L40,52 L53,45 L66,40 L80,42 L93,35 L106,30 L120,32 L133,28 L146,20 L160,22 L173,18 L186,15 L200,20 L213,16 L226,12 L240,18 L253,14 L266,10 L280,15 L293,8 L306,12 L320,6 L333,10 L346,4 L360,8 L373,5 L386,3 L400,6 L400,80 L0,80 Z" fill="url(#g1)"/>
+               <path d="M0,60 L13,55 L26,50 L40,52 L53,45 L66,40 L80,42 L93,35 L106,30 L120,32 L133,28 L146,20 L160,22 L173,18 L186,15 L200,20 L213,16 L226,12 L240,18 L253,14 L266,10 L280,15 L293,8 L306,12 L320,6 L333,10 L346,4 L360,8 L373,5 L386,3 L400,6" fill="none" stroke="#f2664a" stroke-width="1.8"/>
+               <path d="M0,68 L13,65 L26,62 L40,64 L53,60 L66,58 L80,59 L93,55 L106,52 L120,54 L133,50 L146,45 L160,46 L173,44 L186,42 L200,45 L213,43 L226,40 L240,44 L253,41 L266,38 L280,42 L293,36 L306,39 L320,34 L333,37 L346,32 L360,35 L373,33 L386,31 L400,34" fill="none" stroke="#5baef0" stroke-width="1.4" stroke-dasharray="3,2"/>
+             </svg>
+           </div>
+           <div style="display:flex;gap:16px;margin-top:8px;">
+             <span style="font-size:11px;color:var(--text-3);display:flex;align-items:center;gap:4px;"><span style="width:12px;height:2px;background:var(--accent);display:inline-block;border-radius:1px;"></span>投递</span>
+             <span style="font-size:11px;color:var(--text-3);display:flex;align-items:center;gap:4px;"><span style="width:12px;height:2px;background:var(--info);display:inline-block;border-radius:1px;border-top:1px dashed var(--info);"></span>回复</span>
+           </div>
+         </div>
+         <div class="panel">
+           <div class="panel-header"><span class="panel-title">待关注</span><span class="panel-meta">最近来信</span></div>
+           <div style="display:flex;flex-direction:column;gap:2px;">
+             <div style="padding:8px 0;border-bottom:1px solid var(--border-sub);">
+               <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:2px;">晋江文学城 · 李编辑</div>
+               <div style="font-size:11px;color:var(--text-3);">回复率高，2 天前来信</div>
+             </div>
+             <div style="padding:8px 0;border-bottom:1px solid var(--border-sub);">
+               <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:2px;">起点中文网 · 王编辑</div>
+               <div style="font-size:11px;color:var(--text-3);">疑似过稿，待核对</div>
+             </div>
+             <div style="padding:8px 0;">
+               <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:2px;">番茄小说 · 张编辑</div>
+               <div style="font-size:11px;color:var(--text-3);">暂停收稿通知</div>
+             </div>
+           </div>
+         </div>
+       </div>
+       <div class="panel">
+         <div class="panel-header"><span class="panel-title">进行中的计划</span><button class="btn btn-ghost btn-sm">查看全部</button></div>
+         <div class="table-wrap">
+           <table>
+             <thead><tr><th>作品</th><th>发件邮箱</th><th>进度</th><th>状态</th><th>开始时间</th><th>最近发送</th></tr></thead>
+             <tbody>
+               <tr><td class="td-name">《星河烬》</td><td>qq_main@qq.com</td><td><div class="progress-wrap"><div class="progress-fill green" style="width:72%"></div></div></td><td><span class="tag tag-success">发送中</span></td><td>2026-10-01</td><td>3 分钟前</td></tr>
+               <tr><td class="td-name">《长安夜行》</td><td>163_sub@163.com</td><td><div class="progress-wrap"><div class="progress-fill" style="width:45%"></div></div></td><td><span class="tag tag-info">等待中</span></td><td>2026-10-05</td><td>2 小时前</td></tr>
+               <tr><td class="td-name">《渡海》</td><td>qq_main@qq.com</td><td><div class="progress-wrap"><div class="progress-fill" style="width:20%"></div></div></td><td><span class="tag tag-warn">计划中</span></td><td>2026-10-09</td><td>—</td></tr>
+             </tbody>
+           </table>
+         </div>
+       </div>
+     </div>
+     <!-- ── 投稿计划 ── -->
+     <div class="view" id="view-plans">
+       <div class="filter-bar">
+         <button class="filter-chip active">全部</button>
+         <button class="filter-chip">发送中</button>
+         <button class="filter-chip">等待中</button>
+         <button class="filter-chip">已完成</button>
+         <button class="filter-chip">草稿</button>
+         <div style="margin-left:auto;display:flex;gap:8px;">
+           <button class="btn btn-ghost btn-sm">导入</button>
+           <button class="btn btn-primary btn-sm">+ 新建计划</button>
+         </div>
+       </div>
+       <div class="panel">
+         <div class="table-wrap">
+           <table>
+             <thead><tr><th><input type="checkbox"></th><th>作品</th><th>邮件主题</th><th>发件邮箱</th><th>收件人数</th><th>进度</th><th>状态</th><th>开始时间</th><th>操作</th></tr></thead>
+             <tbody>
+               <tr>
+                 <td><input type="checkbox"></td>
+                 <td class="td-name">《星河烬》</td>
+                 <td>投稿——玄幻——星河烬</td>
+                 <td>qq_main@qq.com</td>
+                 <td class="td-num">42</td>
+                 <td><div style="display:flex;align-items:center;gap:8px;"><div class="progress-wrap" style="width:80px"><div class="progress-fill green" style="width:72%"></div></div><span style="font-size:11px;color:var(--text-3)">30/42</span></div></td>
+                 <td><span class="tag tag-success">发送中</span></td>
+                 <td>10-01 09:00</td>
+                 <td><button class="btn btn-ghost btn-sm">暂停</button></td>
+               </tr>
+               <tr>
+                 <td><input type="checkbox"></td>
+                 <td class="td-name">《长安夜行》</td>
+                 <td>投稿——历史——长安夜行</td>
+                 <td>163_sub@163.com</td>
+                 <td class="td-num">28</td>
+                 <td><div style="display:flex;align-items:center;gap:8px;"><div class="progress-wrap" style="width:80px"><div class="progress-fill" style="width:45%"></div></div><span style="font-size:11px;color:var(--text-3)">13/28</span></div></td>
+                 <td><span class="tag tag-info">等待中</span></td>
+                 <td>10-05 14:00</td>
+                 <td><button class="btn btn-ghost btn-sm">继续</button></td>
+               </tr>
+               <tr>
+                 <td><input type="checkbox"></td>
+                 <td class="td-name">《渡海》</td>
+                 <td>投稿——现实——渡海</td>
+                 <td>qq_main@qq.com</td>
+                 <td class="td-num">55</td>
+                 <td><div style="display:flex;align-items:center;gap:8px;"><div class="progress-wrap" style="width:80px"><div class="progress-fill" style="width:0%"></div></div><span style="font-size:11px;color:var(--text-3)">0/55</span></div></td>
+                 <td><span class="tag tag-warn">草稿</span></td>
+                 <td>—</td>
+                 <td><button class="btn btn-ghost btn-sm">编辑</button></td>
+               </tr>
+               <tr>
+                 <td><input type="checkbox"></td>
+                 <td class="td-name">《九州行》</td>
+                 <td>投稿——玄幻——九州行</td>
+                 <td>yeah_alt@yeah.net</td>
+                 <td class="td-num">38</td>
+                 <td><div style="display:flex;align-items:center;gap:8px;"><div class="progress-wrap" style="width:80px"><div class="progress-fill green" style="width:100%"></div></div><span style="font-size:11px;color:var(--text-3)">38/38</span></div></td>
+                 <td><span class="tag tag-neutral">已完成</span></td>
+                 <td>09-15 10:00</td>
+                 <td><button class="btn btn-ghost btn-sm">复制</button></td>
+               </tr>
+             </tbody>
+           </table>
+         </div>
+       </div>
+     </div>
+
+     <!-- ── 收件箱 ── -->
+     <div class="view" id="view-inbox">
+       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+         <button class="filter-chip active">全部</button>
+         <button class="filter-chip">人工回复</button>
+         <button class="filter-chip">自动回复</button>
+         <button class="filter-chip">疑似过稿</button>
+         <button class="filter-chip">暂停收稿</button>
+         <div style="margin-left:auto;"><button class="btn btn-ghost btn-sm">全部标为已读</button></div>
+       </div>
+       <div class="inbox-layout" style="flex:1;min-height:0;">
+         <div class="inbox-list">
+           <div class="inbox-item inbox-unread active">
+             <div class="inbox-item-top"><span class="inbox-from">起点中文网 · 王编辑</span><span class="inbox-time">09:42</span></div>
+             <div class="inbox-subject">Re: 投稿——玄幻——星河烬</div>
+             <div class="inbox-preview">您好，稿件已收到，初审通过，请...</div>
+           </div>
+           <div class="inbox-item inbox-unread">
+             <div class="inbox-item-top"><span class="inbox-from">晋江文学城 · 李编辑</span><span class="inbox-time">昨天</span></div>
+             <div class="inbox-subject">Re: 投稿——现代言情——渡海</div>
+             <div class="inbox-preview">感谢投稿，稿件风格与我们平台...</div>
+           </div>
+           <div class="inbox-item">
+             <div class="inbox-item-top"><span class="inbox-from">番茄小说 · 系统</span><span class="inbox-time">昨天</span></div>
+             <div class="inbox-subject">稿件自动回复</div>
+             <div class="inbox-preview">您的投稿已收到，我们将在 7 个工...</div>
+           </div>
+           <div class="inbox-item inbox-unread">
+             <div class="inbox-item-top"><span class="inbox-from">七猫小说 · 赵编辑</span><span class="inbox-time">10-07</span></div>
+             <div class="inbox-subject">Re: 投稿——悬疑——长安夜行</div>
+             <div class="inbox-preview">抱歉，该类型当前暂停收稿...</div>
+           </div>
+           <div class="inbox-item">
+             <div class="inbox-item-top"><span class="inbox-from">掌阅文学 · 陈编辑</span><span class="inbox-time">10-06</span></div>
+             <div class="inbox-subject">Re: 投稿——古言——九州行</div>
+             <div class="inbox-preview">您好，感谢您的投稿，很遗憾...</div>
+           </div>
+         </div>
+         <div class="mail-reader">
+           <div class="mail-subject">Re: 投稿——玄幻——星河烬</div>
+           <div class="mail-meta">
+             <span>发件人：wangeditor@qidian.com</span>
+             <span>收件人：qq_main@qq.com</span>
+             <span>2026-10-09 09:42</span>
+             <div style="margin-left:auto;display:flex;gap:6px;">
+               <span class="tag tag-success">疑似过稿</span>
+               <span class="tag tag-info">人工回复</span>
+             </div>
+           </div>
+           <div class="mail-body">
+             <p>您好，</p><br>
+             <p>感谢您向起点中文网投递稿件《星河烬》。</p><br>
+             <p>我们已收到您的来稿，经过初步审核，您的稿件通过了初审。编辑对您的文章整体风格和世界观构建印象深刻，认为具有较大的市场潜力。</p><br>
+             <p>接下来我们将进入终审流程，预计 3-5 个工作日内给您最终回复。请保持联系方式畅通。</p><br>
+             <p>期待与您进一步合作。</p><br>
+             <p>王 ××<br>起点中文网编辑部</p>
+           </div>
+           <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border-sub);display:flex;gap:8px;">
+             <button class="btn btn-primary btn-sm">核对过稿</button>
+             <button class="btn btn-ghost btn-sm">标记已读</button>
+             <button class="btn btn-ghost btn-sm">暂停该编辑</button>
+           </div>
+         </div>
+       </div>
+     </div>
+
+     <!-- ── 其他视图占位 ── -->
+     <div class="view" id="view-logs"><div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg><p>发送记录视图（开发中）</p></div></div>
+     <div class="view" id="view-accepted"><div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20,6 9,17 4,12"/></svg><p>过稿统计视图（开发中）</p></div></div>
+     <div class="view" id="view-stats"><div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg><p>投稿统计视图（开发中）</p></div></div>
+     <div class="view" id="view-accounts"><div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg><p>邮箱管理视图（开发中）</p></div></div>
+     <div class="view" id="view-settings"><div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><p>设置视图（开发中）</p></div></div>
+
+   </div><!-- /content -->
+ </div><!-- /main -->
+
+ <script>
+ const viewMeta = {
+   dashboard: { title: '工作台', action: '新建计划' },
+   plans:     { title: '投稿计划', action: '新建计划' },
+   logs:      { title: '发送记录', action: null },
+   inbox:     { title: '收件箱', action: '全部标已读' },
+   accepted:  { title: '过稿统计', action: '录入过稿' },
+   stats:     { title: '投稿统计', action: null },
+   accounts:  { title: '邮箱管理', action: '添加邮箱' },
+   settings:  { title: '设置', action: null },
+ };
+
+ function switchView(name, el) {
+   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+   document.getElementById('view-' + name).classList.add('active');
+   el.classList.add('active');
+   const meta = viewMeta[name] || {};
+   document.getElementById('topbar-title').textContent = meta.title || name;
+   const btn = document.getElementById('topbar-action');
+   if (meta.action) { btn.style.display = ''; btn.childNodes[btn.childNodes.length-1].textContent = ' ' + meta.action; }
+   else { btn.style.display = 'none'; }
+ }
+
+ function topbarAction() {
+   alert('（UI 演示）该操作在正式版中将打开对应表单。');
+ }
+
+ // 筛选 chip 切换
+ document.querySelectorAll('.filter-bar').forEach(bar => {
+   bar.querySelectorAll('.filter-chip').forEach(chip => {
+     chip.addEventListener('click', () => {
+       bar.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+       chip.classList.add('active');
+     });
+   });
+ });
+
+ // 收件箱列表点击
+ document.querySelectorAll('.inbox-item').forEach(item => {
+   item.addEventListener('click', () => {
+     document.querySelectorAll('.inbox-item').forEach(i => i.classList.remove('active'));
+     item.classList.add('active');
+     item.classList.remove('inbox-unread');
+   });
+ });
+ </script>
+ </body>
+ </html>

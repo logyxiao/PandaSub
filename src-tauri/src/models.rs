@@ -678,6 +678,14 @@ pub fn canonicalize_editor_platform(raw: &str) -> String {
 }
 
 fn editor_platform_alias(value: &str) -> Option<&'static str> {
+    // Brand spelling is stable across manual entry, imports and old libraries.
+    match value.to_ascii_lowercase().as_str() {
+        "dreame" => return Some("Dreame"),
+        "goodnovel" => return Some("GoodNovel"),
+        "moboreader" => return Some("MoboReader"),
+        "reelshort" => return Some("Reelshort"),
+        _ => {}
+    }
     Some(match value {
         "九州（一组）" | "九州（二组）" | "九州（海外）" | "九州(一组)" | "九州(二组)"
         | "九州(海外)" => "九州",
@@ -941,6 +949,21 @@ mod tests {
     #[test]
     fn empty_editor_platform_is_unknown() {
         assert_eq!(canonicalize_editor_platform(" \t"), "未知");
+    }
+
+    #[test]
+    fn editor_platform_brands_ignore_case_and_suffixes() {
+        for (raw, expected) in [
+            ("dreame", "Dreame"), (" DREAME ", "Dreame"),
+            ("DrEaMe（海外）", "Dreame"), ("goodnovel", "GoodNovel"),
+            ("GOODNOVEL(海外)", "GoodNovel"), ("moboreader", "MoboReader"),
+            ("REELSHORT", "Reelshort"), ("17K", "17k"),
+            ("掌心故事会", "掌心故事会"), ("掌心雷", "掌心雷"),
+            ("风行", "风行"), ("风华", "风华"),
+        ] {
+            assert_eq!(canonicalize_editor_platform(raw), expected);
+            assert_eq!(canonicalize_editor_platform(expected), expected);
+        }
     }
 
     #[test]

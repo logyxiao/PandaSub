@@ -378,7 +378,7 @@ pub async fn import_editor_groups(
                     "INSERT INTO editors (platform, name, email, style, work_type, rejected_types, notes, source)
                      VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?6, ?7)",
                     rusqlite::params![
-                        editor.platform,
+                        store::resolve_editor_platform(&tx, &editor.platform)?,
                         editor.name.trim(),
                         email,
                         json!(editor.work_type).to_string(),
@@ -430,7 +430,7 @@ pub fn add_editor(
         "INSERT INTO editors (platform, name, email, style, work_type, rejected_types, notes, source)
          VALUES (?1, ?2, ?3, '[]', ?4, ?7, ?5, ?6)",
         rusqlite::params![
-            input.platform.trim(),
+            store::resolve_editor_platform(&conn, &input.platform)?,
             input.name.trim(),
             input.email.trim().to_lowercase(),
             work_type,
@@ -464,7 +464,7 @@ pub fn update_editor(
                 rejected_types = ?8, notes = ?5, source = ?6, updated_at = datetime('now','localtime')
          WHERE id = ?7",
         rusqlite::params![
-            input.platform.trim(),
+            store::resolve_editor_platform(&conn, &input.platform)?,
             input.name.trim(),
             input.email.trim().to_lowercase(),
             work_type,
@@ -1034,6 +1034,21 @@ mod performance_tests {
             rejected_types: Vec::new(),
             notes: "原说明".into(),
         }
+    }
+    #[test]
+    fn editor_import_reuses_platform_spelling_across_batches() {
+        let mut conn = crate::db::test_database();
+        for (email, platform) in [("a@example.com","dreame"),("b@example.com","DREAME"),
+            ("c@example.com","goodnovel"),("d@example.com","GoodNovel（海外）"),
+            ("e@example.com","CustomBrand"),("f@example.com","custombrand")] {
+            let mut input = editor(email);
+            input.platform = platform.into();
+            let (rows, errors) = prepare_import(vec![(2,input)]);
+            apply_editor_import(&mut conn, rows, errors, EDITOR_SOURCE_IMPORT).unwrap();
+        }
+        let platforms = store::load_editors(&conn).unwrap().into_iter().map(|e|e.platform).collect::<HashSet<_>>();
+        assert_eq!(platforms, ["Dreame","GoodNovel","CustomBrand"].map(str::to_string).into_iter().collect());
+        assert_eq!(store::resolve_editor_platform(&conn," CUSTOMBRAND ").unwrap(),"CustomBrand");
     }
     #[test]
     fn batch_import_preserves_partial_validation_duplicates_and_favorites() {

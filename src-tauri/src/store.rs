@@ -384,6 +384,17 @@ fn map_editor(r: &rusqlite::Row<'_>) -> rusqlite::Result<Editor> {
     })
 }
 
+/// Reuse the library's spelling for an otherwise unknown brand, ignoring ASCII case.
+pub fn resolve_editor_platform(conn: &Connection, raw: &str) -> Result<String, String> {
+    let platform = crate::models::canonicalize_editor_platform(raw);
+    let existing: Option<String> = conn.query_row(
+        "SELECT platform FROM editors WHERE TRIM(platform) = ?1 COLLATE NOCASE
+         GROUP BY platform ORDER BY COUNT(*) DESC, platform ASC LIMIT 1",
+        [&platform], |row| row.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    Ok(existing.map(|value| crate::models::canonicalize_editor_platform(&value)).unwrap_or(platform))
+}
+
 pub fn upsert_editor(
     conn: &Connection,
     input: &EditorInput,
@@ -397,7 +408,7 @@ pub fn upsert_editor(
         &input.rejected_types
     ))
     .to_string();
-    let platform = crate::models::canonicalize_editor_platform(&input.platform);
+    let platform = resolve_editor_platform(conn, &input.platform)?;
     let existing: Option<i64> = conn.prepare_cached("SELECT id FROM editors WHERE email = ?1").map_err(|e|e.to_string())?
         .query_row([&email], |r| {
             r.get(0)

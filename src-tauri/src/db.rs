@@ -261,6 +261,7 @@ pub fn open_database(path: PathBuf) -> Result<Connection, String> {
     drop_press_and_magazine_editors(&connection)?;
     drop_longform_editors(&connection)?;
     drop_script_editors(&connection)?;
+    normalize_editor_platforms(&connection)?;
     add_task_account_columns(&connection)?;
     add_task_log_recipient_column(&connection)?;
     backfill_manual_log_manuscripts(&connection)?;
@@ -902,6 +903,30 @@ fn backfill_missing_editor_types(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn normalize_editor_platforms(conn: &Connection) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    // Prefer the most-used spelling for brands without an explicit alias.
+    let rows = {
+        let mut stmt = tx.prepare(
+            "SELECT platform FROM editors GROUP BY platform ORDER BY COUNT(*) DESC, platform ASC",
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        rows
+    };
+    let mut spellings = std::collections::HashMap::new();
+    for raw in rows {
+        let canonical = crate::models::canonicalize_editor_platform(&raw);
+        let platform = spellings.entry(canonical.to_ascii_lowercase()).or_insert(canonical);
+        if &raw != platform {
+            tx.execute("UPDATE editors SET platform=?1, updated_at=datetime('now','localtime') WHERE platform=?2",
+                rusqlite::params![platform.as_str(), raw]).map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 fn normalize_unknown_editor_platforms(conn: &Connection) -> Result<(), String> {
@@ -1633,6 +1658,33 @@ fn add_task_account_columns(conn: &Connection) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn editor_platform_normalization_preserves_editors_and_memberships() {
+        let conn = test_database();
+        conn.execute_batch("INSERT INTO editors(id,platform,name,email,notes,favorited,enabled,updated_at) VALUES
+            (1,'dreame','甲','a@example.com','保留备注',1,0,'old'),
+            (2,'Dreame','乙','b@example.com','',0,1,'old'),
+            (3,'goodnovel','丙','c@example.com','',0,1,'old'),
+            (4,'GoodNovel','丁','d@example.com','',0,1,'old'),
+            (5,'CustomBrand','戊','e@example.com','',0,1,'old'),
+            (6,'custombrand','己','f@example.com','',0,1,'old');
+            INSERT INTO editor_groups(id,name) VALUES(1,'原分组');
+            INSERT INTO editor_group_members(group_id,editor_id,position) VALUES(1,1,0),(1,2,1);").unwrap();
+        normalize_editor_platforms(&conn).unwrap();
+        let editors = crate::store::load_editors(&conn).unwrap();
+        assert_eq!(editors.len(), 6);
+        for (id, platform) in [(1,"Dreame"),(2,"Dreame"),(3,"GoodNovel"),(4,"GoodNovel"),(5,"CustomBrand"),(6,"CustomBrand")] {
+            assert_eq!(editors.iter().find(|e|e.id==id).unwrap().platform, platform);
+        }
+        let first = editors.iter().find(|e|e.id==1).unwrap();
+        assert_eq!(first.notes, "保留备注");
+        assert!(first.favorited && !first.enabled);
+        assert_eq!(crate::store::load_editor_groups(&conn).unwrap()[0].editor_ids, vec![1,2]);
+        let changes = conn.total_changes();
+        normalize_editor_platforms(&conn).unwrap();
+        assert_eq!(conn.total_changes(), changes, "reopening must not rewrite normalized rows");
+    }
 
     #[test]
     fn legacy_migration_preserves_existing_rows() {

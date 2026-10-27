@@ -8,6 +8,9 @@ import catalog from '/src/data/mail-template-catalog.json';
 let defaults=catalog.presets.map(item=>({...item}));
 functions.getDefaultMailTemplates=()=>defaults.map(item=>({...item}));
 functions.saveDefaultMailTemplates=items=>{defaults=items.map(item=>({...item}))};
+task.status='stopped';
+functions.addManuscript=input=>{Object.assign(m,input);return m.id};
+functions.updateManuscript=(id,input)=>Object.assign(m,input);
 '''
 
 with sync_playwright() as p:
@@ -49,6 +52,30 @@ with sync_playwright() as p:
         page.get_by_role('button',name='放弃修改',exact=True).click()
         page.get_by_role('button',name='新建计划',exact=True).click()
         expect(tabs).to_have_count(19)
+        # Deleting metadata persists in defaults, saved plans and reopened previews.
+        page.get_by_label('作品名称',exact=True).fill('小熊来信')
+        page.get_by_label('作品字数',exact=True).fill('12345')
+        strategy.select_option('t2')
+        page.get_by_role('group',name='模板视图').get_by_role('button',name='编辑',exact=True).click()
+        subject=page.get_by_label('邮件主题',exact=True)
+        custom_subject='投稿：《{{作品名}}》'
+        subject.fill(custom_subject)
+        page.get_by_label('邮件正文',exact=True).fill('您好，请查收《{{作品名}}》。')
+        page.get_by_role('button',name='保存草稿',exact=True).click()
+        expect(page.locator('.plans-table')).to_be_visible()
+        saved=page.evaluate('window.__manuscript')
+        assert saved['subject']==custom_subject
+        assert next(t for t in saved['mail_templates'] if t['id']=='t2')['subject']==custom_subject
+        page.locator('.plans-table').get_by_role('button',name='编辑计划',exact=True).click()
+        expect(page.locator('.plan-tpl-preview-subject')).to_have_text('投稿：《小熊来信》')
+        expect(page.locator('.plan-tpl-preview-body')).to_have_text('您好，请查收《小熊来信》。')
+        page.get_by_role('group',name='模板视图').get_by_role('button',name='编辑',exact=True).click()
+        expect(subject).to_have_value(custom_subject)
+        page.get_by_role('button',name='返回',exact=True).click()
+        page.get_by_role('button',name='新建计划',exact=True).click()
+        tabs.first.click()
+        page.get_by_role('group',name='模板视图').get_by_role('button',name='编辑',exact=True).click()
+        expect(subject).to_have_value(custom_subject)
         assert not errors,errors
         browser.close()
-        print(f'PASS {engine}: 20 templates, readable previews, no editor names, fixed choice, narrow layout and saved deletion')
+        print(f'PASS {engine}: template previews, fixed choice, narrow layout, saved deletion and metadata removal across saved plans/defaults')

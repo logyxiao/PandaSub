@@ -32,16 +32,20 @@ pub fn parse_mailbox(input: &str) -> Result<Mailbox, SendError> {
 
 pub fn build_mailer(account: &Account) -> Result<AsyncSmtpTransport<Tokio1Executor>, SmtpError> {
     let creds = Credentials::new(account.email.clone(), account.password.clone());
-    let tls_params = TlsParameters::new(account.smtp_host.clone())?;
+    let tls_params = TlsParameters::new_rustls(account.smtp_host.clone())?;
     let builder = AsyncSmtpTransport::<Tokio1Executor>::relay(&account.smtp_host)?
         .credentials(creds)
         .port(account.smtp_port);
-    let builder = if account.smtp_port == 465 {
-        builder.tls(Tls::Wrapper(tls_params))
-    } else {
-        builder.tls(Tls::Required(tls_params))
-    };
+    let builder = builder.tls(smtp_tls(account.smtp_port, tls_params));
     Ok(builder.build())
+}
+
+fn smtp_tls(port: u16, params: TlsParameters) -> Tls {
+    if port == 465 {
+        Tls::Wrapper(params)
+    } else {
+        Tls::Required(params)
+    }
 }
 
 pub fn parse_recipient(raw: &str) -> (String, String) {
@@ -334,6 +338,23 @@ fn smtp_message(prefix: String, text: &str) -> String {
     }
 }
 
+fn is_tls_connection_error(text: &str) -> bool {
+    // Lettre wraps async handshake failures in a Connection error, so is_tls()
+    // alone misses both Schannel's SEC_E_INVALID_TOKEN and Rustls failures.
+    let text = text.to_ascii_lowercase();
+    [
+        "os error -2146893048",
+        "0x80090308",
+        "invalid peer certificate",
+        "received corrupt message",
+        "received fatal alert",
+        "peer is incompatible",
+        "peer misbehaved",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
 /// Returns (category, friendly message).
 pub fn classify_error(err: &SendError) -> (String, String) {
     match err {
@@ -377,9 +398,12 @@ pub fn classify_error(err: &SendError) -> (String, String) {
                     "network".into(),
                     "连接 SMTP 服务器超时，请检查网络后重试".into(),
                 ),
-                _ if smtp_err.is_tls() => (
+                _ if smtp_err.is_tls() || is_tls_connection_error(&text) => (
                     "network".into(),
-                    smtp_message("SMTP 安全连接失败".into(), &text),
+                    smtp_message(
+                        "SMTP 安全连接失败，请核对服务器地址和端口（465 使用 SSL/TLS，587 使用 STARTTLS）；若配置正确，请检查代理或安全软件的邮件扫描设置".into(),
+                        &text,
+                    ),
                 ),
                 _ => (
                     "network".into(),
@@ -389,6 +413,10 @@ pub fn classify_error(err: &SendError) -> (String, String) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "smtp/tls_tests.rs"]
+mod tls_tests;
 
 /// 防风控内容微改：随机尾部空行、段落间额外换行、句末随空格，
 /// 仅改变空白字符，不改变正文语义。

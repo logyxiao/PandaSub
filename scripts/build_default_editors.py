@@ -53,6 +53,11 @@ PLATFORM_ALIASES = {
     "鹿糖": "吾里",
 }
 
+PLATFORM_BRANDS = {
+    "dreame": "Dreame", "goodnovel": "GoodNovel",
+    "moboreader": "MoboReader", "reelshort": "Reelshort",
+}
+
 # Longer phrases first. Values are the tags written into work_type.
 PHRASE_ALIASES: list[tuple[str, list[str]]] = [
     ("女频全类型", ["全品类"]),
@@ -167,10 +172,14 @@ def canonicalize_platform(platform: str) -> str:
     value = clean_space(platform).replace("樂", "乐")
     if not value:
         return ""
+    if value.lower() in PLATFORM_BRANDS:
+        return PLATFORM_BRANDS[value.lower()]
     if value in PLATFORM_ALIASES:
         return PLATFORM_ALIASES[value]
     stripped = re.sub(r"[\(（][^)）]*[\)）]\s*$", "", value).strip()
     stripped = re.sub(r"\d+组$", "", stripped).strip() or stripped
+    if stripped.lower() in PLATFORM_BRANDS:
+        return PLATFORM_BRANDS[stripped.lower()]
     if stripped in PLATFORM_ALIASES:
         return PLATFORM_ALIASES[stripped]
     if stripped:

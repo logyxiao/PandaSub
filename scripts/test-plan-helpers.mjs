@@ -4,7 +4,7 @@ import { createServer } from 'vite'
 const server = await createServer({ server: { middlewareMode: true, watch: null }, appType: 'custom' })
 try {
   const { groupPlanEditors, groupPlanRecipients, randomGroupPlanEditors, toInput, isValidSendIntervalRange, matchingEditorGroupId, summarizeEditorGroup,
-    defaultMailTemplates, normalizeDefaultMailTemplates, hydrateMailTemplates, fillPlaceholders,
+    defaultMailTemplates, normalizeDefaultMailTemplates, hydrateMailTemplates, fillPlaceholders, syncMailFromTemplates, createEmptyManuscript,
     normalizeEditorTags, editorMatchesPlan, mergeEditorSelectionByPlatform, pickRandomPlatformEditor } = await server.ssrLoadModule('/src/views/planShared.ts')
   const reviewedStyle = { enabled: true, work_type: ['知乎风', '知乎风', '小程序'], rejected_types: ['知乎风', '番茄风'] }
   assert.deepEqual(normalizeEditorTags(reviewedStyle).work_type, ['知乎风'])
@@ -14,6 +14,14 @@ try {
   const original = [editor(1, 'editor@example.com'), editor(2, 'EDITOR@example.com'),
     editor(3, 'disabled@example.com', false), editor(4, 'invalid'), { ...editor(5, 'second@example.com'), platform: '另一平台' }]
   const before = JSON.stringify(original)
+  const mixedCasePlatforms = [
+    { ...editor(31, 'a@example.com'), platform: 'dreame' },
+    { ...editor(32, 'b@example.com'), platform: ' Dreame ', favorited: true },
+    { ...editor(33, 'c@example.com'), platform: 'goodnovel' },
+    { ...editor(34, 'd@example.com'), platform: 'GoodNovel', favorited: true },
+  ]
+  assert.deepEqual(groupPlanEditors(mixedCasePlatforms).map(e => e.id), [32, 34],
+    'platform casing cannot select two recipients from one platform')
   const recipients = groupPlanRecipients(original)
   assert.equal(recipients.length, 2, 'case-insensitive duplicate, disabled and invalid addresses are skipped')
   assert.ok(recipients[0].includes('editor@example.com'))
@@ -141,6 +149,23 @@ try {
     }
   }
   assert.equal(catalog.previous.length, 14)
+  for (const template of templates) {
+    for (const subject of [template.subject.replace('+{{字数}}', ''), template.subject.replace(/\+\{\{(?:字数|类型)\}\}/g, ''), '自定义标题']) {
+      const custom = { ...template, subject, body: '您好，请查收《{{作品名}}》。' }
+      const before = JSON.stringify(custom)
+      const defaults = normalizeDefaultMailTemplates([custom])
+      assert.equal(defaults[0].subject, subject, 'saving defaults must not restore deleted metadata')
+      const saved = syncMailFromTemplates({ ...createEmptyManuscript(defaults), title: '小熊来信', word_count: 12345 })
+      assert.equal(saved.subject, subject, 'saving a plan must preserve its custom subject')
+      const reopened = toInput(JSON.parse(JSON.stringify(saved)))
+      assert.equal(reopened.mail_templates[0].subject, subject, 'reopening must not restore deleted metadata')
+      const extras = { wordCount: saved.word_count, genres: ['短篇', '甜宠'], asSubject: true }
+      const preview = fillPlaceholders(reopened.mail_templates[0].subject, '', saved.title, extras)
+      assert.doesNotMatch(preview, /12345|\{\{/, 'preview only fills placeholders still in the template')
+      assert.equal(reopened.mail_templates[0].body, custom.body)
+      assert.equal(JSON.stringify(custom), before)
+    }
+  }
   for (const previous of catalog.previous) {
     const expected = templates.find(item => item.id === previous.id)
     assert.equal(hydrateMailTemplates([previous], '', '')[0].body, expected.body)
