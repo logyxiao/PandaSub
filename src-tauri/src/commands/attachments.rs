@@ -58,7 +58,7 @@ pub async fn stage_attachment(
         "文稿",
     )?;
     let ext = metadata.extension;
-    let data = data.to_vec();
+    let data = data.into_owned();
     let attachments = state.attachments.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let text = match ext.as_str() {

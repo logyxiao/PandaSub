@@ -730,7 +730,7 @@ pub async fn save_accepted_share_image(request: Request<'_>) -> Result<String, S
         return Err("分享图片无效".into());
     }
     let path = metadata.path;
-    let data = data.to_vec();
+    let data = data.into_owned();
     tauri::async_runtime::spawn_blocking(move || {
         std::fs::write(&path, data).map_err(|e| e.to_string())?;
         Ok(path)

@@ -291,7 +291,7 @@ pub async fn import_editor_groups(
     if file_name.trim().is_empty() {
         return Err("缺少文件名".into());
     }
-    let data = data.to_vec();
+    let data = data.into_owned();
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move||{
     let file: EditorGroupShareFile =
@@ -640,7 +640,7 @@ pub async fn import_editors(
     if file_name.trim().is_empty() {
         return Err("缺少文件名".into());
     }
-    let data = data.to_vec();
+    let data = data.into_owned();
     let db = state.db.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let rows = parse_editor_import(&data, &file_name)?;
@@ -1025,6 +1025,43 @@ fn split_tags(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod performance_tests {
     use super::*;
+    #[test]
+    fn xlsx_import_accepts_raw_and_postmessage_transports() {
+        use base64::Engine;
+        use tauri::ipc::InvokeBody;
+
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        for (row, cells) in [
+            ["平台", "名称", "邮箱", "作品类型", "拒收类型", "收稿说明"],
+            ["测试平台", "编辑甲", "one@example.com", "短篇", "恐怖", "收中文稿件"],
+        ].iter().enumerate() {
+            for (column, cell) in cells.iter().enumerate() {
+                sheet.write_string(row as u32, column as u16, *cell).unwrap();
+            }
+        }
+        let data = workbook.save_to_buffer().unwrap();
+        let header = base64::engine::general_purpose::STANDARD
+            .encode(r#"{"file_name":"活跃编辑(1)(1).xlsx"}"#);
+        for body in [
+            InvokeBody::Raw(data.clone()),
+            InvokeBody::Json(serde_json::json!(data)),
+        ] {
+            let (bytes, metadata) = super::super::binary::read_binary(
+                &body, Some(&header), 25 * 1024 * 1024, "编辑库文件",
+            ).unwrap();
+            let rows = parse_editor_import(&bytes, &metadata.file_name).unwrap();
+            let (valid, errors) = prepare_import(rows);
+            let mut conn = crate::db::test_database();
+            let report = apply_editor_import(&mut conn, valid, errors, EDITOR_SOURCE_IMPORT).unwrap();
+            assert_eq!((report.added, report.updated, report.errors.len()), (1, 0, 0));
+            let editors = store::load_editors(&conn).unwrap();
+            assert_eq!(editors[0].name, "编辑甲");
+            assert_eq!(editors[0].notes, "收中文稿件");
+            assert_eq!(editors[0].rejected_types, vec!["恐怖"]);
+        }
+    }
+
     fn editor(email: &str) -> EditorInput {
         EditorInput {
             email: email.into(),

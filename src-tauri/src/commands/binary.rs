@@ -1,6 +1,7 @@
-//! Shared bounded binary IPC for file imports and exports. Never serialize file bytes as JSON arrays.
+//! Bounded file IPC: prefer raw bytes and accept Tauri's postMessage fallback.
 use base64::Engine;
 use serde::Deserialize;
+use std::borrow::Cow;
 use tauri::ipc::InvokeBody;
 
 #[derive(Debug, Default, Deserialize)]
@@ -18,11 +19,13 @@ pub(crate) fn read_binary<'a>(
     header: Option<&str>,
     limit: usize,
     label: &str,
-) -> Result<(&'a [u8], BinaryMetadata), String> {
-    let InvokeBody::Raw(bytes) = body else {
-        return Err(format!("{label}必须使用二进制传输"));
+) -> Result<(Cow<'a, [u8]>, BinaryMetadata), String> {
+    let len = match body {
+        InvokeBody::Raw(bytes) => bytes.len(),
+        InvokeBody::Json(serde_json::Value::Array(bytes)) => bytes.len(),
+        _ => return Err(format!("{label}传输格式无效，请重新选择文件")),
     };
-    if bytes.is_empty() || bytes.len() > limit {
+    if len == 0 || len > limit {
         return Err(format!(
             "{label}不能为空，且不能超过 {} MB",
             limit / 1024 / 1024
@@ -38,6 +41,18 @@ pub(crate) fn read_binary<'a>(
         return Err("文件信息过长".into());
     }
     let metadata = serde_json::from_slice(&metadata).map_err(|_| "文件信息格式无效")?;
+    let bytes = match body {
+        InvokeBody::Raw(bytes) => Cow::Borrowed(bytes.as_slice()),
+        // Tauri serializes Uint8Array to a JSON array when custom-protocol IPC fails.
+        InvokeBody::Json(serde_json::Value::Array(values)) => Cow::Owned(
+            values
+                .iter()
+                .map(|value| value.as_u64().and_then(|n| u8::try_from(n).ok()))
+                .collect::<Option<Vec<u8>>>()
+                .ok_or_else(|| format!("{label}传输数据无效，请重新选择文件"))?,
+        ),
+        _ => unreachable!(),
+    };
     Ok((bytes, metadata))
 }
 #[cfg(test)]
@@ -49,7 +64,7 @@ mod tests {
         let header = base64::engine::general_purpose::STANDARD
             .encode(r#"{"file_name":"编辑库（新版）.xlsx","path":"/tmp/成绩 图.png"}"#);
         let (bytes, metadata) = read_binary(&body, Some(&header), 1024, "文件").unwrap();
-        assert_eq!(bytes, [0, 127, 128, 255]);
+        assert_eq!(bytes.as_ref(), [0, 127, 128, 255]);
         assert_eq!(metadata.file_name, "编辑库（新版）.xlsx");
         assert_eq!(metadata.path, "/tmp/成绩 图.png");
         if let InvokeBody::Raw(original) = &body {
@@ -57,15 +72,36 @@ mod tests {
         }
     }
     #[test]
+    fn accepts_tauri_postmessage_byte_arrays() {
+        let body = InvokeBody::Json(serde_json::json!([0, 127, 128, 255]));
+        let header = base64::engine::general_purpose::STANDARD
+            .encode(r#"{"file_name":"编辑库（新版）.xlsx"}"#);
+        let (bytes, metadata) = read_binary(&body, Some(&header), 4, "文件").unwrap();
+        assert!(matches!(bytes, Cow::Owned(_)));
+        assert_eq!(bytes.as_ref(), [0, 127, 128, 255]);
+        assert_eq!(metadata.file_name, "编辑库（新版）.xlsx");
+    }
+    #[test]
     fn rejects_unbounded_or_ambiguous_payloads_before_work_starts() {
         let header = base64::engine::general_purpose::STANDARD.encode("{}");
         for body in [
             InvokeBody::Raw(vec![]),
             InvokeBody::Raw(vec![0; 5]),
-            InvokeBody::Json(serde_json::json!([1, 2])),
+            InvokeBody::Json(serde_json::json!([])),
+            InvokeBody::Json(serde_json::json!([0, 1, 2, 3, 4])),
+            InvokeBody::Json(serde_json::json!([256])),
+            InvokeBody::Json(serde_json::json!([-1])),
+            InvokeBody::Json(serde_json::json!([1.5])),
+            InvokeBody::Json(serde_json::json!(["1"])),
+            InvokeBody::Json(serde_json::json!([null])),
+            InvokeBody::Json(serde_json::json!([true])),
+            InvokeBody::Json(serde_json::json!([[1]])),
+            InvokeBody::Json(serde_json::json!({"data": [1]})),
         ] {
             assert!(read_binary(&body, Some(&header), 4, "文件").is_err());
         }
+        let fallback = InvokeBody::Json(serde_json::json!([1]));
+        assert!(read_binary(&fallback, None, 4, "文件").is_err());
         let body = InvokeBody::Raw(vec![1]);
         for header in [None, Some("not-base64"), Some("e30.invalid")] {
             assert!(read_binary(&body, header, 4, "文件").is_err());
